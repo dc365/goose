@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meteomate.local/schemas/evidence.schema.json",
+  "title": "MeteoMate Meteorological Evidence",
+  "type": "object",
+  "required": ["apiVersion", "kind", "id", "source", "evidenceType", "lineage"],
+  "properties": {
+    "apiVersion": { "const": "meteomate/v1" },
+    "kind": { "const": "Evidence" },
+    "id": { "type": "string" },
+    "evidenceType": { "type": "string" },
+    "source": { "type": "string" },
+    "sourceVersion": { "type": ["string", "null"] },
+    "model": { "type": ["string", "null"] },
+    "initTime": { "type": ["string", "null"] },
+    "validTime": { "type": ["string", "null"] },
+    "forecastHour": { "type": ["number", "null"] },
+    "region": { "type": ["string", "null"] },
+    "variable": { "type": ["string", "null"] },
+    "level": { "type": ["string", "number", "null"] },
+    "unit": { "type": ["string", "null"] },
+    "confidence": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+    "algorithm": { "type": ["object", "null"] },
+    "expiresAt": { "type": ["string", "null"] },
+    "lineage": { "type": "object" }
+  }
+}

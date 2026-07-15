@@ -8,7 +8,9 @@
   "scripts": {
     "start": "electron .",
     "package:mac": "electron-packager . MeteoMate --platform=darwin --arch=arm64 --out=dist --overwrite --icon=assets/icons/MeteoMate.icns --asar.unpack='**/node_modules/@aaif/goose-binary-*/bin/goose*' --prune=true --app-bundle-id=com.meteomate.desktop --ignore='^/dist($|/)' --ignore='^/assets/icons/meteomate-source\\.png$' --ignore='^/assets/icons/MeteoMate\\.iconset($|/)' && codesign --force --deep --sign - --timestamp=none dist/MeteoMate-darwin-arm64/MeteoMate.app",
-    "check": "node --check main.cjs && node --check preload.cjs && node --check runtime.js && node --check manifests/brand.js && node --check manifests/experts.js && node --check manifests/capabilities.js && node --check manifests/scenes.js && node --check renderer-core.js && node --check renderer-actions.js && node tests/smoke.cjs"
+    "test:harness": "node tests/harness.cjs && node tests/state-bootstrap.cjs",
+    "check:schemas": "node tests/schema-contracts.cjs",
+    "check": "node --check main.cjs && node --check preload.cjs && node --check runtime.js && node --check manifests/brand.js && node --check manifests/experts.js && node --check manifests/capabilities.js && node --check manifests/scenes.js && node --check harness/shared.js && node --check harness/project.js && node --check harness/task-state-machine.js && node --check harness/capability-resolver.js && node --check harness/policy-engine.js && node --check harness/context-compiler.js && node --check harness/event-normalizer.js && node --check harness/artifact-registry.js && node --check harness/evidence-ledger.js && node --check harness/validation-engine.js && node --check harness/state-store.js && node --check harness/state-bootstrap.js && node --check harness/state-restore.js && node --check renderer-core.js && node --check renderer-actions.js && node tests/smoke.cjs && npm run test:harness && npm run check:schemas"
   },
   "dependencies": {
     "@aaif/goose-sdk": "^0.20.2",

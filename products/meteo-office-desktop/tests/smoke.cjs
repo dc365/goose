@@ -18,6 +18,21 @@ for (const file of [
   vm.runInContext(source, context, { filename: file });
 }
 
+const harnessAssets = [
+  'harness/shared.js',
+  'harness/project.js',
+  'harness/task-state-machine.js',
+  'harness/capability-resolver.js',
+  'harness/policy-engine.js',
+  'harness/context-compiler.js',
+  'harness/event-normalizer.js',
+  'harness/artifact-registry.js',
+  'harness/evidence-ledger.js',
+  'harness/validation-engine.js',
+  'harness/state-store.js',
+  'harness/state-bootstrap.js',
+  'harness/state-restore.js',
+];
 
 const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
 for (const asset of [
@@ -27,6 +42,7 @@ for (const asset of [
   'manifests/experts.js',
   'manifests/capabilities.js',
   'manifests/scenes.js',
+  ...harnessAssets,
   'runtime.js',
   'renderer-core.js',
   'renderer-actions.js',
@@ -34,6 +50,10 @@ for (const asset of [
   assert.ok(fs.existsSync(path.join(root, asset)), `missing asset: ${asset}`);
   assert.ok(html.includes(asset), `index.html does not reference: ${asset}`);
 }
+
+assert.ok(html.indexOf('harness/state-bootstrap.js') < html.indexOf('renderer-core.js'));
+assert.ok(html.indexOf('renderer-core.js') < html.indexOf('harness/state-restore.js'));
+assert.ok(html.indexOf('harness/state-restore.js') < html.indexOf('renderer-actions.js'));
 
 assert.equal(context.window.METEOMATE_BRAND.name, 'MeteoMate');
 assert.equal(context.window.METEOMATE_BRAND.chineseName, '气象智伴');
@@ -56,7 +76,10 @@ const mainSource = fs.readFileSync(path.join(root, 'main.cjs'), 'utf8');
 const preloadSource = fs.readFileSync(path.join(root, 'preload.cjs'), 'utf8');
 const rendererSource = fs.readFileSync(path.join(root, 'renderer-core.js'), 'utf8');
 const rendererActionsSource = fs.readFileSync(path.join(root, 'renderer-actions.js'), 'utf8');
+const stateStoreSource = fs.readFileSync(path.join(root, 'harness/state-store.js'), 'utf8');
+const stateRestoreSource = fs.readFileSync(path.join(root, 'harness/state-restore.js'), 'utf8');
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+
 assert.ok(!mainSource.includes("'serve', '--platform'"));
 assert.ok(mainSource.includes('app.asar.unpacked'));
 assert.ok(mainSource.includes('function permissionKey()'));
@@ -122,4 +145,19 @@ assert.ok(!runtimeConnector.tags.includes('ACP'));
 assert.ok(rendererActionsSource.includes("if (!resolved) throw new Error('审批请求已失效，请重新发起任务')"));
 assert.ok(packageJson.scripts['package:mac'].includes("--asar.unpack='**/node_modules/@aaif/goose-binary-*/bin/goose*'"));
 
-console.log('MeteoMate manifest smoke test passed.');
+assert.ok(stateStoreSource.includes('function normalizeStoredTask'));
+assert.ok(stateStoreSource.includes('const storedPlan = Array.isArray(message.processPlan)'));
+assert.ok(stateStoreSource.includes('function migrateLegacyState'));
+assert.ok(stateRestoreSource.includes('ContextCompiler.compileTaskContext'));
+assert.ok(stateRestoreSource.includes('TaskStateMachine.beginRunAttempt'));
+assert.ok(stateRestoreSource.includes('TaskStateMachine.finishRunAttempt'));
+assert.ok(stateRestoreSource.includes("event.type === 'artifact_created'"));
+assert.ok(stateRestoreSource.includes("event.type === 'evidence_created'"));
+assert.equal(packageJson.version, '0.2.0-beta.1');
+assert.ok(packageJson.scripts.check.includes('tests/harness.cjs'));
+assert.ok(packageJson.scripts.check.includes('tests/schema-contracts.cjs'));
+
+const schemaDir = path.join(root, 'schemas');
+assert.ok(fs.readdirSync(schemaDir).filter((name) => name.endsWith('.schema.json')).length >= 9);
+
+console.log('MeteoMate manifest and Harness smoke test passed.');

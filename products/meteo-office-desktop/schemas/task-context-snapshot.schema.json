@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meteomate.local/schemas/task-context-snapshot.schema.json",
+  "title": "MeteoMate Task Context Snapshot",
+  "type": "object",
+  "required": ["apiVersion", "kind", "id", "hash", "compiledAt", "task", "project", "expert", "capabilities", "permissionPolicy"],
+  "properties": {
+    "apiVersion": { "const": "meteomate/v1" },
+    "kind": { "const": "TaskContextSnapshot" },
+    "id": { "type": "string", "pattern": "^ctx-" },
+    "hash": { "type": "string" },
+    "compiledAt": { "type": "string", "format": "date-time" },
+    "task": { "type": "object" },
+    "project": { "type": "object" },
+    "expert": { "type": "object" },
+    "capabilities": { "type": "object" },
+    "meteorologicalContext": { "type": "object" },
+    "assets": { "type": "object" },
+    "modelPolicy": { "type": "object" },
+    "permissionPolicy": { "type": "object" },
+    "workspaceGrant": { "type": "object" },
+    "outputContract": { "type": "object" },
+    "memoryPolicy": { "type": "object" }
+  }
+}

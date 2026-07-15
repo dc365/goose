@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meteomate.local/schemas/automation.schema.json",
+  "title": "MeteoMate Automation",
+  "type": "object",
+  "required": ["id", "name", "taskTemplate", "trigger", "executionPolicy"],
+  "properties": {
+    "id": { "type": "string" },
+    "name": { "type": "string" },
+    "taskTemplate": { "type": "object" },
+    "trigger": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "enum": ["cron", "data-arrival", "file-change", "event", "manual", "task-completed"] }
+      }
+    },
+    "executionPolicy": { "type": "object" }
+  }
+}
