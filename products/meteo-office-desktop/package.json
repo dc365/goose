@@ -14,7 +14,7 @@
     "test:state-bootstrap": "node tests/state-bootstrap.cjs",
     "test:harness": "npm run test:harness-core && npm run test:state-bootstrap",
     "check:schemas": "node tests/schema-contracts.cjs",
-    "check": "npm run check:syntax && npm run test:smoke && npm run test:harness && npm run check:schemas"
+    "check": "npm run check:syntax && npm run test:smoke && node tests/harness.cjs && node tests/state-bootstrap.cjs && node tests/schema-contracts.cjs"
   },
   "dependencies": {
     "@aaif/goose-sdk": "^0.20.2",
