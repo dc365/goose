@@ -1,0 +1,19 @@
+{
+  "name": "meteo-office-desktop",
+  "productName": "气象智伴",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A Goose-powered meteorological office desktop agent MVP.",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "check": "node --check main.cjs && node --check preload.cjs && node --check catalog.js && node --check renderer-core.js && node --check renderer-actions.js"
+  },
+  "devDependencies": {
+    "electron": "41.0.0"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "Apache-2.0"
+}
