@@ -7,14 +7,18 @@
   "main": "main.cjs",
   "scripts": {
     "start": "electron .",
+    "package:mac": "electron-packager . MeteoMate --platform=darwin --arch=arm64 --out=dist --overwrite --icon=assets/icons/MeteoMate.icns --asar.unpack='**/node_modules/@aaif/goose-binary-*/bin/goose*' --prune=true --app-bundle-id=com.meteomate.desktop --ignore='^/dist($|/)' --ignore='^/assets/icons/meteomate-source\\.png$' --ignore='^/assets/icons/MeteoMate\\.iconset($|/)' && codesign --force --deep --sign - --timestamp=none dist/MeteoMate-darwin-arm64/MeteoMate.app",
     "check": "node --check main.cjs && node --check preload.cjs && node --check runtime.js && node --check manifests/brand.js && node --check manifests/experts.js && node --check manifests/capabilities.js && node --check manifests/scenes.js && node --check renderer-core.js && node --check renderer-actions.js && node tests/smoke.cjs"
   },
   "dependencies": {
     "@aaif/goose-sdk": "^0.20.2",
     "@agentclientprotocol/sdk": "^0.19.0",
+    "dompurify": "^3.4.12",
+    "marked": "^18.0.6",
     "ws": "^8.18.3"
   },
   "devDependencies": {
+    "@electron/packager": "^20.0.2",
     "electron": "41.0.0"
   },
   "engines": {

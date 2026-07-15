@@ -8,6 +8,18 @@ const catalog = Object.freeze({
   permissionProfiles: window.METEOMATE_PERMISSION_PROFILES,
 });
 
+const primaryAssistant = Object.freeze({
+  id: 'meteomate-assistant',
+  kind: 'assistant',
+  name: 'MeteoMate 助理',
+  avatar: 'M',
+  description: '你的长期气象办公助理，可在固定工作区中持续对话、整理资料并协助推进日常任务。',
+  instruction:
+    '你是 MeteoMate 的长期个人助理。围绕用户的气象办公工作持续协作，记住当前会话上下文，优先使用用户指定的工作区资料。需要专业分析时调用合适的专家能力，但始终以一个统一助理身份与用户对话。',
+  prompts: ['介绍一下你能帮我做什么', '整理当前工作区中的近期材料', '帮我规划今天的气象办公任务'],
+  permissionProfile: 'artifact-approval',
+});
+
 const STORAGE_KEY = 'meteomate-desktop-state-v2';
 const LEGACY_STORAGE_KEY = 'meteo-office-desktop-state-v1';
 
@@ -22,9 +34,13 @@ const initialState = {
   customExperts: [],
   projects: [],
   activeProjectId: null,
+  assistantWorkspace: '',
   tasks: [],
   activeTaskId: null,
+  assistantTaskId: null,
   selectedExpertId: null,
+  draftPermissionProfileId: null,
+  draftModelId: null,
   runtime: {
     state: 'starting',
     active: 'unknown',
@@ -38,7 +54,22 @@ const initialState = {
 const appElement = document.getElementById('app');
 const runtimeRouter = new window.MeteoMateRuntime.RuntimeRouter();
 let state = loadState();
+if (state.view === 'assistants') {
+  state.activeTaskId =
+    state.tasks.find((task) => task.id === state.assistantTaskId && task.kind === 'assistant')?.id ||
+    state.tasks.find((task) => task.kind === 'assistant')?.id ||
+    null;
+}
 let unsubscribeRuntimeEvents = null;
+let responseElapsedTimer = null;
+const modelSettings = {
+  status: 'idle',
+  providerId: '',
+  modelId: '',
+  providers: [],
+  message: '',
+  error: '',
+};
 
 function defaultProjectFromLegacy(stored) {
   const workspace = typeof stored?.workspace === 'string' ? stored.workspace : '';
@@ -90,6 +121,11 @@ function migrateLegacyState() {
         }))
       : [];
 
+    const storedPlan =
+      Array.isArray(message.processPlan) && message.processPlan.length
+        ? message.processPlan
+        : fallbackPlan;
+    const planTitles = new Map(createDefaultPlan().map((item) => [item.id, item.title]));
     return {
       ...initialState,
       projects,
@@ -120,15 +156,7 @@ function loadState() {
       runtime: structuredClone(initialState.runtime),
       activeTaskId: null,
       tasks: Array.isArray(stored.tasks)
-        ? stored.tasks.map((task) => ({
-            ...task,
-            status: task.status === 'running' ? 'interrupted' : task.status,
-            messages: Array.isArray(task.messages) ? task.messages : [],
-            activities: Array.isArray(task.activities) ? task.activities : [],
-            artifacts: Array.isArray(task.artifacts) ? task.artifacts : [],
-            plan: Array.isArray(task.plan) && task.plan.length ? task.plan : createDefaultPlan(),
-            pendingPermissions: [],
-          }))
+        ? stored.tasks.map(normalizeStoredTask)
         : [],
       projects: Array.isArray(stored.projects) ? stored.projects : [],
       favoriteExpertIds: Array.isArray(stored.favoriteExpertIds) ? stored.favoriteExpertIds : [],
@@ -137,6 +165,81 @@ function loadState() {
   } catch {
     return structuredClone(initialState);
   }
+}
+
+function normalizeStoredTask(task) {
+  const messages = Array.isArray(task.messages) ? task.messages : [];
+  const assistantMessages = messages.filter((message) => message.role === 'assistant');
+  const latestAssistant = assistantMessages.at(-1) || null;
+  const normalizedMessages = messages.map((message) => {
+    if (message.role !== 'assistant') return message;
+    const startedAt = message.startedAt || message.createdAt || task.createdAt || Date.now();
+    const isLatest = message.id === latestAssistant?.id;
+    const completedAt =
+      message.completedAt ||
+      (isLatest && task.status !== 'running' && task.updatedAt >= startedAt ? task.updatedAt : null);
+    const completed = message.status !== 'streaming' || task.status !== 'running';
+    const fallbackPlan = createDefaultPlan().map((item) => ({
+      ...item,
+      status: completed ? 'completed' : item.status,
+    }));
+    return {
+      ...message,
+      status: completed ? 'completed' : message.status,
+      startedAt,
+      completedAt,
+      durationMs:
+        message.durationMs ?? (completedAt ? Math.max(0, completedAt - startedAt) : null),
+      runStatus: message.runStatus || (task.status === 'failed' && isLatest ? 'failed' : 'completed'),
+      processPlan: storedPlan.map((item) => ({
+        ...item,
+        title: planTitles.get(item.id) || item.title,
+      })),
+      usage: message.usage || (isLatest ? task.usage || null : null),
+      modelId: message.modelId || task.modelId || '',
+    };
+  });
+  const normalizedAssistantMessages = normalizedMessages.filter((message) => message.role === 'assistant');
+  const latestAssistantId = normalizedAssistantMessages.at(-1)?.id;
+  const legacyResponseId = normalizedAssistantMessages.length === 1 ? latestAssistantId : null;
+  const responseTiming = new Map(
+    normalizedAssistantMessages.map((message) => [
+      message.id,
+      {
+        startedAt: message.startedAt || 0,
+        completedAt: message.completedAt || Number.POSITIVE_INFINITY,
+        runStatus: message.runStatus,
+      },
+    ])
+  );
+  const activities = Array.isArray(task.activities)
+    ? task.activities.map((activity) => {
+        const responseId = activity.responseId || legacyResponseId || null;
+        const timing = responseTiming.get(responseId);
+        const createdAt = activity.createdAt || 0;
+        const belongsToResponse =
+          !timing || (createdAt >= timing.startedAt && createdAt <= timing.completedAt + 1000);
+        return {
+          ...activity,
+          responseId: belongsToResponse ? responseId : null,
+          status:
+            belongsToResponse &&
+            timing?.runStatus === 'completed' &&
+            ['running', 'waiting', 'pending', 'in_progress'].includes(activity.status)
+              ? 'completed'
+              : activity.status,
+        };
+      })
+    : [];
+  return {
+    ...task,
+    status: task.status === 'running' ? 'interrupted' : task.status,
+    messages: normalizedMessages,
+    activities,
+    artifacts: Array.isArray(task.artifacts) ? task.artifacts : [],
+    plan: Array.isArray(task.plan) && task.plan.length ? task.plan : createDefaultPlan(),
+    pendingPermissions: [],
+  };
 }
 
 function saveState() {
@@ -159,7 +262,7 @@ function saveState() {
 function createDefaultPlan() {
   return [
     { id: 'prepare', title: '准备任务上下文与资料约束', status: 'pending' },
-    { id: 'analyze', title: '调用专家能力与工具完成分析', status: 'pending' },
+    { id: 'analyze', title: '调用所需能力与工具完成分析', status: 'pending' },
     { id: 'deliver', title: '整理结论、证据与成果物', status: 'pending' },
   ];
 }
@@ -174,10 +277,12 @@ function allExperts() {
 }
 
 function getExpert(expertId) {
+  if (expertId === primaryAssistant.id) return primaryAssistant;
   return allExperts().find((item) => item.id === expertId) || catalog.experts[0];
 }
 
 function getSelectedExpert() {
+  if (state.view === 'assistants') return primaryAssistant;
   return getExpert(state.selectedExpertId || catalog.experts[0].id);
 }
 
@@ -193,6 +298,29 @@ function getTaskProject(task) {
   return state.projects.find((project) => project.id === task?.projectId) || getActiveProject();
 }
 
+function getAssistantTask() {
+  return (
+    state.tasks.find((task) => task.id === state.assistantTaskId && task.kind === 'assistant') ||
+    state.tasks.find((task) => task.kind === 'assistant') ||
+    null
+  );
+}
+
+function getAssistantProject() {
+  if (!state.assistantWorkspace) return null;
+  return {
+    id: 'meteomate-assistant-workspace',
+    name: 'MeteoMate 工作区',
+    workspace: state.assistantWorkspace,
+  };
+}
+
+function getConversationProject(task) {
+  return task?.kind === 'assistant' || (state.view === 'assistants' && !task)
+    ? getAssistantProject(task)
+    : getTaskProject(task);
+}
+
 function escapeHtml(value) {
   return String(value ?? '')
     .replaceAll('&', '&amp;')
@@ -200,6 +328,48 @@ function escapeHtml(value) {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#039;');
+}
+
+function renderMarkdown(value) {
+  const source = String(value || '');
+  if (!window.marked?.parse || !window.DOMPurify?.sanitize) {
+    return `<p>${escapeHtml(source).replaceAll('\n', '<br />')}</p>`;
+  }
+  try {
+    const parsed = window.marked.parse(source, {
+      gfm: true,
+      breaks: true,
+    });
+    const sanitized = window.DOMPurify.sanitize(parsed, {
+      USE_PROFILES: { html: true },
+      FORBID_TAGS: ['style', 'iframe', 'form', 'input', 'button', 'textarea', 'select', 'video', 'audio'],
+      FORBID_ATTR: ['style', 'srcset'],
+    });
+    const template = document.createElement('template');
+    template.innerHTML = sanitized;
+    template.content.querySelectorAll('a').forEach((link) => {
+      const targetUrl = link.getAttribute('href') || '';
+      try {
+        const parsedUrl = new URL(targetUrl);
+        if (!['http:', 'https:'].includes(parsedUrl.protocol)) throw new Error('Unsupported protocol');
+        link.setAttribute('href', '#');
+        link.dataset.externalUrl = parsedUrl.toString();
+        link.setAttribute('title', parsedUrl.toString());
+      } catch {
+        link.removeAttribute('href');
+        link.classList.add('markdown-link-disabled');
+      }
+    });
+    template.content.querySelectorAll('img').forEach((image) => {
+      const sourceUrl = image.getAttribute('src') || '';
+      if (!sourceUrl.startsWith('data:image/')) {
+        image.replaceWith(document.createTextNode(`[图片：${image.getAttribute('alt') || '未命名'}]`));
+      }
+    });
+    return template.innerHTML;
+  } catch {
+    return `<p>${escapeHtml(source).replaceAll('\n', '<br />')}</p>`;
+  }
 }
 
 function formatTime(timestamp) {
@@ -240,6 +410,23 @@ function truncate(value, limit = 80) {
   return text.length > limit ? `${text.slice(0, limit)}…` : text;
 }
 
+function formatDuration(durationMs) {
+  if (!Number.isFinite(durationMs) || durationMs < 0) return '';
+  if (durationMs < 1000) return `${(durationMs / 1000).toFixed(1)}s`;
+  if (durationMs < 10000) return `${(durationMs / 1000).toFixed(1).replace('.0', '')}s`;
+  if (durationMs < 60000) return `${Math.round(durationMs / 1000)}s`;
+  const minutes = Math.floor(durationMs / 60000);
+  const seconds = Math.round((durationMs % 60000) / 1000);
+  return `${minutes}m ${seconds}s`;
+}
+
+function formatTokenCount(value) {
+  if (!Number.isFinite(value)) return '';
+  if (value >= 1000000) return `${(value / 1000000).toFixed(1)}m`;
+  if (value >= 1000) return `${(value / 1000).toFixed(1)}k`;
+  return String(value);
+}
+
 function icon(name) {
   const icons = {
     plus: '<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>',
@@ -257,26 +444,17 @@ function icon(name) {
     chevron: '<svg viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg>',
     users: '<svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3 19v-2c0-3 2.5-5 6-5s6 2 6 5v2"/><circle cx="17" cy="9" r="2"/><path d="M16 14c3 0 5 1.7 5 4v1"/></svg>',
     send: '<svg viewBox="0 0 24 24"><path d="m4 4 16 8-16 8 3-8-3-8Z"/><path d="M7 12h13"/></svg>',
+    arrowUp: '<svg viewBox="0 0 24 24"><path d="m6 11 6-6 6 6"/><path d="M12 5v14"/></svg>',
     star: '<svg viewBox="0 0 24 24"><path d="m12 3 2.7 5.5 6.1.9-4.4 4.3 1 6.1-5.4-2.9-5.4 2.9 1-6.1-4.4-4.3 6.1-.9L12 3Z"/></svg>',
     check: '<svg viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></svg>',
     file: '<svg viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6V3Z"/><path d="M14 3v5h5"/></svg>',
     shield: '<svg viewBox="0 0 24 24"><path d="M12 3 20 6v6c0 5-3.4 8-8 9-4.6-1-8-4-8-9V6l8-3Z"/><path d="m9 12 2 2 4-5"/></svg>',
+    down: '<svg viewBox="0 0 24 24"><path d="m7 9 5 5 5-5"/></svg>',
     tool: '<svg viewBox="0 0 24 24"><path d="m14 7 3-3 3 3-3 3"/><path d="m17 7-8 8"/><path d="M9 13 4 18l2 2 5-5"/></svg>',
+    model: '<svg viewBox="0 0 24 24"><path d="M12 3 4.5 7.2 12 11.5l7.5-4.3L12 3Z"/><path d="m4.5 12 7.5 4.3 7.5-4.3M4.5 16.8 12 21l7.5-4.2"/></svg>',
+    refresh: '<svg viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 9A7 7 0 0 1 18 6l2 2M18 15a7 7 0 0 1-11.9 3L4 16"/></svg>',
   };
   return `<span class="icon">${icons[name] || icons.more}</span>`;
-}
-
-function runtimeLabel() {
-  if (state.runtime.state === 'starting') return '正在连接 Goose';
-  if (state.runtime.acpAvailable) return 'Goose ACP 已连接';
-  if (state.runtime.headlessAvailable) return 'Headless 降级模式';
-  return '演示模式';
-}
-
-function runtimeTone() {
-  if (state.runtime.acpAvailable) return 'online';
-  if (state.runtime.headlessAvailable) return 'warning';
-  return 'demo';
 }
 
 function taskStatusText(status) {
@@ -293,6 +471,8 @@ function taskStatusText(status) {
 }
 
 function render() {
+  window.clearInterval(responseElapsedTimer);
+  responseElapsedTimer = null;
   appElement.innerHTML = `
     <div class="app-shell">
       ${renderSidebar()}
@@ -303,15 +483,28 @@ function render() {
   requestAnimationFrame(() => {
     const scroll = document.querySelector('.conversation-scroll');
     if (scroll) scroll.scrollTop = scroll.scrollHeight;
+    updateLiveResponseDurations();
+    if (document.querySelector('.response-process.running .response-elapsed')) {
+      responseElapsedTimer = window.setInterval(updateLiveResponseDurations, 250);
+    }
+  });
+}
+
+function updateLiveResponseDurations() {
+  document.querySelectorAll('.response-process.running .response-elapsed').forEach((element) => {
+    const startedAt = Number(element.dataset.startedAt);
+    if (Number.isFinite(startedAt) && startedAt > 0) {
+      element.textContent = formatDuration(Math.max(0, Date.now() - startedAt));
+    }
   });
 }
 
 function renderSidebar() {
-  const recentTasks = state.tasks.slice(0, 7);
+  const taskHistory = state.tasks.filter((task) => task.kind !== 'assistant');
+  const recentTasks = taskHistory.slice(0, 7);
   const recentProjects = state.projects.slice(0, 4);
   return `
     <aside class="sidebar">
-      <div class="window-dots"><i></i><i></i><i></i></div>
       <div class="brand-row">
         <div class="brand-lockup">
           <strong>${brand.name}</strong>
@@ -328,7 +521,7 @@ function renderSidebar() {
         ${navItem('more', 'more', '更多', state.view === 'more')}
       </nav>
       <section class="sidebar-section">
-        <div class="sidebar-section-title"><span>任务 (${state.tasks.length})</span><span>⌄</span></div>
+        <div class="sidebar-section-title"><span>任务 (${taskHistory.length})</span><span>⌄</span></div>
         <div class="sidebar-list">
           ${
             recentTasks.length
@@ -347,10 +540,6 @@ function renderSidebar() {
           }
         </div>
       </section>
-      <div class="sidebar-footer">
-        <span class="runtime-dot ${runtimeTone()}"></span>
-        <span>${runtimeLabel()}</span>
-      </div>
     </aside>
   `;
 }
@@ -477,7 +666,6 @@ function renderScenes() {
     <section class="scenes-section">
       <div class="section-title-row">
         <div><h2>精选气象场景</h2><p>${brand.tagline}</p></div>
-        <span class="runtime-chip ${runtimeTone()}">${runtimeLabel()}</span>
       </div>
       <div class="scene-grid">
         ${catalog.scenes
@@ -514,7 +702,9 @@ function renderExpertCard(item) {
 function renderCapabilityCard(item, tab) {
   const isRuntime = item.status === 'runtime';
   const statusText = isRuntime
-    ? runtimeLabel()
+    ? state.runtime.binaryAvailable
+      ? '可用'
+      : '未就绪'
     : item.status === 'planned'
       ? '待接入'
       : item.status === 'built-in'
@@ -527,7 +717,7 @@ function renderCapabilityCard(item, tab) {
     <article class="capability-card">
       <div class="capability-icon">${escapeHtml(item.icon)}</div>
       <div class="capability-copy"><h3>${escapeHtml(item.name)}</h3><span>${escapeHtml(item.category)}</span></div>
-      <span class="capability-status ${isRuntime && state.runtime.acpAvailable ? 'ready' : ''}">${escapeHtml(statusText)}</span>
+      <span class="capability-status ${isRuntime && state.runtime.binaryAvailable ? 'ready' : ''}">${escapeHtml(statusText)}</span>
       <p>${escapeHtml(item.description)}</p>
       <div class="tag-row small">${(item.tags || []).map((tag) => `<span>${escapeHtml(tag)}</span>`).join('')}</div>
       <button class="secondary-action" disabled>${tab === 'skills' ? '查看技能' : '配置连接器'}</button>
@@ -535,127 +725,185 @@ function renderCapabilityCard(item, tab) {
   `;
 }
 
-function renderTaskView() {
+function renderTaskView({ assistantMode = false } = {}) {
   const task = getActiveTask();
-  const expert = task ? getExpert(task.expertId) : getSelectedExpert();
-  const project = task ? getTaskProject(task) : getActiveProject();
-  const profile = catalog.permissionProfiles[expert.permissionProfile] || catalog.permissionProfiles['analysis-readonly'];
-  const allowFileTools = task?.allowFileTools ?? false;
+  const expert = assistantMode ? primaryAssistant : task ? getExpert(task.expertId) : getSelectedExpert();
+  const project = assistantMode
+    ? getAssistantProject(task)
+    : task
+      ? getTaskProject(task)
+      : getActiveProject();
   const isRunning = task?.status === 'running';
   const messages = task?.messages || [];
   const pendingPermissions = task?.pendingPermissions || [];
-
-  return `
-    <header class="task-topbar">
-      <button class="back-button" data-nav="catalog">${icon('back')} 返回专家中心</button>
-      <div class="task-topbar-title">
-        <span class="avatar small">${escapeHtml(expert.avatar)}</span>
-        <div>
-          <strong>${escapeHtml(task?.title || expert.name)}</strong>
-          <small>${escapeHtml(expert.name)} · ${project ? escapeHtml(project.name) : '未选择项目'}</small>
-        </div>
-      </div>
-      <div class="task-top-actions">
-        <span class="runtime-chip ${runtimeTone()}">${task?.runtimeMode ? `${task.runtimeMode.toUpperCase()} · ${taskStatusText(task.status)}` : runtimeLabel()}</span>
-        ${isRunning ? `<button class="danger-button compact" id="cancel-task">${icon('stop')} 停止</button>` : ''}
-      </div>
-    </header>
-    <div class="task-layout">
-      <aside class="task-context-panel">
-        <div class="context-section">
-          <span class="context-label">当前专家</span>
-          <div class="selected-expert-card">
-            <span class="avatar">${escapeHtml(expert.avatar)}</span>
-            <div><strong>${escapeHtml(expert.name)}</strong><p>${escapeHtml(expert.description)}</p></div>
+  const defaultPermissionProfileId = expert.permissionProfile || 'analysis-readonly';
+  const permissionProfileId =
+    task?.permissionProfileId ||
+    (task
+      ? task.allowFileTools
+        ? defaultPermissionProfileId
+        : 'analysis-readonly'
+      : state.draftPermissionProfileId || defaultPermissionProfileId);
+  const profile =
+    catalog.permissionProfiles[permissionProfileId] || catalog.permissionProfiles['analysis-readonly'];
+  const permissionOptions = Object.values(catalog.permissionProfiles)
+    .map(
+      (entry) => {
+        const selected = entry.id === profile.id;
+        const optionIcon =
+          entry.id === 'analysis-readonly'
+            ? 'assistant'
+            : entry.id === 'artifact-approval'
+              ? 'shield'
+              : 'folder';
+        return `
+          <button
+            class="permission-option ${selected ? 'selected' : ''}"
+            type="button"
+            role="option"
+            aria-selected="${selected}"
+            data-permission-profile-id="${escapeHtml(entry.id)}"
+          >
+            <span class="permission-option-icon">${icon(optionIcon)}</span>
+            <span class="permission-option-copy">
+              <strong>${escapeHtml(entry.name)}</strong>
+              <small>${escapeHtml(entry.description)}</small>
+            </span>
+            <span class="permission-option-check">${selected ? icon('check') : ''}</span>
+          </button>`;
+      }
+    )
+    .join('');
+  const selectedProviderId = task?.providerId || modelSettings.providerId;
+  const provider =
+    modelSettings.providers.find((entry) => entry.id === selectedProviderId) || null;
+  const models = provider?.models || [];
+  const selectedModelId =
+    task?.modelId ?? state.draftModelId ?? modelSettings.modelId ?? provider?.defaultModel ?? '';
+  const modelOptions = [
+    `<option value="" ${selectedModelId ? '' : 'selected'}>自动选择</option>`,
+    ...models.map(
+      (entry) =>
+        `<option value="${escapeHtml(entry.id)}" ${entry.id === selectedModelId ? 'selected' : ''}>${escapeHtml(entry.name)}</option>`
+    ),
+  ].join('');
+  const modelUnavailable =
+    modelSettings.status === 'loading' || modelSettings.status === 'idle' || !provider;
+  const modelPlaceholder = modelSettings.status === 'error' ? '模型不可用' : '读取模型中';
+  const header = assistantMode
+    ? `<header class="assistant-chat-topbar">
+        <div class="assistant-chat-identity">
+          <span class="avatar small">${escapeHtml(primaryAssistant.avatar)}</span>
+          <div>
+            <strong>${escapeHtml(primaryAssistant.name)}</strong>
+            <small>默认工作区 · ${escapeHtml(project?.name || 'MeteoMate 工作区')}</small>
           </div>
         </div>
-        <div class="context-section">
-          <span class="context-label">项目工作区</span>
-          <button class="workspace-context-card" id="choose-workspace">
-            ${icon('folder')}
-            <span>
-              <strong>${project ? escapeHtml(project.name) : '选择本地项目'}</strong>
-              <small>${project ? escapeHtml(shortPath(project.workspace)) : '用于资料、模板与成果物'}</small>
-            </span>
-          </button>
-          ${project ? `<button class="inline-link" id="open-workspace">${icon('external')} 打开目录</button>` : ''}
+        ${isRunning ? `<button class="danger-button compact" id="cancel-task">${icon('stop')} 停止</button>` : ''}
+      </header>`
+    : `<header class="task-topbar">
+        <button class="back-button" data-nav="catalog">${icon('back')} 返回专家中心</button>
+        <div class="task-topbar-title">
+          <span class="avatar small">${escapeHtml(expert.avatar)}</span>
+          <div>
+            <strong>${escapeHtml(task?.title || expert.name)}</strong>
+            <small>${escapeHtml(expert.name)} · ${project ? escapeHtml(project.name) : '未选择项目'}</small>
+          </div>
         </div>
-        <div class="context-section">
-          <span class="context-label">权限策略</span>
-          <label class="permission-toggle">
-            <input id="allow-file-tools" type="checkbox" ${allowFileTools ? 'checked' : ''} ${isRunning ? 'disabled' : ''} />
-            <span><strong>${escapeHtml(profile.name)}</strong><small>${escapeHtml(profile.description)}</small></span>
-          </label>
-          <div class="security-note">${icon('shield')} ACP 模式下写入与命令逐次审批；降级模式自动关闭文件工具。</div>
+        <div class="task-top-actions">
+          ${isRunning ? `<button class="danger-button compact" id="cancel-task">${icon('stop')} 停止</button>` : ''}
         </div>
-        <div class="context-section session-meta">
-          <span class="context-label">会话</span>
-          <dl>
-            <div><dt>Runtime</dt><dd>${escapeHtml(task?.runtimeMode || runtimeLabel())}</dd></div>
-            <div><dt>Session</dt><dd>${task?.sessionId ? escapeHtml(task.sessionId.slice(0, 12)) : '未建立'}</dd></div>
-            <div><dt>更新</dt><dd>${task ? formatDateTime(task.updatedAt) : '—'}</dd></div>
-          </dl>
-        </div>
-      </aside>
+      </header>`;
 
-      <section class="conversation-panel">
+  return `
+    ${header}
+    <section class="chat-workspace ${assistantMode ? 'assistant-chat-workspace' : ''}">
         <div class="conversation-scroll">
           ${
             messages.length
-              ? messages.map(renderMessage).join('')
+              ? messages.map((message) => renderMessage(message, task)).join('')
               : renderConversationWelcome(expert)
           }
+          ${
+            pendingPermissions.length
+              ? `<section class="inline-permission-stack">
+                  <div class="inline-permission-heading">
+                    <span>${icon('shield')} 待确认操作</span>
+                    <em>${pendingPermissions.length}</em>
+                  </div>
+                  ${pendingPermissions.map(renderPermissionCard).join('')}
+                </section>`
+              : ''
+          }
         </div>
-        <div class="composer-shell">
-          <textarea
-            id="task-prompt"
-            placeholder="${task?.sessionId ? '继续追问、修改要求或补充资料…' : '描述一个气象办公任务…'}"
-            ${isRunning ? 'disabled' : ''}
-          ></textarea>
-          <div class="composer-footer">
-            <span>${task?.sessionId ? '将继续当前 Goose 会话' : state.runtime.acpAvailable ? '将创建可恢复的 ACP 会话' : '将使用安全降级模式'}</span>
-            <button class="primary-button send-button" id="send-task" ${isRunning ? 'disabled' : ''}>
-              ${icon('send')} ${task?.sessionId ? '继续任务' : '开始执行'}
-            </button>
+        <div class="composer-dock">
+          <div class="composer-shell">
+            <textarea
+              id="task-prompt"
+              placeholder="${task?.sessionId ? '继续追问、修改要求或补充资料…' : assistantMode ? '今天想和助理聊些什么？' : '描述一个气象办公任务…'}"
+              ${isRunning ? 'disabled' : ''}
+            ></textarea>
+            <div class="composer-footer">
+              <span>${isRunning ? '任务执行中' : '按 Command + Enter 发送'}</span>
+              <div class="composer-primary-tools">
+                <label class="composer-select composer-model-control ${modelUnavailable ? 'disabled' : ''}">
+                  ${icon('model')}
+                  <select id="composer-model" data-provider-id="${escapeHtml(provider?.id || '')}" aria-label="选择模型" ${isRunning || modelUnavailable ? 'disabled' : ''}>
+                    ${modelUnavailable ? `<option>${modelPlaceholder}</option>` : modelOptions}
+                  </select>
+                </label>
+                <button
+                  class="primary-button send-icon-button"
+                  id="send-task"
+                  aria-label="${task?.sessionId ? '继续任务' : '开始执行'}"
+                  title="${task?.sessionId ? '继续任务' : '开始执行'}"
+                  ${isRunning ? 'disabled' : ''}
+                >${icon('arrowUp')}</button>
+              </div>
+            </div>
+          </div>
+          <div class="composer-context-row">
+            ${
+              assistantMode
+                ? `<span class="composer-context-status" title="${escapeHtml(project?.workspace || '')}">
+                    ${icon('folder')}
+                    <span>${escapeHtml(project?.name || 'MeteoMate 工作区')}</span>
+                  </span>`
+                : `<button class="composer-context-button" id="choose-workspace" ${isRunning ? 'disabled' : ''}>
+                    ${icon('folder')}
+                    <span>${project ? escapeHtml(project.name) : '选择工作区'}</span>
+                  </button>`
+            }
+            ${project ? `<button class="composer-icon-button" id="open-workspace" title="打开工作区">${icon('external')}</button>` : ''}
+            <div class="composer-permission-menu">
+              <button
+                class="composer-permission-trigger ${profile.fileTools ? 'elevated' : ''}"
+                id="composer-permission"
+                type="button"
+                data-permission-profile-id="${escapeHtml(profile.id)}"
+                aria-label="选择审批策略，当前为${escapeHtml(profile.name)}"
+                aria-haspopup="listbox"
+                aria-expanded="false"
+                aria-controls="composer-permission-popover"
+                title="${escapeHtml(profile.description)}"
+                ${isRunning ? 'disabled' : ''}
+              >
+                ${icon('shield')}
+                <span class="composer-permission-label">${escapeHtml(profile.name)}</span>
+                ${icon('down')}
+              </button>
+              <div class="permission-popover" id="composer-permission-popover" role="listbox" hidden>
+                <div class="permission-popover-heading">
+                  <strong>应如何处理本地操作？</strong>
+                  <small>权限策略仅作用于当前${assistantMode ? '助理会话' : '任务'}</small>
+                </div>
+                <div class="permission-option-list">${permissionOptions}</div>
+              </div>
+            </div>
+            <span class="composer-security-copy">本地文件权限按所选策略执行</span>
           </div>
         </div>
-      </section>
-
-      <aside class="inspector-panel">
-        ${
-          pendingPermissions.length
-            ? `<section class="inspector-section permission-section">
-                <div class="inspector-heading"><span>${icon('shield')} 待审批操作</span><em>${pendingPermissions.length}</em></div>
-                ${pendingPermissions.map(renderPermissionCard).join('')}
-              </section>`
-            : ''
-        }
-        <section class="inspector-section">
-          <div class="inspector-heading"><span>执行计划</span><small>${task ? taskStatusText(task.status) : '待开始'}</small></div>
-          <div class="plan-list">${(task?.plan || createDefaultPlan()).map(renderPlanItem).join('')}</div>
-        </section>
-        <section class="inspector-section">
-          <div class="inspector-heading"><span>工具与活动</span><small>${task?.activities?.length || 0}</small></div>
-          <div class="activity-list">
-            ${
-              task?.activities?.length
-                ? task.activities.slice(-10).reverse().map(renderActivityItem).join('')
-                : '<div class="inspector-empty">工具调用、思考摘要和运行日志将在这里显示。</div>'
-            }
-          </div>
-        </section>
-        <section class="inspector-section">
-          <div class="inspector-heading"><span>成果物</span><small>${task?.artifacts?.length || 0}</small></div>
-          <div class="artifact-list">
-            ${
-              task?.artifacts?.length
-                ? task.artifacts.map(renderArtifact).join('')
-                : '<div class="inspector-empty">接入 Artifact MCP 后，可在此预览 Word、PDF、表格、PPT 和天气图。</div>'
-            }
-          </div>
-        </section>
-      </aside>
-    </div>
+    </section>
   `;
 }
 
@@ -677,19 +925,113 @@ function renderConversationWelcome(expert) {
   `;
 }
 
-function renderMessage(message) {
+function renderMessage(message, task) {
   const pending = message.status === 'streaming' && !message.text;
+  const process = message.role === 'assistant' ? renderResponseProcess(message, task) : '';
+  const usage = message.role === 'assistant' ? renderResponseUsage(message, task) : '';
   return `
     <article class="message-row ${message.role}">
       <div class="message-avatar">${message.role === 'user' ? '我' : 'M'}</div>
       <div class="message-content">
         <div class="message-meta"><strong>${message.role === 'user' ? '你' : brand.name}</strong><span>${formatTime(message.createdAt)}</span></div>
+        ${process}
         <div class="message-bubble ${pending ? 'typing' : ''}">
-          ${pending ? '<i></i><i></i><i></i>' : `<pre>${escapeHtml(message.text || '')}</pre>`}
+          ${
+            pending
+              ? '<i></i><i></i><i></i>'
+              : message.role === 'assistant'
+                ? `<div class="markdown-body">${renderMarkdown(message.text || '')}</div>`
+                : `<pre>${escapeHtml(message.text || '')}</pre>`
+          }
         </div>
+        ${usage}
       </div>
     </article>
   `;
+}
+
+function renderResponseProcess(message, task) {
+  const activities = (task?.activities || []).filter(
+    (activity) => activity.responseId === message.id && activity.type !== 'info'
+  );
+  const processPlan = Array.isArray(message.processPlan) ? message.processPlan : [];
+  const running = message.status === 'streaming';
+  const durationMs = running
+    ? Math.max(0, Date.now() - (message.startedAt || message.createdAt || Date.now()))
+    : message.durationMs ??
+      (message.completedAt && message.startedAt
+        ? Math.max(0, message.completedAt - message.startedAt)
+        : null);
+  const statusText = running
+    ? '执行中'
+    : message.runStatus === 'failed'
+      ? '未完成'
+      : message.runStatus === 'cancelled'
+        ? '已停止'
+        : '已完成';
+  const activityMarkup = activities.length
+    ? activities.map(renderResponseActivity).join('')
+    : '<p class="response-process-empty">本轮未调用外部工具。</p>';
+  return `
+    <details class="response-process ${running ? 'running' : ''}" ${running ? 'open' : ''}>
+      <summary>
+        <span>${statusText}<em class="response-elapsed" data-started-at="${message.startedAt || ''}">${formatDuration(durationMs)}</em></span>
+        ${icon('down')}
+      </summary>
+      <div class="response-process-panel">
+        <div class="response-process-heading">
+          <strong>思考与执行过程</strong>
+          <small>展示可核验的推理摘要、计划和工具活动</small>
+        </div>
+        ${processPlan.length ? `<div class="response-plan">${processPlan.map(renderPlanItem).join('')}</div>` : ''}
+        <div class="response-activity-list">${activityMarkup}</div>
+      </div>
+    </details>
+  `;
+}
+
+function renderResponseActivity(activity) {
+  const rawDetail = String(activity.detail || '').trim();
+  const cleanDetail = ['undefined', '"undefined"', 'null', '"null"', '{}', '[]'].includes(rawDetail)
+    ? ''
+    : rawDetail;
+  const detail =
+    activity.type === 'thought'
+      ? '已分析任务目标、会话上下文与下一步行动。'
+      : truncate(cleanDetail, 360);
+  const activityIcon =
+    activity.type === 'tool'
+      ? icon('tool')
+      : activity.type === 'permission'
+        ? icon('shield')
+        : activity.type === 'error'
+          ? '!'
+          : '·';
+  return `
+    <article class="response-activity ${activity.type || ''} ${activity.status || ''}">
+      <span class="response-activity-icon">${activityIcon}</span>
+      <div>
+        <strong>${escapeHtml(activity.type === 'thought' ? '分析任务与上下文' : activity.title || '运行活动')}</strong>
+        ${detail ? `<p>${escapeHtml(detail)}</p>` : ''}
+      </div>
+      <small>${escapeHtml(activity.status === 'failed' || activity.status === 'cancelled' ? '失败' : activity.status === 'waiting' || activity.status === 'pending' ? '等待' : activity.status === 'running' || activity.status === 'in_progress' ? '进行中' : '完成')}</small>
+    </article>
+  `;
+}
+
+function renderResponseUsage(message, task) {
+  const usage = message.usage || null;
+  const modelId = message.modelId || task?.modelId || '';
+  const parts = [];
+  if (Number.isFinite(usage?.accumulatedOutputTokens)) {
+    parts.push(`会话输出 ${formatTokenCount(usage.accumulatedOutputTokens)} tokens`);
+  }
+  if (Number.isFinite(usage?.accumulatedCost)) {
+    parts.push(`累计 $${usage.accumulatedCost.toFixed(4)}`);
+  }
+  if (modelId) parts.push(modelId);
+  if (!parts.length) return '';
+  return `<div class="response-usage">${parts.map((part) => `<span>${escapeHtml(part)}</span>`).join('')}</div>`;
 }
 
 function renderPlanItem(item) {
@@ -814,43 +1156,80 @@ function renderAutomationView() {
 }
 
 function renderAssistantsView() {
-  const favorites = catalog.experts.filter((expert) => state.favoriteExpertIds.includes(expert.id));
-  const experts = favorites.length ? favorites : catalog.experts.slice(0, 4);
-  return `
-    <header class="simple-topbar"><div><h1>我的助理</h1><p>固定常用专家、项目和权限偏好，快速发起日常任务</p></div><button class="primary-button small-button" data-nav="catalog">浏览专家</button></header>
-    <div class="content-scroll page-content">
-      <div class="assistant-grid">
-        ${experts
-          .map(
-            (expert) =>
-              `<article class="assistant-card"><span class="avatar">${expert.avatar}</span><h3>${expert.name}</h3><p>${expert.description}</p><button class="card-launch" data-expert-id="${expert.id}">发起任务 →</button></article>`
-          )
-          .join('')}
-      </div>
-    </div>
-  `;
+  return renderTaskView({ assistantMode: true });
 }
 
 function renderMoreView() {
+  const provider =
+    modelSettings.providers.find((entry) => entry.id === modelSettings.providerId) || null;
+  const models = provider?.models || [];
+  const loading = modelSettings.status === 'loading' || modelSettings.status === 'saving';
+  const hasProviders = modelSettings.providers.length > 0;
+  const providerOptions = modelSettings.providers
+    .map(
+      (entry) =>
+        `<option value="${escapeHtml(entry.id)}" ${entry.id === modelSettings.providerId ? 'selected' : ''}>${escapeHtml(entry.name)}</option>`
+    )
+    .join('');
+  const modelOptions = models.length
+    ? models
+        .map(
+          (entry) =>
+            `<option value="${escapeHtml(entry.id)}" ${entry.id === modelSettings.modelId ? 'selected' : ''}>${escapeHtml(entry.name)}${entry.recommended ? ' · 推荐' : ''}</option>`
+        )
+        .join('')
+    : '<option value="">由 Provider 管理</option>';
+  const currentProvider = provider?.name || '未读取';
+  const currentModel = modelSettings.modelId || provider?.modelSelectionHint || '由 Provider 自动选择';
   return `
-    <header class="simple-topbar"><div><h1>${brand.name} 产品路线</h1><p>${brand.englishDescription}</p></div></header>
-    <div class="content-scroll page-content">
-      <section class="brand-hero">
-        <div><span>${brand.chineseName}</span><h2>${brand.tagline}</h2><p>${brand.englishTagline}</p></div>
-        <strong>${brand.name}</strong>
-      </section>
-      <div class="roadmap-grid">
-        ${[
-          ['Beta 0.2', 'Goose ACP 多轮会话、恢复、工具事件、用户审批、项目与任务持久化'],
-          ['气象闭环', '气象数据 MCP、天气诊断 MCP、GIS 制图和 Word/PDF Artifact Service'],
-          ['团队版', 'Go Control Plane、多用户空间、专家/技能/连接器共享、版本与审计'],
-          ['高级模式', 'Codex Worker、文件 Diff、Git Worktree、安全命令执行和并行任务'],
-        ]
-          .map(
-            ([title, text], index) =>
-              `<article class="roadmap-card"><span>0${index + 1}</span><h3>${title}</h3><p>${text}</p></article>`
-          )
-          .join('')}
+    <header class="simple-topbar">
+      <div><h1>设置</h1><p>管理默认模型与产品信息</p></div>
+    </header>
+    <div class="content-scroll settings-page">
+      <div class="settings-layout">
+        <main class="settings-main">
+          <section class="settings-panel">
+            <div class="settings-panel-heading">
+              <span class="settings-icon">${icon('model')}</span>
+              <div><h2>默认模型</h2><p>用于之后新建的任务，已有会话继续使用原配置。</p></div>
+            </div>
+            ${modelSettings.status === 'loading' && !hasProviders ? '<div class="settings-loading">正在从 Goose 读取 Provider 与模型列表…</div>' : ''}
+            ${modelSettings.error ? `<div class="settings-feedback error" role="alert">${escapeHtml(modelSettings.error)}</div>` : ''}
+            ${modelSettings.message ? `<div class="settings-feedback success" role="status">${escapeHtml(modelSettings.message)}</div>` : ''}
+            <div class="settings-form ${hasProviders ? '' : 'disabled'}">
+              <label class="settings-field">
+                <span>Provider</span>
+                <select id="model-provider" ${loading || !hasProviders ? 'disabled' : ''}>
+                  ${hasProviders ? providerOptions : '<option value="">暂无可用 Provider</option>'}
+                </select>
+                <small>${escapeHtml(provider?.description || '仅显示已在 Goose 中完成配置的 Provider。')}</small>
+              </label>
+              <label class="settings-field">
+                <span>模型</span>
+                <select id="model-id" ${loading || !hasProviders || !models.length ? 'disabled' : ''}>${modelOptions}</select>
+                <small>${escapeHtml(provider?.modelSelectionHint || (models.length ? `共 ${models.length} 个可用模型` : '此 Provider 在自身服务中管理模型。'))}</small>
+              </label>
+            </div>
+            <div class="settings-actions">
+              <button class="primary-button" id="save-model-settings" ${loading || !hasProviders ? 'disabled' : ''}>${modelSettings.status === 'saving' ? '正在保存…' : '保存设置'}</button>
+              <button class="secondary-action" id="reload-model-settings" ${loading ? 'disabled' : ''}>${icon('refresh')} 重新读取</button>
+            </div>
+          </section>
+        </main>
+        <aside class="settings-aside">
+          <section class="settings-summary">
+            <div class="settings-summary-heading"><h3>当前配置</h3></div>
+            <p>之后新建的任务将默认使用以下配置。</p>
+            <dl>
+              <div><dt>Provider</dt><dd>${escapeHtml(currentProvider)}</dd></div>
+              <div><dt>模型</dt><dd title="${escapeHtml(currentModel)}">${escapeHtml(currentModel)}</dd></div>
+            </dl>
+          </section>
+          <section class="settings-summary about-summary">
+            <span class="about-mark">MM</span>
+            <div><h3>${brand.chineseName} ${brand.name}</h3><p>${brand.tagline}</p><small>Beta 0.2 · Goose powered</small></div>
+          </section>
+        </aside>
       </div>
     </div>
   `;

@@ -7,6 +7,10 @@ const path = require('node:path');
 const { createServer } = require('node:net');
 const { ReadableStream, WritableStream } = require('node:stream/web');
 
+const APP_ICON = path.join(__dirname, 'assets', 'icons', 'meteomate.png');
+
+app.setName('MeteoMate');
+
 const activeHeadlessRuns = new Map();
 const pendingPermissions = new Map();
 let mainWindow = null;
@@ -51,7 +55,13 @@ async function resolveGooseBinary() {
   for (const candidate of candidates) {
     if (!candidate) continue;
     try {
-      const resolved = path.resolve(candidate);
+      const packedMarker = `${path.sep}app.asar${path.sep}`;
+      const unpackedCandidate = candidate.includes(packedMarker)
+        ? candidate.replace(packedMarker, `${path.sep}app.asar.unpacked${path.sep}`)
+        : candidate;
+      const resolved = path.resolve(
+        fs.existsSync(unpackedCandidate) ? unpackedCandidate : candidate
+      );
       if (fs.existsSync(resolved) && fs.statSync(resolved).isFile()) return resolved;
     } catch {
       // Keep checking other candidates.
@@ -179,8 +189,8 @@ function safeJson(value) {
   }
 }
 
-function permissionKey(request) {
-  return `${request.sessionId}\u0000${request.toolCall?.toolCallId || crypto.randomUUID()}`;
+function permissionKey() {
+  return crypto.randomUUID();
 }
 
 function selectedPermissionResponse(request, action) {
@@ -258,7 +268,7 @@ class GooseAcpRuntime {
 
     const port = await findAvailablePort();
     const secret = crypto.randomBytes(32).toString('hex');
-    const args = ['serve', '--platform', 'desktop', '--host', '127.0.0.1', '--port', String(port)];
+    const args = ['serve', '--host', '127.0.0.1', '--port', String(port)];
     const child = spawn(this.binary, args, {
       cwd: os.homedir(),
       windowsHide: true,
@@ -382,12 +392,21 @@ class GooseAcpRuntime {
 
   async send(request) {
     const sessionId = await this.ensureSession(request);
+    if (request.modelId) {
+      await this.client.unstable_setSessionModel({
+        sessionId,
+        modelId: request.modelId,
+      });
+    }
     const firstTurn = !request.sessionId;
     const prompt = firstTurn
       ? [
           `你是“${request.expertName}”，是 MeteoMate 气象办公工作空间中的专业智能体。`,
           request.expertInstruction,
           '使用清晰、可审计的中文表达。区分实况事实、算法结果、推断、不确定性与建议；不得虚构气象数据。',
+          request.permissionProfileName
+            ? `当前权限策略：${request.permissionProfileName}。${request.permissionProfileDescription || ''}`
+            : '',
           request.allowFileTools
             ? `文件操作仅限用户选择的工作区：${request.workspace || '未选择'}。任何写入、删除、命令执行或工作区外访问都必须请求用户审批。`
             : '当前为只读分析模式，不修改本地文件，不执行系统命令。',
@@ -546,6 +565,89 @@ class GooseAcpRuntime {
     });
   }
 
+  async getModelSettings() {
+    await this.initialize();
+    if (!this.client || !this.status.acpAvailable) {
+      throw new Error(this.status.error || 'Goose ACP 尚未连接，无法读取模型配置');
+    }
+
+    const [inventory, defaults] = await Promise.all([
+      this.client.goose.providersList_unstable({}),
+      this.client.goose.defaultsRead_unstable({}),
+    ]);
+    const activeProviderId = defaults.providerId || '';
+    const activeModelId = defaults.modelId || '';
+    const providers = inventory.entries
+      .filter((entry) => entry.configured || entry.providerId === activeProviderId)
+      .map((entry) => {
+        const models = entry.models.map((model) => ({
+          id: model.id,
+          name: model.name || model.id,
+          family: model.family || '',
+          recommended: Boolean(model.recommended),
+        }));
+        const knownModelIds = new Set(models.map((model) => model.id));
+        if (entry.defaultModel && !knownModelIds.has(entry.defaultModel)) {
+          models.push({
+            id: entry.defaultModel,
+            name: entry.defaultModel,
+            family: '',
+            recommended: true,
+          });
+          knownModelIds.add(entry.defaultModel);
+        }
+        if (
+          entry.providerId === activeProviderId &&
+          activeModelId &&
+          !knownModelIds.has(activeModelId)
+        ) {
+          models.unshift({
+            id: activeModelId,
+            name: activeModelId,
+            family: '',
+            recommended: false,
+          });
+        }
+        return {
+          id: entry.providerId,
+          name: entry.providerName || entry.providerId,
+          description: entry.description || '',
+          category: entry.category,
+          configured: entry.configured,
+          defaultModel: entry.defaultModel || '',
+          modelSelectionHint: entry.modelSelectionHint || '',
+          models,
+        };
+      })
+      .sort((left, right) => {
+        if (left.id === activeProviderId) return -1;
+        if (right.id === activeProviderId) return 1;
+        return left.name.localeCompare(right.name);
+      });
+
+    return {
+      providerId: activeProviderId,
+      modelId: activeModelId,
+      providers,
+    };
+  }
+
+  async saveModelSettings({ providerId, modelId }) {
+    if (!providerId || typeof providerId !== 'string') {
+      throw new Error('请选择可用的 Provider');
+    }
+    const current = await this.getModelSettings();
+    const provider = current.providers.find((entry) => entry.id === providerId);
+    if (!provider?.configured) {
+      throw new Error('所选 Provider 尚未在 Goose 中完成配置');
+    }
+    await this.client.goose.defaultsSave_unstable({
+      providerId,
+      modelId: typeof modelId === 'string' && modelId ? modelId : null,
+    });
+    return this.getModelSettings();
+  }
+
   async shutdown() {
     for (const pending of pendingPermissions.values()) {
       pending.resolve({ outcome: { outcome: 'cancelled' } });
@@ -588,11 +690,11 @@ function runMockTask(request) {
   let cancelled = false;
   const timers = [];
   const chunks = [
-    '当前处于 MeteoMate 演示模式，尚未调用真实 Goose 模型。\n\n',
-    `已选择专家：${request.expertName}\n`,
-    request.workspace ? `项目工作区：${request.workspace}\n\n` : '项目工作区：未选择\n\n',
-    '建议执行计划：\n1. 核验资料时次与数据来源\n2. 调用气象数据和诊断连接器\n3. 生成结构化结论与证据链\n4. 通过 Artifact Service 生成 Word/PDF 成果物\n\n',
-    '请先完成 Goose Provider 配置，或接入 weather-data-mcp、weather-diagnosis-mcp 与 artifact-mcp。\n',
+    '## MeteoMate 演示模式\n\n当前尚未调用真实 Goose 模型。\n\n',
+    `**已选择专家：** ${request.expertName}\n\n`,
+    request.workspace ? `**项目工作区：** \`${request.workspace}\`\n\n` : '**项目工作区：** 未选择\n\n',
+    '### 建议执行计划\n\n1. 核验资料时次与数据来源\n2. 调用气象数据和诊断连接器\n3. 生成结构化结论与证据链\n4. 通过 Artifact Service 生成 Word/PDF 成果物\n\n',
+    '> 请先完成 Goose Provider 配置，或接入 `weather-data-mcp`、`weather-diagnosis-mcp` 与 `artifact-mcp`。\n',
   ];
 
   sendRuntimeEvent({ type: 'turn_started', taskId, runtime: 'mock', sessionId: null });
@@ -634,7 +736,10 @@ async function runHeadlessTask(request) {
     });
   }
 
-  const args = ['run', '--no-session', '--max-turns', '24', '-t', buildHeadlessPrompt(request)];
+  const args = ['run', '--no-session', '--max-turns', '24'];
+  if (request.providerId) args.push('--provider', request.providerId);
+  if (request.modelId) args.push('--model', request.modelId);
+  args.push('-t', buildHeadlessPrompt(request));
   const child = spawn(binary, args, {
     cwd: request.workspace || os.homedir(),
     windowsHide: true,
@@ -723,6 +828,7 @@ function createWindow() {
     minWidth: 1220,
     minHeight: 760,
     title: '气象智伴 MeteoMate',
+    icon: APP_ICON,
     backgroundColor: '#f5f6f8',
     show: false,
     webPreferences: {
@@ -750,6 +856,19 @@ ipcMain.handle('runtime:status', async () => {
   return acpRuntime.snapshot();
 });
 
+ipcMain.handle('runtime:model-settings', async () => acpRuntime.getModelSettings());
+
+ipcMain.handle('runtime:model-settings-save', async (_event, request) => {
+  if (!request || typeof request !== 'object') throw new Error('Invalid model settings request');
+  return acpRuntime.saveModelSettings(request);
+});
+
+ipcMain.handle('workspace:assistant-default', async () => {
+  const workspace = path.join(app.getPath('documents'), 'MeteoMate', 'Claw');
+  await fs.promises.mkdir(workspace, { recursive: true });
+  return workspace;
+});
+
 ipcMain.handle('workspace:choose', async () => {
   const result = await dialog.showOpenDialog({
     title: '选择 MeteoMate 项目工作区',
@@ -762,6 +881,19 @@ ipcMain.handle('workspace:open', async (_event, targetPath) => {
   if (!targetPath || typeof targetPath !== 'string') return false;
   const error = await shell.openPath(targetPath);
   return error === '';
+});
+
+ipcMain.handle('external:open', async (_event, targetUrl) => {
+  if (!targetUrl || typeof targetUrl !== 'string') return false;
+  let parsed;
+  try {
+    parsed = new URL(targetUrl);
+  } catch {
+    return false;
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol)) return false;
+  await shell.openExternal(parsed.toString());
+  return true;
 });
 
 ipcMain.handle('runtime:send', async (_event, request) => {
@@ -795,6 +927,7 @@ ipcMain.handle('runtime:permission', async (_event, request) => {
 });
 
 app.whenReady().then(() => {
+  if (process.platform === 'darwin') app.dock.setIcon(APP_ICON);
   createWindow();
   void acpRuntime.initialize();
 });

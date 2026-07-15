@@ -79,9 +79,9 @@ window.METEOMATE_CONNECTORS = Object.freeze([
     name: 'Goose Runtime',
     category: 'Agent 运行时',
     icon: 'G',
-    description: '通过 ACP 提供多轮会话、流式事件、工具调用和审批；不可用时降级为 Headless。',
+    description: '提供多轮会话、流式响应、工具调用和操作确认，服务不可用时自动切换安全模式。',
     status: 'runtime',
-    tags: ['ACP', 'Goose', '本地运行'],
+    tags: ['Goose', '多轮会话', '本地运行'],
   },
   {
     id: 'local-workspace',
