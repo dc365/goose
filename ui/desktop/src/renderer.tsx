@@ -10,7 +10,14 @@ import { currentLocale, currentMessageLocale, loadMessages } from './i18n';
 // Apply theme tokens to :root before first paint.
 applyThemeTokens();
 
-const App = lazy(() => import('./App'));
+// The product branch defaults to the isolated MeteoDesk UI. Set
+// VITE_PRODUCT_VARIANT=goose to run the untouched upstream Goose App.
+const useUpstreamGooseUi = import.meta.env.VITE_PRODUCT_VARIANT === 'goose';
+document.title = useUpstreamGooseUi ? 'Goose' : 'MeteoDesk';
+
+const App = lazy(() =>
+  useUpstreamGooseUi ? import('./App') : import('./products/meteodesk/MeteoDeskApp')
+);
 
 let warnedFallbackLocale = false;
 function handleIntlError(err: { code: string; message?: string }) {
