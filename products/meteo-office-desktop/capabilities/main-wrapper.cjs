@@ -5,6 +5,7 @@ const path = require('node:path');
 const Module = require('node:module');
 const electron = require('electron');
 const { createCapabilityService } = require('./service.cjs');
+const { createSkillCreatorService } = require('./skill-creator-service.cjs');
 
 const productRoot = path.resolve(__dirname, '..');
 const service = createCapabilityService({
@@ -15,9 +16,18 @@ const service = createCapabilityService({
   shell: electron.shell,
   productRoot,
 });
+const skillCreatorService = createSkillCreatorService({
+  app: electron.app,
+  dialog: electron.dialog,
+  ipcMain: electron.ipcMain,
+  shell: electron.shell,
+  capabilityService: service,
+});
 
 global.__METEOMATE_CAPABILITY_SERVICE__ = service;
+global.__METEOMATE_SKILL_CREATOR_SERVICE__ = skillCreatorService;
 service.registerIpc();
+skillCreatorService.registerIpc();
 
 const mainPath = path.join(productRoot, 'main.cjs');
 let source = fs.readFileSync(mainPath, 'utf8');
