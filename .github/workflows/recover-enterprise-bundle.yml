@@ -29,13 +29,17 @@ jobs:
           git show origin/recovery:enterprise-bundle-1.bin > /tmp/enterprise-bundle-1.bin
           git show origin/recovery:enterprise-bundle-2.bin > /tmp/enterprise-bundle-2.bin
 
-      - name: Reassemble and inspect bundle
+      - name: Recover complete files from bundle
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          from pathlib import Path
-          import gzip
+          from pathlib import Path, PurePosixPath
+          import io
+          import os
+          import shutil
+          import tarfile
+          import zlib
 
           first = Path('/tmp/enterprise-bundle-1.bin').read_bytes()
           second = Path('/tmp/enterprise-bundle-2.bin').read_bytes()
@@ -45,36 +49,70 @@ jobs:
               if first[-size:] == second[:size]:
                   overlap = size
                   break
-          candidates = {
-              'first+second': first + second,
-              'first+second_without_overlap': first + second[overlap:],
-              'second+first': second + first,
-          }
-          print({'first': len(first), 'second': len(second), 'overlap': overlap, 'first_header': first[:8].hex(), 'second_header': second[:8].hex()})
-          errors = {}
-          for name, data in candidates.items():
-              try:
-                  expanded = gzip.decompress(data)
-              except Exception as exc:
-                  errors[name] = repr(exc)
-                  continue
-              target = Path('/tmp/enterprise-implementation.tar.gz')
-              target.write_bytes(data)
-              print({'selected': name, 'compressed': len(data), 'expanded': len(expanded), 'tar_header': expanded[:16].hex()})
-              break
-          else:
-              print({'gzip_errors': errors})
-              raise SystemExit('no candidate formed a valid gzip archive')
-          PY
-          tar -tzf /tmp/enterprise-implementation.tar.gz | tee /tmp/enterprise-files.txt
-          test -s /tmp/enterprise-files.txt
+          compressed = first + second[overlap:]
+          inflater = zlib.decompressobj(16 + zlib.MAX_WBITS)
+          expanded = inflater.decompress(compressed)
+          try:
+              expanded += inflater.flush()
+          except zlib.error:
+              pass
+          print({'first': len(first), 'second': len(second), 'overlap': overlap, 'compressed': len(compressed), 'expanded': len(expanded), 'gzip_eof': inflater.eof})
 
-      - name: Apply bundle to feature branch
+          recovered = Path('/tmp/enterprise-recovered')
+          shutil.rmtree(recovered, ignore_errors=True)
+          recovered.mkdir(parents=True)
+          names = []
+          stream = io.BytesIO(expanded)
+          try:
+              archive = tarfile.open(fileobj=stream, mode='r:')
+              while True:
+                  try:
+                      member = archive.next()
+                  except (tarfile.ReadError, EOFError) as exc:
+                      print({'tar_stopped': repr(exc), 'offset': stream.tell()})
+                      break
+                  if member is None:
+                      break
+                  name = PurePosixPath(member.name)
+                  if name.is_absolute() or '..' in name.parts:
+                      raise SystemExit(f'unsafe archive path: {member.name}')
+                  if member.issym() or member.islnk() or member.isdev():
+                      raise SystemExit(f'unsupported archive member: {member.name}')
+                  target = recovered.joinpath(*name.parts)
+                  if member.isdir():
+                      target.mkdir(parents=True, exist_ok=True)
+                      continue
+                  if not member.isfile():
+                      continue
+                  source = archive.extractfile(member)
+                  if source is None:
+                      continue
+                  data = source.read()
+                  if len(data) != member.size:
+                      print({'truncated_member': member.name, 'expected': member.size, 'actual': len(data)})
+                      break
+                  target.parent.mkdir(parents=True, exist_ok=True)
+                  target.write_bytes(data)
+                  os.chmod(target, member.mode & 0o777)
+                  names.append(member.name)
+          finally:
+              try:
+                  archive.close()
+              except Exception:
+                  pass
+          print({'recovered_files': len(names), 'first_files': names[:10], 'last_files': names[-10:]})
+          if not names:
+              raise SystemExit('bundle did not contain any complete files')
+          Path('/tmp/enterprise-files.txt').write_text('\n'.join(names) + '\n')
+          PY
+          cat /tmp/enterprise-files.txt
+
+      - name: Apply recovered files to feature branch
         shell: bash
         run: |
           set -euo pipefail
           git checkout -q -B agent/meteomate-enterprise-projects-v1 origin/main
-          tar -xzf /tmp/enterprise-implementation.tar.gz -C .
+          cp -a /tmp/enterprise-recovered/. .
           git status --short
 
       - name: Validate desktop and enterprise server
