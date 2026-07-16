@@ -1,76 +1,38 @@
-name: Recover enterprise implementation bundle
+name: Export enterprise workspace
 
 on:
   pull_request:
     branches: [main]
     paths:
-      - 'enterprise-bundle-*.bin'
       - '.github/workflows/recover-enterprise-bundle.yml'
-      - '.github/scripts/recover-enterprise.py'
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  recover:
+  export:
     runs-on: ubuntu-latest
     steps:
-      - name: Fetch recovery inputs
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          git init -q .
-          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-          git fetch -q --depth=1 origin \
-            refs/heads/agent/recover-enterprise-runner:refs/remotes/origin/recovery \
-            refs/heads/main:refs/remotes/origin/main
-          git show origin/recovery:enterprise-bundle-1.bin > /tmp/enterprise-bundle-1.bin
-          git show origin/recovery:enterprise-bundle-2.bin > /tmp/enterprise-bundle-2.bin
-          git show origin/recovery:.github/scripts/recover-enterprise.py > /tmp/recover-enterprise.py
+      - name: Checkout enterprise feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/meteomate-enterprise-projects-v1
+          fetch-depth: 1
+          show-progress: false
 
-      - name: Recover complete files from bundle
+      - name: Archive MeteoMate product workspace
         shell: bash
         run: |
           set -euo pipefail
-          python3 /tmp/recover-enterprise.py
-          cat /tmp/enterprise-files.txt
+          tar -czf /tmp/meteomate-enterprise-workspace.tar.gz \
+            products/meteo-office-desktop \
+            .github/workflows/meteomate-desktop.yml
 
-      - name: Apply recovered files to feature branch
-        shell: bash
-        run: |
-          set -euo pipefail
-          git checkout -q -B agent/meteomate-enterprise-projects-v1 origin/main
-          cp -a /tmp/enterprise-recovered/. .
-          git status --short
-
-      - name: Validate desktop and enterprise server
-        shell: bash
-        run: |
-          set -euo pipefail
-          PRODUCT=products/meteo-office-desktop
-          SERVICE="$PRODUCT/services/skillhub"
-          cd "$PRODUCT"
-          npm ci --ignore-scripts
-          npm run check
-          cd - >/dev/null
-          cd "$SERVICE"
-          go test ./...
-          go vet ./...
-          cd - >/dev/null
-
-      - name: Commit and push recovered feature
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name 'MeteoMate Automation'
-          git config user.email 'actions@users.noreply.github.com'
-          git add -A
-          if git diff --cached --quiet; then
-            echo 'No enterprise changes recovered' >&2
-            exit 1
-          fi
-          git commit -m 'feat(meteomate): add enterprise connectors and projects'
-          git push --force origin HEAD:agent/meteomate-enterprise-projects-v1
+      - name: Upload workspace artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: meteomate-enterprise-workspace
+          path: /tmp/meteomate-enterprise-workspace.tar.gz
+          if-no-files-found: error
+          retention-days: 1
