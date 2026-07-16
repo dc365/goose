@@ -15,11 +15,19 @@ jobs:
   recover:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout recovery pull request
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          show-progress: false
+      - name: Fetch recovery inputs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git init -q .
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch -q --depth=1 origin \
+            refs/heads/agent/recover-enterprise-runner:refs/remotes/origin/recovery \
+            refs/heads/main:refs/remotes/origin/main
+          git show origin/recovery:enterprise-bundle-1.bin > /tmp/enterprise-bundle-1.bin
+          git show origin/recovery:enterprise-bundle-2.bin > /tmp/enterprise-bundle-2.bin
 
       - name: Reassemble and inspect bundle
         shell: bash
@@ -29,24 +37,34 @@ jobs:
           from pathlib import Path
           import gzip
 
-          first = Path('enterprise-bundle-1.bin').read_bytes()
-          second = Path('enterprise-bundle-2.bin').read_bytes()
+          first = Path('/tmp/enterprise-bundle-1.bin').read_bytes()
+          second = Path('/tmp/enterprise-bundle-2.bin').read_bytes()
           limit = min(len(first), len(second))
           overlap = 0
           for size in range(limit, 0, -1):
               if first[-size:] == second[:size]:
                   overlap = size
                   break
-          data = first + second[overlap:]
-          target = Path('/tmp/enterprise-implementation.tar.gz')
-          target.write_bytes(data)
-          print({'first': len(first), 'second': len(second), 'overlap': overlap, 'combined': len(data), 'header': data[:8].hex()})
-          try:
-              expanded = gzip.decompress(data)
-          except Exception as exc:
-              print(f'gzip validation failed: {exc!r}')
-              raise
-          print({'expanded': len(expanded), 'tar_header': expanded[:16].hex()})
+          candidates = {
+              'first+second': first + second,
+              'first+second_without_overlap': first + second[overlap:],
+              'second+first': second + first,
+          }
+          print({'first': len(first), 'second': len(second), 'overlap': overlap, 'first_header': first[:8].hex(), 'second_header': second[:8].hex()})
+          errors = {}
+          for name, data in candidates.items():
+              try:
+                  expanded = gzip.decompress(data)
+              except Exception as exc:
+                  errors[name] = repr(exc)
+                  continue
+              target = Path('/tmp/enterprise-implementation.tar.gz')
+              target.write_bytes(data)
+              print({'selected': name, 'compressed': len(data), 'expanded': len(expanded), 'tar_header': expanded[:16].hex()})
+              break
+          else:
+              print({'gzip_errors': errors})
+              raise SystemExit('no candidate formed a valid gzip archive')
           PY
           tar -tzf /tmp/enterprise-implementation.tar.gz | tee /tmp/enterprise-files.txt
           test -s /tmp/enterprise-files.txt
@@ -55,11 +73,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git fetch origin main
-          cp /tmp/enterprise-implementation.tar.gz /tmp/enterprise-implementation.saved.tar.gz
-          git checkout -B agent/meteomate-enterprise-projects-v1 origin/main
-          tar -xzf /tmp/enterprise-implementation.saved.tar.gz -C .
-          rm -f enterprise-bundle-1.bin enterprise-bundle-2.bin
+          git checkout -q -B agent/meteomate-enterprise-projects-v1 origin/main
+          tar -xzf /tmp/enterprise-implementation.tar.gz -C .
           git status --short
 
       - name: Validate desktop and enterprise server
