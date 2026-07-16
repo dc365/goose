@@ -1,4 +1,4 @@
-name: Export enterprise workspace
+name: Recover enterprise implementation bundle
 
 on:
   pull_request:
@@ -8,31 +8,72 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  actions: read
+  contents: write
 
 jobs:
-  export:
+  recover:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout enterprise feature branch
+      - name: Checkout main
         uses: actions/checkout@v4
         with:
-          ref: agent/meteomate-enterprise-projects-v1
-          fetch-depth: 1
+          ref: main
+          fetch-depth: 0
           show-progress: false
 
-      - name: Archive MeteoMate product workspace
+      - name: Download validated enterprise workspace artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: '8370177937'
+        run: |
+          set -euo pipefail
+          curl --fail --location --silent --show-error \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" \
+            --output /tmp/meteomate-enterprise-workspace.zip
+          mkdir -p /tmp/enterprise-artifact
+          unzip -q /tmp/meteomate-enterprise-workspace.zip -d /tmp/enterprise-artifact
+          test -s /tmp/enterprise-artifact/meteomate-enterprise-workspace.tar.gz
+          tar -tzf /tmp/enterprise-artifact/meteomate-enterprise-workspace.tar.gz | tee /tmp/enterprise-files.txt
+          test -s /tmp/enterprise-files.txt
+
+      - name: Apply workspace to feature branch
         shell: bash
         run: |
           set -euo pipefail
-          tar -czf /tmp/meteomate-enterprise-workspace.tar.gz \
-            products/meteo-office-desktop \
-            .github/workflows/meteomate-desktop.yml
+          git checkout -B agent/meteomate-enterprise-projects-v1 origin/main
+          tar -xzf /tmp/enterprise-artifact/meteomate-enterprise-workspace.tar.gz -C .
+          git status --short
 
-      - name: Upload workspace artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: meteomate-enterprise-workspace
-          path: /tmp/meteomate-enterprise-workspace.tar.gz
-          if-no-files-found: error
-          retention-days: 1
+      - name: Validate desktop and enterprise server
+        shell: bash
+        run: |
+          set -euo pipefail
+          PRODUCT=products/meteo-office-desktop
+          SERVICE="$PRODUCT/services/skillhub"
+          cd "$PRODUCT"
+          npm ci --ignore-scripts
+          npm run check
+          cd - >/dev/null
+          cd "$SERVICE"
+          go test ./...
+          go vet ./...
+          cd - >/dev/null
+
+      - name: Commit and push enterprise feature
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'MeteoMate Automation'
+          git config user.email 'actions@users.noreply.github.com'
+          git add -A
+          if git diff --cached --quiet; then
+            echo 'No enterprise changes found' >&2
+            exit 1
+          fi
+          git commit -m 'feat(meteomate): add enterprise connectors and projects'
+          git push --force origin HEAD:agent/meteomate-enterprise-projects-v1
