@@ -6,6 +6,7 @@ const Module = require('node:module');
 const electron = require('electron');
 const { createCapabilityService } = require('./service.cjs');
 const { createSkillCreatorService } = require('./skill-creator-service.cjs');
+const { createSkillHubClient } = require('./skillhub-client.cjs');
 
 const productRoot = path.resolve(__dirname, '..');
 const service = createCapabilityService({
@@ -23,11 +24,20 @@ const skillCreatorService = createSkillCreatorService({
   shell: electron.shell,
   capabilityService: service,
 });
+const skillHubClient = createSkillHubClient({
+  app: electron.app,
+  ipcMain: electron.ipcMain,
+  safeStorage: electron.safeStorage,
+  capabilityService: service,
+  skillCreatorService,
+});
 
 global.__METEOMATE_CAPABILITY_SERVICE__ = service;
 global.__METEOMATE_SKILL_CREATOR_SERVICE__ = skillCreatorService;
+global.__METEOMATE_SKILLHUB_CLIENT__ = skillHubClient;
 service.registerIpc();
 skillCreatorService.registerIpc();
+skillHubClient.registerIpc();
 
 const mainPath = path.join(productRoot, 'main.cjs');
 let source = fs.readFileSync(mainPath, 'utf8');

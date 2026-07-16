@@ -54,5 +54,22 @@ jobs:
       - name: Run Skill Creator tests
         run: npm run test:skill-creator
 
+      - name: Run SkillHub client tests
+        run: npm run test:skillhub-client
+
       - name: Validate product schemas
         run: npm run check:schemas
+
+      - name: Use Go from SkillHub module
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: products/meteo-office-desktop/services/skillhub/go.mod
+          cache: false
+
+      - name: Test SkillHub Server
+        working-directory: products/meteo-office-desktop/services/skillhub
+        run: go test ./...
+
+      - name: Vet SkillHub Server
+        working-directory: products/meteo-office-desktop/services/skillhub
+        run: go vet ./...

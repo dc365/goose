@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meteomate.local/schemas/skillhub-installation.schema.json",
+  "title": "MeteoMate SkillHub Installation",
+  "type": "object",
+  "required": ["id", "clientId", "userId", "skillId", "version", "scope"],
+  "properties": {
+    "id": {"type": "string"},
+    "clientId": {"type": "string"},
+    "userId": {"type": "string"},
+    "orgId": {"type": "string"},
+    "skillId": {"type": "string"},
+    "version": {"type": "string"},
+    "scope": {"enum": ["user", "project", "organization"]},
+    "projectId": {"type": "string"}
+  }
+}
