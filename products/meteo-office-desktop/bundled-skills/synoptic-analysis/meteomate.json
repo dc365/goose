@@ -1,0 +1,7 @@
+{
+  "displayName": "天气形势综合分析",
+  "version": "1.0.0",
+  "categories": ["天气分析"],
+  "requires": {"connectors": ["weather-data", "weather-diagnosis"]},
+  "permissions": {"filesystem": {"read": ["project"], "write": []}, "shell": false, "network": []}
+}

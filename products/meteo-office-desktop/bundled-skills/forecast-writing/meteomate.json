@@ -1,0 +1,7 @@
+{
+  "displayName": "气象预报稿件生成",
+  "version": "1.0.0",
+  "categories": ["内容创作"],
+  "requires": {"connectors": ["artifact-docx"]},
+  "permissions": {"filesystem": {"read": ["project"], "write": ["artifacts"]}, "shell": false, "network": []}
+}
