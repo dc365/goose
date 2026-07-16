@@ -7,6 +7,7 @@ const electron = require('electron');
 const { createCapabilityService } = require('./service.cjs');
 const { createSkillCreatorService } = require('./skill-creator-service.cjs');
 const { createSkillHubClient } = require('./skillhub-client.cjs');
+const { createEnterpriseClient } = require('./enterprise-client.cjs');
 
 const productRoot = path.resolve(__dirname, '..');
 const service = createCapabilityService({
@@ -31,13 +32,21 @@ const skillHubClient = createSkillHubClient({
   capabilityService: service,
   skillCreatorService,
 });
+const enterpriseClient = createEnterpriseClient({
+  app: electron.app,
+  ipcMain: electron.ipcMain,
+  safeStorage: electron.safeStorage,
+  skillHubClient,
+});
 
 global.__METEOMATE_CAPABILITY_SERVICE__ = service;
 global.__METEOMATE_SKILL_CREATOR_SERVICE__ = skillCreatorService;
 global.__METEOMATE_SKILLHUB_CLIENT__ = skillHubClient;
+global.__METEOMATE_ENTERPRISE_CLIENT__ = enterpriseClient;
 service.registerIpc();
 skillCreatorService.registerIpc();
 skillHubClient.registerIpc();
+enterpriseClient.registerIpc();
 
 const mainPath = path.join(productRoot, 'main.cjs');
 let source = fs.readFileSync(mainPath, 'utf8');
@@ -66,6 +75,7 @@ const replacementBlock = `    const enabledExtensions = [
           ]
         : []),
       ...global.__METEOMATE_CAPABILITY_SERVICE__.extensionsForRequest(request),
+      ...(await global.__METEOMATE_ENTERPRISE_CLIENT__.extensionsForRequest(request)),
     ];`;
 if (!source.includes(originalBlock)) {
   throw new Error('MeteoMate capability wrapper could not locate the extension assembly point in main.cjs');
