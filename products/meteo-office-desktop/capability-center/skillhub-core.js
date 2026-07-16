@@ -19,7 +19,7 @@
   const list = (value) => (Array.isArray(value) ? value : []);
   const installedVersion = (skillId) =>
     api.installedSkills().find((item) => item.skillId === skillId && item.enabled)?.version || null;
-  const canPublish = () => ['publisher', 'admin'].includes(hub.identity?.role);
+  const canPublish = () => ['owner', 'publisher', 'admin'].includes(hub.identity?.role);
 
   async function loadSettings() {
     hub.settings = await root.meteoDesktop.getSkillHubSettings();

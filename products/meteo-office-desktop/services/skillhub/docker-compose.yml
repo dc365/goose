@@ -1,13 +1,19 @@
 services:
-  skillhub:
+  control-plane:
     build: .
     ports:
       - "8088:8088"
     environment:
-      METEOMATE_SKILLHUB_TOKENS: >-
-        {"dev-admin":{"subject":"admin","name":"Local Admin","role":"admin","orgId":"meteomate"},"dev-publisher":{"subject":"publisher","name":"Local Publisher","role":"publisher","orgId":"meteomate"},"dev-user":{"subject":"user-1","name":"Local User","role":"viewer","orgId":"meteomate"}}
+      METEOMATE_BOOTSTRAP_ADMIN_USERNAME: ${METEOMATE_BOOTSTRAP_ADMIN_USERNAME:-admin}
+      METEOMATE_BOOTSTRAP_ADMIN_PASSWORD: ${METEOMATE_BOOTSTRAP_ADMIN_PASSWORD:?set METEOMATE_BOOTSTRAP_ADMIN_PASSWORD}
+      METEOMATE_BOOTSTRAP_ADMIN_NAME: ${METEOMATE_BOOTSTRAP_ADMIN_NAME:-MeteoMate Administrator}
+      METEOMATE_BOOTSTRAP_ADMIN_EMAIL: ${METEOMATE_BOOTSTRAP_ADMIN_EMAIL:-}
+      METEOMATE_BOOTSTRAP_ORG_SLUG: ${METEOMATE_BOOTSTRAP_ORG_SLUG:-meteomate}
+      METEOMATE_BOOTSTRAP_ORG_NAME: ${METEOMATE_BOOTSTRAP_ORG_NAME:-MeteoMate}
+      METEOMATE_SKILLHUB_TOKENS: ${METEOMATE_SKILLHUB_TOKENS:-{}}
+      METEOMATE_CONTROL_PLANE_PUBLIC_URL: ${METEOMATE_CONTROL_PLANE_PUBLIC_URL:-}
     volumes:
-      - skillhub-data:/var/lib/meteomate-skillhub/data
+      - control-plane-data:/var/lib/meteomate-skillhub/data
 
 volumes:
-  skillhub-data:
+  control-plane-data:
