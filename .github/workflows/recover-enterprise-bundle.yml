@@ -19,13 +19,35 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          show-progress: false
 
       - name: Reassemble and inspect bundle
         shell: bash
         run: |
           set -euo pipefail
-          cat enterprise-bundle-1.bin enterprise-bundle-2.bin > /tmp/enterprise-implementation.tar.gz
-          gzip -t /tmp/enterprise-implementation.tar.gz
+          python3 - <<'PY'
+          from pathlib import Path
+          import gzip
+
+          first = Path('enterprise-bundle-1.bin').read_bytes()
+          second = Path('enterprise-bundle-2.bin').read_bytes()
+          limit = min(len(first), len(second))
+          overlap = 0
+          for size in range(limit, 0, -1):
+              if first[-size:] == second[:size]:
+                  overlap = size
+                  break
+          data = first + second[overlap:]
+          target = Path('/tmp/enterprise-implementation.tar.gz')
+          target.write_bytes(data)
+          print({'first': len(first), 'second': len(second), 'overlap': overlap, 'combined': len(data), 'header': data[:8].hex()})
+          try:
+              expanded = gzip.decompress(data)
+          except Exception as exc:
+              print(f'gzip validation failed: {exc!r}')
+              raise
+          print({'expanded': len(expanded), 'tar_header': expanded[:16].hex()})
+          PY
           tar -tzf /tmp/enterprise-implementation.tar.gz | tee /tmp/enterprise-files.txt
           test -s /tmp/enterprise-files.txt
 
