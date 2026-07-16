@@ -29,8 +29,11 @@
   function inspect(inspection) {
     const report = inspection.report;
     const findings = report.risk?.findings || [];
+    const signedSource = inspection.remote?.signatureVerified
+      ? `<span class="skillhub-signature-ok">✓ SkillHub 签名已验证 · ${escapeHtml(inspection.remote.keyId || '')}</span>`
+      : '';
     modal(`<header class="capability-modal-header"><div><h2>检查 Skill</h2><p>${escapeHtml(report.skill.displayName)} · ${escapeHtml(report.skill.version)}</p></div><button data-modal-close>×</button></header>
-      <div class="capability-modal-body capability-inspection-grid"><section><div class="capability-title-row"><h3>${escapeHtml(report.skill.displayName)}</h3>${riskBadge(report)}</div><p>${escapeHtml(report.skill.description)}</p>
+      <div class="capability-modal-body capability-inspection-grid"><section><div class="capability-title-row"><h3>${escapeHtml(report.skill.displayName)}</h3>${riskBadge(report)}</div><p>${escapeHtml(report.skill.description)}</p>${signedSource}
         <dl class="capability-summary-list"><div><dt>标准名称</dt><dd>${escapeHtml(report.skill.id)}</dd></div><div><dt>文件</dt><dd>${report.files.length} 个 · ${Math.ceil(report.totalBytes / 1024)} KB</dd></div><div><dt>完整性</dt><dd><code>${escapeHtml(report.integrity.slice(0, 18))}…</code></dd></div><div><dt>自动安装</dt><dd>${report.autoInstallEligible ? '符合低风险条件' : '需要人工确认'}</dd></div></dl>
         <h4>权限推断</h4><div class="capability-permission-tags"><span>读取文件</span>${report.risk.permissions.filesystemWrite ? '<span class="warning">写入文件</span>' : ''}${report.risk.permissions.shell ? '<span class="warning">执行脚本</span>' : ''}${report.risk.permissions.network ? '<span class="warning">访问网络</span>' : ''}${report.risk.permissions.hooks ? '<span class="danger">Hook</span>' : ''}</div>
         ${(report.warnings || []).length ? `<h4>建议</h4><ul>${report.warnings.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>` : ''}${findings.length ? `<h4>扫描发现</h4><ul>${findings.slice(0, 15).map((item) => `<li><strong>${escapeHtml(item.file)}</strong>：${escapeHtml(item.message)}</li>`).join('')}</ul>` : ''}</section>
@@ -51,6 +54,14 @@
             const result = await root.meteoDesktop.installSkill({ token: inspection.token, reportHash: report.reportHash, scope: scope.value, projectId, workspace: project?.workspace || null, replace: element.querySelector('#skill-install-replace').checked });
             api.center.registry = result.registry;
             api.syncProjectCapability('skills', result.installation.skillId, result.installation.projectIds || []);
+            if (inspection.remote) {
+              void root.meteoDesktop.reportSkillHubInstallation({
+                skillId: inspection.remote.skillId,
+                version: inspection.remote.version,
+                scope: scope.value,
+                projectId: scope.value === 'project' ? projectId : null,
+              }).catch(() => {});
+            }
             element.remove();
             render();
           } catch (cause) {
@@ -98,5 +109,5 @@
     setTimeout(() => { const textarea = document.getElementById('task-prompt'); if (textarea) { textarea.value = '请帮我创建一个可以实现「……」的 Skill。先询问我需求、触发条件、输入输出、依赖连接器、权限和验收标准，再生成草稿。'; textarea.focus(); } }, 0);
   }
 
-  api.skills = { importSkill, inspectBundled, manage, launchCreator };
+  api.skills = { importSkill, inspectBundled, inspect, manage, launchCreator };
 })(typeof globalThis !== 'undefined' ? globalThis : window);

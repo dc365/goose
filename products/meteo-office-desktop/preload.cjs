@@ -39,6 +39,17 @@ contextBridge.exposeInMainWorld('meteoDesktop', {
   deleteSkillDraft: (id) => ipcRenderer.invoke('skill-creator:delete-draft', id),
   openSkillDraft: (id) => ipcRenderer.invoke('skill-creator:open-draft', id),
 
+  getSkillHubSettings: () => ipcRenderer.invoke('skillhub:get-settings'),
+  saveSkillHubSettings: (request) => ipcRenderer.invoke('skillhub:save-settings', request),
+  testSkillHub: () => ipcRenderer.invoke('skillhub:test'),
+  listSkillHubSkills: (request) => ipcRenderer.invoke('skillhub:list-skills', request),
+  listSkillHubCollections: () => ipcRenderer.invoke('skillhub:list-collections'),
+  getSkillHubRecommendations: (request) => ipcRenderer.invoke('skillhub:recommendations', request),
+  getSkillHubSkill: (id) => ipcRenderer.invoke('skillhub:get-skill', id),
+  downloadSkillHubSkill: (request) => ipcRenderer.invoke('skillhub:download-inspect', request),
+  reportSkillHubInstallation: (request) => ipcRenderer.invoke('skillhub:report-installation', request),
+  publishSkillDraftToHub: (request) => ipcRenderer.invoke('skillhub:publish-draft', request),
+
   onRuntimeEvent: (callback) => {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on('runtime:event', listener);

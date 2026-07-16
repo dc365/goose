@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meteomate.local/schemas/skillhub-version.schema.json",
+  "title": "MeteoMate SkillHub Skill Version",
+  "type": "object",
+  "required": ["skillId", "version", "status", "packageDigest", "integrity", "manifest", "risk"],
+  "properties": {
+    "skillId": {"type": "string"},
+    "version": {"type": "string"},
+    "status": {"enum": ["draft", "published", "deprecated"]},
+    "packageDigest": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "packageSize": {"type": "integer", "minimum": 0},
+    "integrity": {"type": "string"},
+    "manifest": {"type": "object"},
+    "sidecar": {"type": "object"},
+    "risk": {"type": "object", "required": ["level"]},
+    "signature": {"type": "object", "required": ["algorithm", "keyId", "value"]}
+  }
+}
