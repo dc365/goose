@@ -73,4 +73,4 @@ jobs:
             exit 1
           fi
           git commit -m 'feat(meteomate): add enterprise connectors and projects'
-          git push --force-with-lease origin HEAD:agent/meteomate-enterprise-projects-v1
+          git push --force origin HEAD:agent/meteomate-enterprise-projects-v1
