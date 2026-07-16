@@ -1,0 +1,71 @@
+name: Recover enterprise implementation bundle
+
+on:
+  push:
+    branches:
+      - agent/recover-enterprise-bundle
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout recovery branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Reassemble and inspect bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat enterprise-bundle-1.bin enterprise-bundle-2.bin > /tmp/enterprise-implementation.tar.gz
+          gzip -t /tmp/enterprise-implementation.tar.gz
+          tar -tzf /tmp/enterprise-implementation.tar.gz | tee /tmp/enterprise-files.txt
+          test -s /tmp/enterprise-files.txt
+
+      - name: Apply bundle on current main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          git checkout -B agent/meteomate-enterprise-projects-v1 origin/main
+          tar -xzf /tmp/enterprise-implementation.tar.gz -C .
+          rm -f enterprise-bundle-1.bin enterprise-bundle-2.bin
+          git status --short
+
+      - name: Validate enterprise implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          PRODUCT=products/meteo-office-desktop
+          SERVICE="$PRODUCT/services/skillhub"
+          if [ -f "$PRODUCT/package.json" ]; then
+            cd "$PRODUCT"
+            npm ci --ignore-scripts
+            npm run check
+            cd - >/dev/null
+          fi
+          if [ -f "$SERVICE/go.mod" ]; then
+            cd "$SERVICE"
+            go test ./...
+            go vet ./...
+            cd - >/dev/null
+          fi
+
+      - name: Commit and push feature branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "MeteoMate Automation"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes recovered"
+            exit 1
+          fi
+          git commit -m "feat(meteomate): add enterprise connectors and projects"
+          git push --force-with-lease origin HEAD:agent/meteomate-enterprise-projects-v1
