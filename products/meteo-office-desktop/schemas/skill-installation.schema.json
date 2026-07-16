@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meteomate.local/schemas/skill-installation.schema.json",
+  "title": "MeteoMate Skill Installation",
+  "type": "object",
+  "required": ["apiVersion", "kind", "id", "skillId", "version", "scope", "installPath", "enabled", "integrity"],
+  "properties": {
+    "apiVersion": { "const": "meteomate.ai/v1" },
+    "kind": { "const": "SkillInstallation" },
+    "id": { "type": "string" },
+    "skillId": { "type": "string" },
+    "name": { "type": "string" },
+    "version": { "type": "string" },
+    "scope": { "enum": ["user", "project", "organization"] },
+    "projectId": { "type": ["string", "null"] },
+    "workspace": { "type": ["string", "null"] },
+    "installPath": { "type": "string" },
+    "enabled": { "type": "boolean" },
+    "source": { "type": "object" },
+    "integrity": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "risk": { "type": "object" },
+    "projectIds": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+    "installedAt": { "type": "integer" },
+    "updatedAt": { "type": "integer" }
+  }
+}

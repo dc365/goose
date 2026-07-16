@@ -5,15 +5,50 @@
   "type": "object",
   "required": ["id", "name", "version", "entrypoints", "permissions"],
   "properties": {
-    "id": { "type": "string" },
-    "name": { "type": "string" },
-    "version": { "type": "string" },
+    "id": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$", "maxLength": 64 },
+    "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "description": { "type": "string", "maxLength": 1024 },
+    "version": { "type": "string", "minLength": 1 },
+    "license": { "type": ["string", "null"] },
     "compatibility": { "type": "object" },
-    "entrypoints": { "type": "object" },
-    "requires": { "type": "object" },
-    "permissions": { "type": "object" },
+    "entrypoints": {
+      "type": "object",
+      "required": ["default"],
+      "properties": { "default": { "const": "SKILL.md" } },
+      "additionalProperties": true
+    },
+    "requires": {
+      "type": "object",
+      "properties": {
+        "connectors": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "skills": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
+      },
+      "additionalProperties": true
+    },
+    "permissions": {
+      "type": "object",
+      "properties": {
+        "filesystem": { "type": "object" },
+        "shell": { "type": "boolean" },
+        "network": { "type": "array", "items": { "type": "string" } },
+        "hooks": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    },
     "inputs": { "type": "object" },
     "outputs": { "type": "object" },
-    "trust": { "type": "object" }
+    "trust": { "type": "object" },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "sha256", "size"],
+        "properties": {
+          "path": { "type": "string" },
+          "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "size": { "type": "integer", "minimum": 0 }
+        }
+      }
+    }
   }
 }

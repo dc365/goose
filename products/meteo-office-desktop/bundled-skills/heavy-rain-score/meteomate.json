@@ -1,0 +1,7 @@
+{
+  "displayName": "强降水风险评分",
+  "version": "1.0.0",
+  "categories": ["灾害天气"],
+  "requires": {"connectors": ["weather-data", "weather-diagnosis"]},
+  "permissions": {"filesystem": {"read": ["project"], "write": []}, "shell": false, "network": []}
+}

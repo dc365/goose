@@ -1,0 +1,7 @@
+{
+  "displayName": "技能创建助手",
+  "version": "1.0.0",
+  "categories": ["效率工具"],
+  "requires": {"connectors": []},
+  "permissions": {"filesystem": {"read": ["project"], "write": ["skill-drafts"]}, "shell": false, "network": []}
+}
