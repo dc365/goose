@@ -28,6 +28,17 @@ contextBridge.exposeInMainWorld('meteoDesktop', {
   updateConnectorProjects: (request) => ipcRenderer.invoke('capability:update-connector-projects', request),
   openCapabilityPath: (targetPath) => ipcRenderer.invoke('capability:open-path', targetPath),
 
+  listSkillDrafts: () => ipcRenderer.invoke('skill-creator:list-drafts'),
+  createSkillDraft: (request) => ipcRenderer.invoke('skill-creator:create-draft', request),
+  getSkillDraft: (id) => ipcRenderer.invoke('skill-creator:get-draft', id),
+  readSkillDraftFile: (request) => ipcRenderer.invoke('skill-creator:read-file', request),
+  writeSkillDraftFile: (request) => ipcRenderer.invoke('skill-creator:write-file', request),
+  validateSkillDraft: (id) => ipcRenderer.invoke('skill-creator:validate-draft', id),
+  exportSkillDraft: (request) => ipcRenderer.invoke('skill-creator:export-draft', request),
+  installSkillDraft: (request) => ipcRenderer.invoke('skill-creator:install-draft', request),
+  deleteSkillDraft: (id) => ipcRenderer.invoke('skill-creator:delete-draft', id),
+  openSkillDraft: (id) => ipcRenderer.invoke('skill-creator:open-draft', id),
+
   onRuntimeEvent: (callback) => {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on('runtime:event', listener);

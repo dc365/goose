@@ -51,5 +51,8 @@ jobs:
       - name: Run Capability Center tests
         run: npm run test:capabilities
 
+      - name: Run Skill Creator tests
+        run: npm run test:skill-creator
+
       - name: Validate product schemas
         run: npm run check:schemas

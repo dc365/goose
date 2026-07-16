@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meteomate.local/schemas/skill-test.schema.json",
+  "title": "MeteoMate Skill Test Case",
+  "type": "object",
+  "required": ["name", "prompt", "expected"],
+  "properties": {
+    "apiVersion": {"type": "string"},
+    "kind": {"type": "string"},
+    "name": {"type": "string", "minLength": 1},
+    "prompt": {"type": "string", "minLength": 1},
+    "expected": {
+      "type": "object",
+      "properties": {
+        "sections": {"type": "array", "items": {"type": "string"}},
+        "files": {"type": "array", "items": {"type": "string"}},
+        "connectors": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "forbiddenPhrases": {"type": "array", "items": {"type": "string"}},
+    "notes": {"type": "string"}
+  }
+}
