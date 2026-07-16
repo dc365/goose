@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meteomate.local/schemas/connector.schema.json",
+  "title": "MeteoMate Connector Definition",
+  "type": "object",
+  "required": ["id", "name", "version", "transport", "tools"],
+  "properties": {
+    "id": { "type": "string" },
+    "name": { "type": "string" },
+    "version": { "type": "string" },
+    "transport": { "enum": ["stdio", "streamable-http", "cli", "native"] },
+    "authTypes": { "type": "array", "items": { "type": "string" } },
+    "scopes": { "type": "array", "items": { "type": "string" } },
+    "riskClassification": { "enum": ["low", "medium", "high", "critical"] },
+    "tools": { "type": "array", "items": { "type": "object" } },
+    "healthCheck": { "type": "object" }
+  }
+}

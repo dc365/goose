@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meteomate.local/schemas/skill-package.schema.json",
+  "title": "MeteoMate Skill Package",
+  "type": "object",
+  "required": ["id", "name", "version", "entrypoints", "permissions"],
+  "properties": {
+    "id": { "type": "string" },
+    "name": { "type": "string" },
+    "version": { "type": "string" },
+    "compatibility": { "type": "object" },
+    "entrypoints": { "type": "object" },
+    "requires": { "type": "object" },
+    "permissions": { "type": "object" },
+    "inputs": { "type": "object" },
+    "outputs": { "type": "object" },
+    "trust": { "type": "object" }
+  }
+}

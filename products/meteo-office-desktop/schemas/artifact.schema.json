@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meteomate.local/schemas/artifact.schema.json",
+  "title": "MeteoMate Artifact",
+  "type": "object",
+  "required": ["apiVersion", "kind", "id", "name", "type", "status", "lineage"],
+  "properties": {
+    "apiVersion": { "const": "meteomate/v1" },
+    "kind": { "const": "Artifact" },
+    "id": { "type": "string" },
+    "name": { "type": "string" },
+    "type": { "type": "string" },
+    "path": { "type": ["string", "null"] },
+    "uri": { "type": ["string", "null"] },
+    "status": { "enum": ["draft", "validated", "ready", "published", "failed"] },
+    "lineage": { "type": "object" }
+  },
+  "anyOf": [{ "required": ["path"] }, { "required": ["uri"] }]
+}

@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meteomate.local/schemas/project.schema.json",
+  "title": "MeteoMate Project",
+  "type": "object",
+  "required": ["apiVersion", "kind", "id", "name", "version", "spec"],
+  "properties": {
+    "apiVersion": { "const": "meteomate/v1" },
+    "kind": { "const": "Project" },
+    "id": { "type": "string", "minLength": 1 },
+    "name": { "type": "string", "minLength": 1 },
+    "version": { "type": "string", "minLength": 1 },
+    "workspace": { "type": "string" },
+    "spec": {
+      "type": "object",
+      "required": ["instructions", "workspaces", "meteorologicalContext", "capabilities", "assets", "policies", "outputs"],
+      "properties": {
+        "instructions": { "type": "array", "items": { "type": "string" } },
+        "workspaces": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "root", "access"],
+            "properties": {
+              "id": { "type": "string" },
+              "root": { "type": "string" },
+              "access": { "enum": ["read-only", "read-write-approved", "trusted-workspace"] }
+            }
+          }
+        },
+        "meteorologicalContext": {
+          "type": "object",
+          "properties": {
+            "timezone": { "type": "string" },
+            "region": { "type": "string" },
+            "defaultModels": { "type": "array", "items": { "type": "string" } },
+            "defaultForecastHours": { "type": "array", "items": { "type": "number" } }
+          }
+        },
+        "capabilities": {
+          "type": "object",
+          "required": ["experts", "skills", "connectors"],
+          "properties": {
+            "experts": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+            "skills": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+            "connectors": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
+          }
+        },
+        "assets": {
+          "type": "object",
+          "properties": {
+            "libraries": { "type": "array", "items": { "type": "string" } },
+            "templates": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "policies": {
+          "type": "object",
+          "properties": {
+            "defaultWorkMode": { "enum": ["ask", "plan", "execute"] },
+            "defaultPermissionProfileId": { "type": "string" },
+            "modelPolicy": { "type": "string" }
+          }
+        },
+        "outputs": { "type": "object" }
+      }
+    }
+  }
+}

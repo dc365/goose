@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meteomate.local/schemas/expert-team.schema.json",
+  "title": "MeteoMate Expert Team",
+  "type": "object",
+  "required": ["id", "name", "version", "orchestrator", "nodes"],
+  "properties": {
+    "id": { "type": "string" },
+    "name": { "type": "string" },
+    "version": { "type": "string" },
+    "orchestrator": { "type": "string" },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "expert"],
+        "properties": {
+          "id": { "type": "string" },
+          "expert": { "type": "string" },
+          "dependsOn": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "execution": { "type": "object" }
+  }
+}
