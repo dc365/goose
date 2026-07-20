@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bufio"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -9,11 +10,33 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 )
 
 var digestPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
+
+type AuditActor struct {
+	Subject string `json:"subject"`
+	Name    string `json:"name,omitempty"`
+	Role    string `json:"role"`
+	OrgID   string `json:"orgId,omitempty"`
+}
+
+type AuditEvent struct {
+	Time   time.Time      `json:"time"`
+	Action string         `json:"action"`
+	Target string         `json:"target"`
+	Actor  AuditActor     `json:"actor"`
+	Remote string         `json:"remote"`
+	Detail map[string]any `json:"detail,omitempty"`
+}
+
+type AuditResult struct {
+	Items []AuditEvent `json:"items"`
+	Total int          `json:"total"`
+}
 
 type Store struct {
 	mu           sync.RWMutex
@@ -187,9 +210,66 @@ func (s *Store) AppendAudit(event any) error {
 	if err != nil {
 		return err
 	}
+	if _, err := file.Write(append(data, '\n')); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return err
+	}
+	return file.Close()
+}
+
+func (s *Store) ReadAudit(query, action string, limit int) (AuditResult, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	file, err := os.Open(s.auditPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return AuditResult{Items: []AuditEvent{}}, nil
+	}
+	if err != nil {
+		return AuditResult{}, err
+	}
 	defer file.Close()
-	_, err = file.Write(append(data, '\n'))
-	return err
+	query = strings.ToLower(strings.TrimSpace(query))
+	action = strings.TrimSpace(action)
+	items := make([]AuditEvent, 0, limit)
+	total := 0
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64*1024), 2<<20)
+	for scanner.Scan() {
+		var event AuditEvent
+		if json.Unmarshal(scanner.Bytes(), &event) != nil {
+			continue
+		}
+		if action != "" && event.Action != action {
+			continue
+		}
+		searchable := strings.ToLower(strings.Join([]string{
+			event.Action, event.Target, event.Actor.Subject, event.Actor.Name, event.Remote,
+		}, " "))
+		if query != "" && !strings.Contains(searchable, query) {
+			continue
+		}
+		total++
+		if len(items) < limit {
+			items = append(items, event)
+		} else {
+			copy(items, items[1:])
+			items[len(items)-1] = event
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return AuditResult{}, err
+	}
+	for left, right := 0, len(items)-1; left < right; left, right = left+1, right-1 {
+		items[left], items[right] = items[right], items[left]
+	}
+	return AuditResult{Items: items, Total: total}, nil
 }
 
 func (s *Store) Root() string { return s.root }

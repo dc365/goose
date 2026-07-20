@@ -1,0 +1,311 @@
+.skillhub-managed-summary {
+  display: flex;
+  gap: 28px;
+  margin-top: 18px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  padding: 15px 2px;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.skillhub-managed-summary span {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.skillhub-managed-summary strong {
+  color: var(--text);
+  font-size: 18px;
+}
+
+.skillhub-managed-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.skillhub-managed-row {
+  display: grid;
+  grid-template-columns: minmax(240px, 1.6fr) repeat(4, minmax(92px, 0.7fr)) auto;
+  align-items: center;
+  gap: 18px;
+  border-radius: var(--radius-sm);
+  background: #fff;
+  padding: 14px 16px;
+  box-shadow: 0 1px 3px rgba(24, 29, 38, 0.1);
+}
+
+.skillhub-managed-identity {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+}
+
+.skillhub-managed-icon {
+  display: inline-flex;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: #4165c4;
+  font-weight: 750;
+}
+
+.skillhub-managed-identity h3 {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skillhub-managed-identity p {
+  overflow: hidden;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skillhub-managed-fact {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.skillhub-managed-fact span {
+  color: var(--muted-2);
+  font-size: 10px;
+}
+
+.skillhub-managed-fact strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skillhub-lifecycle {
+  display: inline-flex;
+  width: max-content;
+  align-items: center;
+  border-radius: 999px;
+  background: #f0f1f3;
+  padding: 4px 8px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.skillhub-lifecycle.published {
+  background: #e9f7ef;
+  color: #267d4c;
+}
+
+.skillhub-lifecycle.draft {
+  background: #fff4dc;
+  color: #8b6517;
+}
+
+.skillhub-lifecycle.deprecated {
+  background: #f0f1f3;
+  color: #777c86;
+}
+
+.skillhub-manage-action {
+  min-width: 68px;
+  min-height: 40px;
+}
+
+.skillhub-management {
+  display: grid;
+  gap: 26px;
+}
+
+.skillhub-management-form h3,
+.skillhub-management-versions h3 {
+  font-size: 15px;
+}
+
+.skillhub-management-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 13px;
+}
+
+.skillhub-management-grid label {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.skillhub-management-grid label.full {
+  grid-column: 1 / -1;
+}
+
+.skillhub-management-grid input,
+.skillhub-management-grid select,
+.skillhub-management-grid textarea {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: #fff;
+  padding: 10px 12px;
+  color: var(--text);
+  outline: 0;
+}
+
+.skillhub-management-grid textarea {
+  min-height: 92px;
+  resize: vertical;
+}
+
+.skillhub-management-grid input:focus,
+.skillhub-management-grid select:focus,
+.skillhub-management-grid textarea:focus {
+  border-color: rgba(75, 117, 242, 0.55);
+  box-shadow: 0 0 0 3px rgba(75, 117, 242, 0.1);
+}
+
+.skillhub-management-versions > div:first-child {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.skillhub-management-versions > div:first-child span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.skillhub-managed-version {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.4fr) minmax(180px, 0.8fr) auto;
+  align-items: center;
+  gap: 18px;
+  border-top: 1px solid var(--line);
+  padding: 13px 0;
+}
+
+.skillhub-managed-version > div:first-child {
+  display: grid;
+  grid-template-columns: auto auto;
+  align-items: center;
+  justify-content: start;
+  gap: 7px 10px;
+}
+
+.skillhub-managed-version > div:first-child small {
+  grid-column: 1 / -1;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skillhub-managed-version dl {
+  display: flex;
+  gap: 22px;
+  margin: 0;
+}
+
+.skillhub-managed-version dl div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.skillhub-managed-version dt {
+  color: var(--muted-2);
+  font-size: 10px;
+}
+
+.skillhub-managed-version dd {
+  margin: 0;
+  color: var(--text);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.skillhub-managed-row button:active,
+.skillhub-managed-version button:active {
+  transform: scale(0.96);
+}
+
+@media (hover: hover) {
+  .skillhub-managed-row:hover {
+    box-shadow: 0 4px 14px rgba(24, 29, 38, 0.11);
+  }
+}
+
+@media (max-width: 1180px) {
+  .skillhub-managed-row {
+    grid-template-columns: minmax(230px, 1.4fr) repeat(3, minmax(88px, 0.65fr)) auto;
+  }
+
+  .skillhub-managed-fact:nth-of-type(5) {
+    display: none;
+  }
+}
+
+@media (max-width: 860px) {
+  .skillhub-managed-row {
+    grid-template-columns: minmax(0, 1fr) minmax(100px, auto);
+  }
+
+  .skillhub-managed-fact {
+    display: none;
+  }
+
+  .skillhub-management-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .skillhub-management-grid label.full {
+    grid-column: auto;
+  }
+
+  .skillhub-managed-version {
+    grid-template-columns: 1fr auto;
+  }
+
+  .skillhub-managed-version dl {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+}
+
+@media (max-width: 520px) {
+  .skillhub-managed-summary {
+    gap: 16px;
+    overflow-x: auto;
+  }
+
+  .skillhub-managed-summary span {
+    flex: 0 0 auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skillhub-managed-row button,
+  .skillhub-managed-version button {
+    transition: none;
+  }
+}

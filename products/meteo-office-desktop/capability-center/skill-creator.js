@@ -71,7 +71,7 @@
       instruction: [
         '使用已安装的 skill-creator Skill，并把当前 Skill 草稿视为唯一工作区。',
         '先阅读 BRIEF.md，发现关键歧义时先询问用户；需求明确后，只修改 skill/ 目录。',
-        '必须维护 SKILL.md、meteomate.json 和 tests/*.json，并明确触发场景、限制、输入输出、权限、连接器依赖和验证标准。',
+        '必须维护 SKILL.md、meteomate.json 和 tests/*.json，并明确触发场景、限制、输入输出、权限、工具依赖和验证标准。',
         '不要直接安装、发布、移动草稿或访问草稿工作区之外的文件。',
         '完成后汇报文件树、风险、测试结果和需要人工确认的事项。',
       ].join('\n'),
@@ -195,7 +195,7 @@
           <label class="wide"><span>验收标准</span><textarea id="creator-success" placeholder="如何判断 Skill 已正确完成任务"></textarea></label>
           <label class="wide"><span>示例请求</span><input id="creator-example" placeholder="例如：复盘 7 月 15 日华南暴雨过程并生成报告"/></label>
         </section>
-        <section class="skill-creator-requirements"><div><h3>依赖连接器</h3><p>这里声明最终 Skill 的依赖，不会把密钥写入草稿。</p><div class="skill-creator-connector-grid">${connectorOptions || '<p class="capability-muted">当前没有可选择的连接器。</p>'}</div></div>
+        <section class="skill-creator-requirements"><div><h3>依赖工具</h3><p>这里声明最终 Skill 的工具依赖，不会把密钥写入草稿。</p><div class="skill-creator-connector-grid">${connectorOptions || '<p class="capability-muted">当前没有可选择的工具。</p>'}</div></div>
           <div><h3>权限边界</h3><label><input type="checkbox" id="creator-read" checked/> 读取项目文件</label><label><input type="checkbox" id="creator-write"/> 写入成果物</label><label><input type="checkbox" id="creator-network"/> 访问网络</label><label><input type="checkbox" id="creator-shell"/> 执行 Shell 或脚本</label><label id="creator-network-domains-field" hidden><span>允许域名（每行一个）</span><textarea id="creator-network-domains" placeholder="weather-api.internal"></textarea></label></div>
         </section>
         <div class="capability-error-block" id="creator-wizard-error" hidden></div>
@@ -430,11 +430,11 @@
     return html.replace('<div class="conversation-scroll">', `<div class="conversation-scroll">${creatorPanel(task)}`);
   };
 
-  const originalCatalogView = renderCatalogView;
-  renderCatalogView = function renderSkillCreatorCatalog() {
-    let html = originalCatalogView();
-    if (state.catalogTab !== 'skills') return html;
-    const draftButton = `<button class="my-experts" id="skill-creator-drafts">草稿 ${creator.drafts.length}</button>`;
+  const originalCatalogTitlebarActions = renderCatalogTitlebarActions;
+  renderCatalogTitlebarActions = function renderSkillCreatorTitlebarActions() {
+    let html = originalCatalogTitlebarActions();
+    if (state.view !== 'catalog' || state.catalogTab !== 'skills') return html;
+    const draftButton = `<button class="my-experts" id="skill-creator-drafts">${icon('skill')} 草稿 ${creator.drafts.length}</button>`;
     html = html.replace('<div class="capability-add-menu">', `${draftButton}<div class="capability-add-menu">`);
     return html;
   };
@@ -470,7 +470,12 @@
     openConversation,
   };
 
-  void refreshDrafts({ rerender: false }).then(() => {
-    if (state.catalogTab === 'skills' || getActiveTask()?.kind === 'skill-creator') render();
+  void root.MeteoMateAccountReady.then((session) => {
+    const profileReady = session.status === 'offline'
+      || (session.status === 'authenticated' && !session.user?.mustChangePassword);
+    if (!profileReady) return null;
+    return refreshDrafts({ rerender: false }).then(() => {
+      if (state.catalogTab === 'skills' || getActiveTask()?.kind === 'skill-creator') render();
+    });
   });
 })(typeof globalThis !== 'undefined' ? globalThis : window);

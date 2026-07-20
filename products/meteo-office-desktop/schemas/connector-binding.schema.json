@@ -17,6 +17,13 @@
     "cwd": { "type": ["string", "null"] },
     "url": { "type": "string" },
     "timeout": { "type": "number", "minimum": 3, "maximum": 600 },
+    "connectorType": { "type": ["string", "null"] },
+    "managedPreset": { "type": ["string", "null"] },
+    "toolAllowlist": {
+      "type": ["array", "null"],
+      "items": { "type": "string" },
+      "uniqueItems": true
+    },
     "enabled": { "type": "boolean" },
     "projectIds": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
     "secretStorage": { "type": "object" },

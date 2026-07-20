@@ -33,12 +33,15 @@ for (const moduleName of [
   assert.ok(indexSource.includes(relative), `index does not load ${relative}`);
 }
 assert.ok(indexSource.includes('styles-skillhub.css'));
+assert.ok(indexSource.includes('styles-skillhub-management.css'));
 assert.ok(indexSource.indexOf('skillhub-core.js') > indexSource.indexOf('skill-creator.js'));
 assert.ok(indexSource.indexOf('skillhub-integration.js') > indexSource.indexOf('skillhub-publishing.js'));
 assert.ok(wrapperSource.includes('createSkillHubClient'));
 assert.ok(wrapperSource.includes('skillHubClient.registerIpc()'));
 assert.ok(preloadSource.includes('getSkillHubSettings'));
 assert.ok(preloadSource.includes('publishSkillDraftToHub'));
+assert.ok(preloadSource.includes('listManagedSkillHubSkills'));
+assert.ok(preloadSource.includes('updateSkillHubSkill'));
 
 assert.equal(normalizeBaseURL('http://127.0.0.1:8088/'), 'http://127.0.0.1:8088');
 assert.throws(() => normalizeBaseURL('ftp://example.com'), /HTTP/);
@@ -57,11 +60,34 @@ const server = http.createServer((request, response) => {
     response.end(JSON.stringify(payload));
   };
   if (request.url === '/healthz') return send(200, { status: 'ok' });
-  if (request.url === '/v1/me') return send(200, { subject: 'publisher', role: 'publisher', name: 'Publisher' });
-  if (request.url.startsWith('/v1/skills?')) return send(200, { items: [{ id: 'weather-review', name: 'Weather Review', latestVersion: '1.0.0' }], total: 1 });
+  if (request.url === '/v1/me') return send(200, { authenticated: true, user: { id: 'usr-publisher', username: 'publisher', displayName: 'Publisher', role: 'publisher' } });
+  if (request.url.startsWith('/v1/skills?')) {
+    const query = new URL(request.url, 'http://127.0.0.1').searchParams;
+    return send(200, { items: [{ id: 'weather-review', name: 'Weather Review', latestVersion: query.get('includeDrafts') === 'true' ? '' : '1.0.0' }], total: 1 });
+  }
+  if (request.url === '/v1/admin/users' && request.method === 'GET') {
+    return send(200, {
+      items: [
+        { id: 'usr-publisher', role: 'publisher', status: 'active' },
+        { id: 'usr-admin', role: 'admin', status: 'active' },
+        { id: 'usr-viewer', role: 'viewer', status: 'active' },
+        { id: 'usr-disabled', role: 'publisher', status: 'disabled' },
+      ],
+      total: 4,
+    });
+  }
+  if (request.url === '/v1/skills/weather-review' && request.method === 'PATCH') {
+    return send(200, { id: 'weather-review', name: 'Updated Weather Review', visibility: 'organization' });
+  }
   if (request.url.startsWith('/v1/recommendations?')) return send(200, { items: [{ skill: { id: 'weather-review' }, score: 50, reasons: ['精选推荐'] }] });
   if (request.url === '/v1/trust/keys') return send(200, { keys: [{ algorithm: 'ed25519', keyId: 'test-key', publicKey: rawPublic }] });
   if (request.url === '/v1/skills/weather-review') return send(200, { skill: { id: 'weather-review', latestVersion: '1.0.0' }, versions: [{ version: '1.0.0', status: 'published' }] });
+  if (request.url === '/v1/skills/weather-review/versions/1.0.0/publish' && request.method === 'POST') {
+    return send(200, { skillId: 'weather-review', version: '1.0.0', status: 'published' });
+  }
+  if (request.url === '/v1/skills/weather-review/versions/1.0.0/deprecate' && request.method === 'POST') {
+    return send(200, { deprecated: true });
+  }
   if (request.url === '/v1/skills/weather-review/versions/1.0.0/download') {
     response.writeHead(200, {
       'content-type': 'application/zip',
@@ -80,29 +106,57 @@ server.listen(0, '127.0.0.1', async () => {
   try {
     const address = server.address();
     const ipcHandlers = new Map();
+    let activeProfileKey = 'profile-a';
+    const installedSkills = [];
     const capabilityService = {
       paths: () => ({ temp }),
       inspectSkill: (filePath) => {
         assert.deepEqual(fs.readFileSync(filePath), packageBytes);
-        return { token: 'inspection-token', report: { skill: { id: 'weather-review', version: '1.0.0' } } };
+        return {
+          token: 'inspection-token',
+          report: {
+            autoInstallEligible: true,
+            reportHash: 'report-hash',
+            skill: { id: 'weather-review', version: '1.0.0' },
+          },
+        };
       },
+      syncManagedSkills: () => {},
+      registrySnapshot: () => ({ skills: [] }),
+      installBundledDefault: () => null,
+      installSkill: (request) => {
+        installedSkills.push({ profileKey: activeProfileKey, request });
+        return { installation: { version: '1.0.0' } };
+      },
+    };
+    const profileRoot = path.join(temp, 'profiles', 'publisher');
+    const profileContext = {
+      currentPaths: () => ({ capabilities: path.join(profileRoot, 'capabilities') }),
+      baseUrl: () => `http://127.0.0.1:${address.port}`,
+      authHeaders: (headers = {}) => ({ ...headers, Authorization: 'Bearer session-token' }),
+      isAuthenticated: () => true,
+      hasActiveProfile: () => Boolean(activeProfileKey),
+      publicState: () => ({ profileKey: activeProfileKey }),
+      onChange: () => () => {},
     };
     const client = createSkillHubClient({
       app: { getPath: () => temp },
       ipcMain: { handle: (name, handler) => ipcHandlers.set(name, handler) },
-      safeStorage: {
-        isEncryptionAvailable: () => true,
-        encryptString: (value) => Buffer.from(`encrypted:${value}`),
-        decryptString: (value) => value.toString().replace(/^encrypted:/, ''),
-      },
       capabilityService,
       skillCreatorService: null,
+      profileContext,
     });
 
-    client.saveSettings({ baseUrl: `http://127.0.0.1:${address.port}`, token: 'publisher-token', requireSignature: true });
+    client.saveSettings({ requireSignature: true });
     assert.equal(client.publicSettings().tokenConfigured, true);
+    assert.equal(client.publicSettings().tokenStorage, 'memory');
     assert.equal((await client.testConnection()).identity.role, 'publisher');
     assert.equal((await client.listSkills({ q: 'weather' })).total, 1);
+    assert.equal((await client.listManagedSkills()).items[0].latestVersion, '');
+    assert.equal((await client.listPublishers()).items.length, 2);
+    assert.equal((await client.updateSkill({ skillId: 'weather-review', name: 'Updated Weather Review', visibility: 'organization' })).visibility, 'organization');
+    assert.equal((await client.publishVersion({ skillId: 'weather-review', version: '1.0.0' })).status, 'published');
+    assert.equal((await client.deprecateVersion({ skillId: 'weather-review', version: '1.0.0' })).deprecated, true);
     assert.equal((await client.recommendations({ connectorIds: ['weather-data'] })).items.length, 1);
     assert.equal((await client.skillDetail('weather-review')).skill.id, 'weather-review');
     const inspection = await client.downloadAndInspect({ skillId: 'weather-review', version: '1.0.0' });
@@ -110,8 +164,17 @@ server.listen(0, '127.0.0.1', async () => {
     assert.equal(inspection.remote.digest, digest);
     assert.equal((await client.reportInstallation({ skillId: 'weather-review', version: '1.0.0' })).id, 'inst-1');
 
+    const managedSync = client.applyManagedPolicy({
+      profileKey: 'profile-a',
+      policyContext: { policy: { revision: 3, defaultSkillIds: ['weather-review'] } },
+    });
+    activeProfileKey = 'profile-b';
+    const managedResult = await managedSync;
+    assert.equal(installedSkills.length, 0);
+    assert.match(managedResult.errors[0].message, /用户已切换/);
+
     client.registerIpc();
-    for (const name of ['skillhub:get-settings', 'skillhub:test', 'skillhub:list-skills', 'skillhub:download-inspect', 'skillhub:publish-draft']) {
+    for (const name of ['skillhub:get-settings', 'skillhub:test', 'skillhub:list-skills', 'skillhub:list-managed-skills', 'skillhub:list-publishers', 'skillhub:update-skill', 'skillhub:publish-version', 'skillhub:deprecate-version', 'skillhub:download-inspect', 'skillhub:publish-draft']) {
       assert.ok(ipcHandlers.has(name), `missing IPC handler ${name}`);
     }
     console.log('MeteoMate SkillHub client checks passed.');

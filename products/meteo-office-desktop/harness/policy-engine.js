@@ -13,27 +13,27 @@
   const DEFAULT_PERMISSION_POLICIES = Object.freeze({
     'analysis-readonly': {
       id: 'analysis-readonly',
-      name: '只读分析',
-      filesystem: { read: 'workspace', write: false },
-      shell: false,
-      network: 'connector-only',
-      publish: false,
+      name: '请求批准',
+      filesystem: { read: 'workspace', write: 'approval' },
+      shell: 'approval',
+      network: 'approval',
+      publish: 'approval',
     },
     'artifact-approval': {
       id: 'artifact-approval',
-      name: '成果物审批',
-      filesystem: { read: 'workspace', write: 'approval' },
-      shell: false,
+      name: '智能审批',
+      filesystem: { read: 'workspace', write: 'workspace' },
+      shell: 'workspace',
       network: 'connector-only',
       publish: 'approval',
     },
     'workspace-approval': {
       id: 'workspace-approval',
-      name: '工作区审批',
-      filesystem: { read: 'workspace', write: 'approval' },
-      shell: 'approval',
-      network: 'approval',
-      publish: 'approval',
+      name: '完全访问',
+      filesystem: { read: 'all', write: 'allow' },
+      shell: 'allow',
+      network: 'allow',
+      publish: 'allow',
     },
     'trusted-workspace': {
       id: 'trusted-workspace',
@@ -92,7 +92,7 @@
   function decisionFromRule(rule, context, label) {
     if (rule === true || rule === 'allow') return { decision: DECISIONS.ALLOW, reason: `${label}已被策略允许。` };
     if (rule === 'workspace' && context.insideWorkspace !== false) return { decision: DECISIONS.ALLOW, reason: `${label}位于受信任工作区。` };
-    if (rule === 'connector-only' && context.viaConnector) return { decision: DECISIONS.ALLOW, reason: `${label}由受控连接器执行。` };
+    if (rule === 'connector-only' && context.viaConnector) return { decision: DECISIONS.ALLOW, reason: `${label}由受控工具执行。` };
     if (rule === 'approval') return { decision: DECISIONS.APPROVAL, reason: `${label}需要用户审批。` };
     return { decision: DECISIONS.DENY, reason: `${label}未被当前策略授权。` };
   }

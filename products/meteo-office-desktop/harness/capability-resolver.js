@@ -15,8 +15,18 @@
     return new Map((Array.isArray(items) ? items : []).filter(Boolean).map((item) => [item.id, item]));
   }
 
+  function capabilityMode(task = {}) {
+    if (task.capabilityMode === 'custom') return 'custom';
+    if (task.capabilityMode === 'inherit') return 'inherit';
+    const hasLegacySelection = Shared.asArray(task.connectorIds).length > 0
+      || Object.keys(task.toolSelections || {}).length > 0;
+    return hasLegacySelection ? 'custom' : 'inherit';
+  }
+
   function resolveCapabilities({ project, expert, task, catalog = {} }) {
     const projectCaps = project?.spec?.capabilities || {};
+    const grantMode = capabilityMode(task);
+    const taskHasConnectorSelection = grantMode === 'custom';
     const requestedSkills = Shared.uniqueStrings([
       ...(projectCaps.skills || []),
       ...(expert?.requiredSkills || []),
@@ -24,16 +34,26 @@
       ...(task?.skillIds || []),
     ]);
     const requestedConnectors = Shared.uniqueStrings([
-      ...(projectCaps.connectors || []),
-      ...(expert?.requiredConnectors || []),
-      ...(expert?.recommendedConnectors || []),
-      ...(task?.connectorIds || []),
+      ...(taskHasConnectorSelection
+        ? task.connectorIds
+        : [...(projectCaps.connectors || []), ...(expert?.requiredConnectors || []), ...(expert?.recommendedConnectors || [])]),
     ]);
+    const selectedTools = taskHasConnectorSelection
+      ? (task?.toolSelections && typeof task.toolSelections === 'object' ? task.toolSelections : {})
+      : projectCaps.toolSelections || {};
     const skillIndex = indexById(catalog.skills);
     const connectorIndex = indexById(catalog.connectors);
     const skills = [];
     const connectors = [];
     const missing = [];
+
+    if (taskHasConnectorSelection) {
+      for (const connectorId of Shared.asArray(expert?.requiredConnectors)) {
+        if (!requestedConnectors.includes(connectorId)) {
+          missing.push({ type: 'connector', id: connectorId, required: true, reason: 'not-selected' });
+        }
+      }
+    }
 
     for (const requested of requestedSkills) {
       const id = versionlessId(requested);
@@ -44,7 +64,12 @@
       }
       skills.push({ ...skill, requestedVersion: requested.includes('@') ? requested.split('@').slice(1).join('@') : null });
       for (const connectorId of Shared.asArray(skill.requires?.connectors || skill.requiredConnectors)) {
-        if (!requestedConnectors.includes(connectorId)) requestedConnectors.push(connectorId);
+        if (requestedConnectors.includes(connectorId)) continue;
+        if (taskHasConnectorSelection) {
+          missing.push({ type: 'connector', id: connectorId, required: true, reason: 'not-selected' });
+        } else {
+          requestedConnectors.push(connectorId);
+        }
       }
     }
 
@@ -60,8 +85,22 @@
 
     const resolved = {
       expertId: expert?.id || null,
+      grantMode,
       skills,
       connectors,
+      connectorSources: Object.fromEntries(
+        connectors.map((connector) => [
+          connector.id,
+          taskHasConnectorSelection
+            ? 'task'
+            : (projectCaps.connectors || []).includes(connector.id) ? 'project' : 'expert',
+        ])
+      ),
+      toolSelections: Object.fromEntries(
+        Object.entries(selectedTools)
+          .filter(([connectorId, toolNames]) => requestedConnectors.includes(connectorId) && Array.isArray(toolNames))
+          .map(([connectorId, toolNames]) => [connectorId, Shared.uniqueStrings(toolNames)])
+      ),
       missing,
       ready: !missing.some((item) => item.required),
     };
@@ -69,10 +108,11 @@
       expertId: resolved.expertId,
       skills: skills.map((item) => [item.id, item.version || item.requestedVersion || null]),
       connectors: connectors.map((item) => [item.id, item.version || item.requestedVersion || null]),
+      toolSelections: resolved.toolSelections,
       missing,
     })}`;
     return resolved;
   }
 
-  return { resolveCapabilities, versionlessId };
+  return { resolveCapabilities, versionlessId, capabilityMode };
 });

@@ -75,13 +75,14 @@ window.METEOMATE_SKILLS = Object.freeze([
 
 window.METEOMATE_CONNECTORS = Object.freeze([
   {
-    id: 'goose-runtime',
-    name: 'Goose Runtime',
-    category: 'Agent 运行时',
-    icon: 'G',
-    description: '提供多轮会话、流式响应、工具调用和操作确认，服务不可用时自动切换安全模式。',
-    status: 'runtime',
-    tags: ['Goose', '多轮会话', '本地运行'],
+    id: 'playwright-browser',
+    name: '浏览器操作',
+    category: '网页与自动化',
+    icon: '览',
+    description: '打开网页、读取内容、截图，并完成点击、输入和表单操作。',
+    status: 'available',
+    tags: ['Playwright', '网页', '自动化'],
+    preset: window.MeteoMateBrowserConnector.PRESET,
   },
   {
     id: 'local-workspace',
@@ -122,7 +123,7 @@ window.METEOMATE_CONNECTORS = Object.freeze([
   {
     id: 'artifact-docx',
     name: 'Office Artifact Service',
-    category: '办公成果物',
+    category: '办公',
     icon: '文',
     description: '统一生成 DOCX、XLSX、PPTX、PDF、HTML 和图片成果物。',
     status: 'planned',

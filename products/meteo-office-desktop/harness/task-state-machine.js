@@ -47,13 +47,24 @@
     return LEGACY_STATUS_MAP[task.status] || STATES.DRAFT;
   }
 
+  function inferCapabilityMode(task = {}) {
+    if (['inherit', 'custom'].includes(task.capabilityMode)) return task.capabilityMode;
+    return (Array.isArray(task.connectorIds) && task.connectorIds.length)
+      || Object.keys(task.toolSelections || {}).length
+      ? 'custom'
+      : 'inherit';
+  }
+
   function normalizeTask(task = {}) {
     return {
       ...task,
       lifecycleState: inferLifecycleState(task),
+      capabilityMode: inferCapabilityMode(task),
+      connectorIds: Shared.uniqueStrings(task.connectorIds),
+      toolSelections: Shared.cleanObject(task.toolSelections),
       workMode:
         task.workMode ||
-        (['artifact-approval', 'workspace-approval', 'trusted-workspace'].includes(task.permissionProfileId)
+        (['analysis-readonly', 'artifact-approval', 'workspace-approval', 'trusted-workspace'].includes(task.permissionProfileId)
           ? 'execute'
           : 'ask'),
       contextSnapshotId: task.contextSnapshotId || task.contextSnapshot?.id || null,
@@ -116,6 +127,7 @@
     STATES,
     ALLOWED_TRANSITIONS,
     inferLifecycleState,
+    inferCapabilityMode,
     normalizeTask,
     canTransition,
     transition,

@@ -20,14 +20,13 @@ context.globalThis = context;
 const source = fs.readFileSync(path.resolve(__dirname, '..', 'harness', 'state-bootstrap.js'), 'utf8');
 vm.runInContext(source, context, { filename: 'state-bootstrap.js' });
 
-assert.equal(localStorage.getItem('meteomate-desktop-state-v2'), 'null');
-const backup = JSON.parse(localStorage.getItem('meteomate-desktop-state-bootstrap-backup-v1'));
-assert.equal(backup.current, current);
-assert.equal(context.__METEOMATE_STATE_BOOTSTRAP__.payload, localStorage.getItem('meteomate-desktop-state-bootstrap-backup-v1'));
+assert.equal(localStorage.getItem('meteomate-desktop-state-v2'), current);
+assert.equal(localStorage.getItem('meteomate-desktop-state-bootstrap-backup-v1'), null);
+assert.equal(context.__METEOMATE_STATE_BOOTSTRAP__.keys.current, 'meteomate-desktop-state-v2');
 
 const secondContext = vm.createContext({ localStorage, Date, globalThis: null });
 secondContext.globalThis = secondContext;
 vm.runInContext(source, secondContext, { filename: 'state-bootstrap.js' });
-assert.equal(secondContext.__METEOMATE_STATE_BOOTSTRAP__.payload, context.__METEOMATE_STATE_BOOTSTRAP__.payload);
+assert.equal(secondContext.__METEOMATE_STATE_BOOTSTRAP__.keys.current, context.__METEOMATE_STATE_BOOTSTRAP__.keys.current);
 
 console.log('MeteoMate state bootstrap tests passed.');

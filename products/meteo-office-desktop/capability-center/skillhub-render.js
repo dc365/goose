@@ -12,7 +12,7 @@
     return `${tab('recommendations', '推荐')}${tab('skillhub', 'SkillHub')}${tab(
       'installed',
       `我的安装 ${api.installedSkills().length}`
-    )}${tab('collections', '套件')}`;
+    )}${canPublish() ? tab('managed', hub.identity?.role === 'admin' ? `发布管理 ${hub.managedTotal}` : `我的发布 ${hub.managedTotal}`) : ''}${tab('collections', '套件')}`;
   }
 
   function serverBadge() {
@@ -43,42 +43,58 @@
       }</span>
       <p>${escapeHtml(skill.summary || skill.description || '')}</p>
       <div class="tag-row small">${categories
-        .slice(0, 2)
+        .slice(0, 1)
         .map((item) => `<span>${escapeHtml(item)}</span>`)
         .join('')}${list(skill.tags)
-          .slice(0, 2)
+          .filter((item) => !categories.includes(item))
+          .slice(0, 1)
           .map((item) => `<span>${escapeHtml(item)}</span>`)
           .join('')}</div>
       ${
         reasons.length
           ? `<div class="skillhub-reasons">${reasons
-              .slice(0, 2)
+              .slice(0, 1)
               .map((item) => `<span>${escapeHtml(item)}</span>`)
               .join('')}</div>`
           : ''
       }
-      <div class="skillhub-card-meta"><span>${Number(skill.downloads || 0)} 次下载</span><span>${escapeHtml(
-        skill.visibility || 'public'
-      )}</span></div>
-      <button class="secondary-action" data-skillhub-skill="${escapeHtml(skill.id)}">${
-        installed === latest && latest ? '已安装 · 查看' : '查看与安装'
-      }</button>
+      <footer class="skillhub-card-footer">
+        <div class="skillhub-card-meta"><span>${Number(skill.downloads || 0)} 次下载</span><span>${escapeHtml(
+          skill.visibility || 'public'
+        )}</span></div>
+        <button class="secondary-action" data-skillhub-skill="${escapeHtml(skill.id)}">${
+          installed === latest && latest ? '已安装 · 查看' : '查看与安装'
+        }</button>
+      </footer>
     </article>`;
   }
 
+  const originalCatalogTitlebarActions = renderCatalogTitlebarActions;
+  renderCatalogTitlebarActions = function renderSkillHubTitlebarActions() {
+    const remoteView = state.view === 'catalog' && state.catalogTab === 'skills' && hub.view !== 'installed';
+    if (!remoteView) return originalCatalogTitlebarActions();
+    return `<div class="top-actions capability-top-actions"><label class="search-box">${icon(
+      'search'
+    )}<input id="catalog-search" value="${escapeHtml(hub.query)}" placeholder="搜索 SkillHub" /></label>${
+      canPublish() ? `<button class="my-experts" id="skillhub-publish-draft">${icon('plus')} 发布草稿</button>` : ''
+    }${api.skillAddMenu()}${serverBadge()}</div>`;
+  };
+
+  function skillCategories(source, recommended) {
+    return ['全部', ...new Set(source.flatMap((item) => {
+      const skill = recommended ? item.skill : item;
+      return list(skill?.categories).filter(Boolean);
+    }))];
+  }
+
+  function categoryStrip(categories, activeCategory) {
+    return `<div class="category-strip skillhub-category-strip" aria-label="技能分类">${categories
+      .map((category) => `<button class="category-pill ${activeCategory === category ? 'active' : ''}" data-skillhub-category="${escapeHtml(category)}">${escapeHtml(category)}</button>`)
+      .join('')}</div>`;
+  }
+
   function remoteShell(title, description, content) {
-    return `<header class="topbar">
-      <div class="top-tabs">${catalogTabButton('experts', '专家')}${catalogTabButton(
-        'skills',
-        '技能'
-      )}${catalogTabButton('connectors', '连接器')}</div>
-      <div class="top-actions capability-top-actions"><label class="search-box">${icon(
-        'search'
-      )}<input id="catalog-search" value="${escapeHtml(hub.query)}" placeholder="搜索 SkillHub" /></label>${
-        canPublish() ? '<button class="my-experts" id="skillhub-publish-draft">发布草稿</button>' : ''
-      }${serverBadge()}</div>
-    </header>
-    <div class="content-scroll"><section class="catalog-section capability-center-section skillhub-section">
+    return `<div class="content-scroll window-content-full"><section class="catalog-section capability-center-section skillhub-section">
       <div class="section-heading"><div><h2>${escapeHtml(title)}</h2><p>${escapeHtml(
         description
       )}</p></div><span class="capability-local-badge">SkillHub Server V1</span></div>
@@ -89,7 +105,13 @@
   }
 
   function renderRemoteSkills(recommended) {
-    const source = recommended ? hub.recommendations : hub.skills;
+    const allSkills = recommended ? hub.recommendations : hub.skills;
+    const categories = skillCategories(allSkills, recommended);
+    const activeCategory = categories.includes(hub.category) ? hub.category : '全部';
+    const source = allSkills.filter((item) => {
+      const skill = recommended ? item.skill : item;
+      return activeCategory === '全部' || list(skill?.categories).includes(activeCategory);
+    });
     const cards = source
       .map((item) => (recommended ? remoteCard(item.skill, item.reasons) : remoteCard(item)))
       .join('');
@@ -99,8 +121,8 @@
         : '<div class="large-empty"><span>S</span><h2>没有找到匹配技能</h2><p>调整搜索词，或连接另一个 SkillHub 服务。</p></div>';
     return remoteShell(
       recommended ? '为你推荐' : 'SkillHub',
-      recommended ? '结合已安装能力、项目和连接器给出推荐' : '浏览服务器中已发布和签名的 Skill',
-      `<div class="catalog-grid compact">${cards || empty}</div>`
+      recommended ? '结合已安装能力、项目和工具给出推荐' : '浏览服务器中已发布和签名的 Skill',
+      `${categoryStrip(categories, activeCategory)}<div class="catalog-grid compact">${cards || empty}</div>`
     );
   }
 
@@ -128,7 +150,7 @@
       .join('');
     return remoteShell(
       '技能套件',
-      '按业务场景组合专家、Skill、连接器与模板',
+      '按业务场景组合专家、Skill、工具与模板',
       `<div class="skillhub-collection-grid">${
         cards ||
         (hub.status === 'loading'
@@ -138,12 +160,38 @@
     );
   }
 
+  function renderManagedSkills() {
+    const visibilityLabels = { private: '仅自己', organization: '当前组织', public: '全体用户' };
+    const statusLabels = { draft: '草稿', published: '已发布', deprecated: '已弃用' };
+    const rows = hub.managedSkills
+      .map(
+        (skill) => `<article class="skillhub-managed-row">
+          <div class="skillhub-managed-identity"><span class="skillhub-managed-icon">${escapeHtml(skill.icon || skill.name?.slice(0, 1) || 'S')}</span><div><h3>${escapeHtml(skill.name || skill.id)}</h3><p>${escapeHtml(skill.id)} · ${escapeHtml(skill.publisher?.name || '')}</p></div></div>
+          <div class="skillhub-managed-fact"><span>状态</span><strong class="skillhub-lifecycle ${escapeHtml(skill.status || 'draft')}">${escapeHtml(statusLabels[skill.status] || skill.status || '草稿')}</strong></div>
+          <div class="skillhub-managed-fact"><span>可见范围</span><strong>${escapeHtml(visibilityLabels[skill.visibility] || skill.visibility || '仅自己')}</strong></div>
+          <div class="skillhub-managed-fact"><span>当前版本</span><strong>${escapeHtml(skill.latestVersion || '尚未发布')}</strong></div>
+          <div class="skillhub-managed-fact"><span>更新时间</span><strong>${escapeHtml(formatDateTime(skill.updatedAt) || '-')}</strong></div>
+          <button class="secondary-action skillhub-manage-action" data-skillhub-manage="${escapeHtml(skill.id)}">管理</button>
+        </article>`
+      )
+      .join('');
+    const empty = hub.status === 'loading'
+      ? '<div class="empty-result">正在读取发布记录…</div>'
+      : '<div class="large-empty"><span>版</span><h2>还没有发布记录</h2><p>从 Skill Creator 选择一个草稿并上传到 SkillHub。</p></div>';
+    return remoteShell(
+      hub.identity?.role === 'admin' ? '发布管理' : '我的发布',
+      hub.identity?.role === 'admin' ? '管理全部发布者的 Skill、版本和可见范围' : '管理由当前账户上传的 Skill 和不可变版本',
+      `<div class="skillhub-managed-summary"><span><strong>${hub.managedTotal}</strong> 个 Skill</span><span><strong>${hub.managedSkills.filter((skill) => skill.status === 'draft').length}</strong> 个待发布</span><span><strong>${hub.managedSkills.filter((skill) => skill.status === 'published').length}</strong> 个已发布</span></div><div class="skillhub-managed-list">${rows || empty}</div>`
+    );
+  }
+
   const originalCatalogView = renderCatalogView;
   renderCatalogView = function renderSkillHubCatalog() {
     if (state.catalogTab !== 'skills') return originalCatalogView();
     if (hub.view === 'skillhub') return renderRemoteSkills(false);
     if (hub.view === 'recommendations') return renderRemoteSkills(true);
     if (hub.view === 'collections') return renderCollections();
+    if (hub.view === 'managed') return renderManagedSkills();
     api.center.installedOnly = true;
     let html = originalCatalogView();
     const oldTabs = /<div class="capability-subtabs">[\s\S]*?<\/div>/;
@@ -155,5 +203,5 @@
     return html;
   };
 
-  Object.assign(skillHub, { tabs, serverBadge, remoteCard, remoteShell, renderRemoteSkills, renderCollections });
+  Object.assign(skillHub, { tabs, serverBadge, remoteCard, remoteShell, renderRemoteSkills, renderCollections, renderManagedSkills });
 })(typeof globalThis !== 'undefined' ? globalThis : window);

@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>MeteoMate SkillHub 管理</title>
+    <link rel="icon" href="/admin/assets/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/admin/assets/admin.css" />
+    <script src="/admin/assets/admin.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" id="skip-link" href="#login-form">跳到主要内容</a>
+
+    <main class="login-shell" id="login-shell">
+      <section class="login-context" aria-labelledby="login-title">
+        <div class="product-mark" aria-hidden="true">MM</div>
+        <p class="eyebrow">气象智伴 · SkillHub</p>
+        <h1 id="login-title">内网能力与用户管理</h1>
+        <p class="login-context-copy">在一个后台中管理 MeteoMate 用户、桌面会话和审计记录。</p>
+        <div class="boundary-note">
+          <span class="boundary-symbol" aria-hidden="true">内</span>
+          <span><strong>仅连接当前内网服务</strong><small>管理员会话只保存在当前浏览器页面内，关闭页面后自动清除。</small></span>
+        </div>
+      </section>
+      <section class="login-panel">
+        <div class="login-card">
+          <header><p class="section-label">管理员入口</p><h2>登录管理后台</h2><p>使用 SkillHub 管理员用户名和密码</p></header>
+          <form id="login-form" novalidate>
+            <label class="field"><span>用户名</span><input id="login-username" name="username" autocomplete="username" required /></label>
+            <label class="field"><span>密码</span><input id="login-password" name="password" type="password" autocomplete="current-password" required /></label>
+            <div class="form-error" id="login-error" role="alert" hidden></div>
+            <button class="button primary login-button" type="submit">登录管理后台</button>
+          </form>
+          <form id="first-password-form" novalidate hidden>
+            <div class="notice">首次登录需要先修改管理员临时密码。</div>
+            <input class="visually-hidden" id="first-username" type="text" autocomplete="username" tabindex="-1" aria-hidden="true" />
+            <label class="field"><span>当前临时密码</span><input id="first-current-password" type="password" autocomplete="current-password" required /></label>
+            <label class="field"><span>新密码</span><input id="first-new-password" type="password" autocomplete="new-password" minlength="8" required /></label>
+            <label class="field"><span>再次输入新密码</span><input id="first-confirm-password" type="password" autocomplete="new-password" minlength="8" required /></label>
+            <div class="form-error" id="first-password-error" role="alert" hidden></div>
+            <button class="button primary login-button" type="submit">更新密码</button>
+          </form>
+        </div>
+      </section>
+    </main>
+
+    <div class="admin-shell" id="admin-shell" hidden>
+      <aside class="admin-sidebar">
+        <div class="brand-lockup"><span class="brand-mark" aria-hidden="true">MM</span><span><strong>MeteoMate</strong><small>SkillHub 管理</small></span></div>
+        <nav aria-label="管理导航">
+          <button class="nav-button active" data-view="users"><span aria-hidden="true">人</span><span>用户管理</span></button>
+          <button class="nav-button" data-view="policies"><span aria-hidden="true">策</span><span>策略下发</span></button>
+          <button class="nav-button" data-view="audit"><span aria-hidden="true">录</span><span>审计记录</span></button>
+        </nav>
+        <div class="service-state"><span class="state-dot"></span><span><strong>SkillHub 服务正常</strong><small id="service-origin"></small></span></div>
+      </aside>
+
+      <main class="admin-main" id="main-content" tabindex="-1">
+        <header class="topbar">
+          <div><p class="section-label" id="view-eyebrow">账户与权限</p><h1 id="view-title">用户管理</h1></div>
+          <div class="admin-identity"><span class="identity-avatar" id="identity-avatar">管</span><span><strong id="identity-name">管理员</strong><small id="identity-username"></small></span><button class="icon-button" id="logout-button" aria-label="退出管理后台" title="退出管理后台">退出</button></div>
+        </header>
+
+        <section class="view-panel" id="users-view">
+          <div class="metric-strip" aria-label="用户概览">
+            <div><span>启用用户</span><strong id="metric-active">0</strong></div>
+            <div><span>发布者</span><strong id="metric-publishers">0</strong></div>
+            <div><span>在线会话</span><strong id="metric-sessions">0</strong></div>
+            <div><span>停用账户</span><strong id="metric-disabled">0</strong></div>
+          </div>
+
+          <div class="content-heading"><div><h2>单位用户</h2><p>账户由管理员创建，不使用邮箱和公开注册。</p></div><button class="button primary" id="create-user-button"><span aria-hidden="true">＋</span>新建用户</button></div>
+          <div class="toolbar">
+            <label class="search-field"><span class="visually-hidden">搜索用户</span><input id="user-search" type="search" placeholder="搜索用户名或姓名" /></label>
+            <label class="select-field"><span class="visually-hidden">按角色筛选</span><select id="role-filter"><option value="">全部角色</option><option value="viewer">使用者</option><option value="publisher">Skill 发布者</option><option value="admin">管理员</option></select></label>
+            <label class="select-field"><span class="visually-hidden">按状态筛选</span><select id="status-filter"><option value="">全部状态</option><option value="active">已启用</option><option value="disabled">已停用</option></select></label>
+            <button class="button quiet" id="refresh-users-button">刷新</button>
+          </div>
+          <div class="table-surface">
+            <table class="data-table">
+              <thead><tr><th>用户</th><th>角色</th><th>状态</th><th>最近登录</th><th>会话</th><th><span class="visually-hidden">操作</span></th></tr></thead>
+              <tbody id="users-body"></tbody>
+            </table>
+            <div class="empty-state" id="users-empty" hidden><strong>没有符合条件的用户</strong><span>调整搜索或筛选条件后重试。</span></div>
+          </div>
+        </section>
+
+        <section class="view-panel" id="policies-view" hidden>
+          <div class="metric-strip policy-metrics" aria-label="策略概览">
+            <div><span>策略修订</span><strong id="policy-metric-revision">0</strong></div>
+            <div><span>受管模型</span><strong id="policy-metric-models">不限</strong></div>
+            <div><span>默认 Skill</span><strong id="policy-metric-skills">0</strong></div>
+            <div><span>用户覆盖</span><strong id="policy-metric-users">0</strong></div>
+          </div>
+
+          <div class="content-heading"><div><h2>组织策略</h2><p>集中管理模型、能力、权限和桌面运行参数；角色和用户只覆盖明确指定的字段。</p></div><button class="button quiet" id="refresh-policies-button">刷新策略</button></div>
+          <div class="policy-principle"><span aria-hidden="true">策</span><p><strong>最终策略由服务端计算</strong><small>桌面端不能扩大管理员下发的范围，运行参数在用户下次登录时生效。空白允许列表表示不限制。</small></p></div>
+          <div class="toolbar">
+            <label class="search-field"><span class="visually-hidden">搜索策略范围</span><input id="policy-search" type="search" placeholder="搜索角色或用户" /></label>
+            <label class="select-field"><span class="visually-hidden">按策略范围筛选</span><select id="policy-scope-filter"><option value="">全部范围</option><option value="organization">组织默认</option><option value="role">角色覆盖</option><option value="user">用户覆盖</option></select></label>
+          </div>
+          <div class="table-surface policy-table-surface">
+            <table class="data-table policy-table">
+              <thead><tr><th>适用范围</th><th>覆盖状态</th><th>默认模型</th><th>默认权限</th><th>自动压缩</th><th><span class="visually-hidden">操作</span></th></tr></thead>
+              <tbody id="policies-body"></tbody>
+            </table>
+            <div class="empty-state" id="policies-empty" hidden><strong>没有符合条件的策略</strong><span>调整搜索或筛选条件后重试。</span></div>
+          </div>
+        </section>
+
+        <section class="view-panel" id="audit-view" hidden>
+          <div class="content-heading"><div><h2>安全与管理记录</h2><p>登录、用户修改、会话和 Skill 操作按时间倒序显示。</p></div><button class="button quiet" id="refresh-audit-button">刷新记录</button></div>
+          <div class="toolbar">
+            <label class="search-field audit-search"><span class="visually-hidden">搜索审计记录</span><input id="audit-search" type="search" placeholder="搜索操作、用户或目标" /></label>
+            <label class="select-field"><span class="visually-hidden">按操作筛选</span><select id="audit-action-filter"><option value="">全部操作</option><option value="auth.login">登录成功</option><option value="auth.login.failed">登录失败</option><option value="user.create">创建用户</option><option value="user.update">更新用户</option><option value="user.password.reset">重置密码</option><option value="user.sessions.revoke">撤销会话</option><option value="policy.organization.update">更新组织策略</option><option value="policy.role.update">更新角色策略</option><option value="policy.user.update">更新用户策略</option><option value="skill.update">更新 Skill 资料</option><option value="skill.owner.transfer">转交 Skill 负责人</option><option value="skill.version.publish">发布 Skill</option><option value="skill.version.deprecate">弃用 Skill 版本</option></select></label>
+          </div>
+          <div class="table-surface">
+            <table class="data-table audit-table">
+              <thead><tr><th>时间</th><th>操作</th><th>执行者</th><th>目标</th><th>来源</th></tr></thead>
+              <tbody id="audit-body"></tbody>
+            </table>
+            <div class="empty-state" id="audit-empty" hidden><strong>还没有审计记录</strong><span>管理操作发生后会显示在这里。</span></div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div class="drawer-layer" id="drawer-layer" hidden>
+      <button class="drawer-backdrop" id="drawer-backdrop" aria-label="关闭侧栏"></button>
+      <aside class="drawer" id="drawer" aria-labelledby="drawer-title" aria-modal="true" role="dialog">
+        <header class="drawer-header"><div><p class="section-label" id="drawer-eyebrow">用户</p><h2 id="drawer-title">用户详情</h2></div><button class="icon-button close-button" id="drawer-close" aria-label="关闭">×</button></header>
+        <div class="drawer-content" id="drawer-content"></div>
+      </aside>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+  </body>
+</html>

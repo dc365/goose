@@ -17,6 +17,25 @@
     }
   }
 
+  function uploadSkill() {
+    modal(`<header class="capability-modal-header"><div><h2>上传技能</h2><p>选择技能包或本地技能目录，安装前会先进行隔离检查</p></div><button data-modal-close>×</button></header>
+      <div class="capability-modal-body skill-upload-options">
+        <button type="button" data-skill-upload-kind="file">${icon('file')}<span><strong>选择技能包</strong><small>支持 ZIP 或单个 SKILL.md</small></span>${icon('chevron')}</button>
+        <button type="button" data-skill-upload-kind="directory">${icon('folder')}<span><strong>选择技能目录</strong><small>选择包含 SKILL.md 的完整目录</small></span>${icon('chevron')}</button>
+      </div>
+      <footer class="capability-modal-footer"><span class="capability-modal-spacer"></span><button class="ghost-button" data-modal-close>取消</button></footer>`, {
+      onReady(element) {
+        element.querySelectorAll('[data-skill-upload-kind]').forEach((button) => {
+          button.addEventListener('click', () => {
+            const kind = button.dataset.skillUploadKind;
+            element.remove();
+            void importSkill(kind);
+          });
+        });
+      },
+    });
+  }
+
   async function inspectBundled(id) {
     modal('<div class="capability-modal-loading">正在检查随产品提供的 Skill…</div>');
     try {
@@ -78,13 +97,14 @@
     const installation = item.installation;
     if (!installation && item.bundled) return void inspectBundled(item.id);
     if (!installation) return error('尚未提供', '该技能仍处于规划阶段，后续可通过 SkillHub 或上传包安装。');
-    modal(`<header class="capability-modal-header"><div><h2>${escapeHtml(item.name)}</h2><p>${escapeHtml(item.id)} · ${escapeHtml(item.version)}</p></div><button data-modal-close>×</button></header><div class="capability-modal-body"><div class="capability-title-row"><p>${escapeHtml(item.description)}</p>${item.risk ? riskBadge({ risk: item.risk }) : ''}</div><dl class="capability-summary-list"><div><dt>状态</dt><dd>${installation.enabled ? '已启用' : '已关闭'}</dd></div><div><dt>范围</dt><dd>${installation.scope === 'project' ? '项目' : '当前用户'}</dd></div><div><dt>来源</dt><dd>${escapeHtml(installation.source?.type || 'local')}</dd></div><div><dt>安装路径</dt><dd><code>${escapeHtml(installation.installPath)}</code></dd></div></dl><h4>用于项目</h4><div class="capability-project-list">${projectOptions(installation.projectIds || [])}</div>${(installation.warnings || []).length ? `<h4>安装建议</h4><ul>${installation.warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join('')}</ul>` : ''}</div>
-      <footer class="capability-modal-footer"><button class="ghost-button" id="open-skill-directory">打开目录</button><button class="ghost-button" id="toggle-skill">${installation.enabled ? '关闭技能' : '启用技能'}</button><button class="danger-text-button" id="uninstall-skill">卸载</button><span class="capability-modal-spacer"></span><button class="primary-button" id="save-skill-projects">保存项目绑定</button></footer>`, {
+    const managedNotice = installation.managedByPolicy ? '<div class="capability-error-block">这是组织默认 Skill。策略生效期间保持启用，不能关闭或卸载。</div>' : '';
+    modal(`<header class="capability-modal-header"><div><h2>${escapeHtml(item.name)}</h2><p>${escapeHtml(item.id)} · ${escapeHtml(item.version)}</p></div><button data-modal-close>×</button></header><div class="capability-modal-body">${managedNotice}<div class="capability-title-row"><p>${escapeHtml(item.description)}</p>${item.risk ? riskBadge({ risk: item.risk }) : ''}</div><dl class="capability-summary-list"><div><dt>状态</dt><dd>${installation.enabled ? '已启用' : '已关闭'}${installation.managedByPolicy ? ' · 组织默认' : ''}</dd></div><div><dt>范围</dt><dd>${installation.scope === 'project' ? '项目' : '当前用户'}</dd></div><div><dt>来源</dt><dd>${escapeHtml(installation.source?.type || 'local')}</dd></div><div><dt>安装路径</dt><dd><code>${escapeHtml(installation.installPath)}</code></dd></div></dl><h4>用于项目</h4><div class="capability-project-list">${projectOptions(installation.projectIds || [])}</div>${(installation.warnings || []).length ? `<h4>安装建议</h4><ul>${installation.warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join('')}</ul>` : ''}</div>
+      <footer class="capability-modal-footer"><button class="ghost-button" id="open-skill-directory">打开目录</button>${installation.managedByPolicy ? '' : `<button class="ghost-button" id="toggle-skill">${installation.enabled ? '关闭技能' : '启用技能'}</button><button class="danger-text-button" id="uninstall-skill">卸载</button>`}<span class="capability-modal-spacer"></span><button class="primary-button" id="save-skill-projects">保存项目绑定</button></footer>`, {
       wide: true,
       onReady(element) {
         element.querySelector('#open-skill-directory').addEventListener('click', () => root.meteoDesktop.openCapabilityPath(installation.installPath));
-        element.querySelector('#toggle-skill').addEventListener('click', async () => { const result = await root.meteoDesktop.setSkillEnabled({ id: installation.id, enabled: !installation.enabled }); api.center.registry = result.registry; element.remove(); render(); });
-        element.querySelector('#uninstall-skill').addEventListener('click', async () => { if (!confirm(`确定卸载“${item.name}”吗？`)) return; const result = await root.meteoDesktop.uninstallSkill(installation.id); api.center.registry = result.registry; api.syncProjectCapability('skills', item.id, []); element.remove(); render(); });
+        element.querySelector('#toggle-skill')?.addEventListener('click', async () => { const result = await root.meteoDesktop.setSkillEnabled({ id: installation.id, enabled: !installation.enabled }); api.center.registry = result.registry; element.remove(); render(); });
+        element.querySelector('#uninstall-skill')?.addEventListener('click', async () => { if (!confirm(`确定卸载“${item.name}”吗？`)) return; const result = await root.meteoDesktop.uninstallSkill(installation.id); api.center.registry = result.registry; api.syncProjectCapability('skills', item.id, []); element.remove(); render(); });
         element.querySelector('#save-skill-projects').addEventListener('click', async () => { const projectIds = selectedProjects(element); const result = await root.meteoDesktop.updateSkillProjects({ id: installation.id, projectIds }); api.center.registry = result.registry; api.syncProjectCapability('skills', item.id, projectIds); element.remove(); render(); });
       },
     });
@@ -103,11 +123,11 @@
       }
     }
     const expertId = 'skill-creator-expert';
-    if (!state.customExperts.some((item) => item.id === expertId)) state.customExperts.push({ id: expertId, kind: 'expert', name: 'Skill Creator', owner: 'MeteoMate', category: '效率工具', avatar: '技', description: '通过对话创建符合 Agent Skills 标准的 Skill 包。', tags: ['Skill', '创建', '契约'], instruction: '使用已安装的 skill-creator Skill。先澄清目标、触发条件、输入输出、权限、连接器和验收标准，再在用户指定的草稿目录生成文件。未经确认不要直接安装。', prompts: ['请帮我创建一个可以实现「……」的 Skill'], permissionProfile: 'workspace-approval', recommendedSkills: ['skill-creator'] });
+    if (!state.customExperts.some((item) => item.id === expertId)) state.customExperts.push({ id: expertId, kind: 'expert', name: 'Skill Creator', owner: 'MeteoMate', category: '效率工具', avatar: '技', description: '通过对话创建符合 Agent Skills 标准的 Skill 包。', tags: ['Skill', '创建', '契约'], instruction: '使用已安装的 skill-creator Skill。先澄清目标、触发条件、输入输出、权限、工具依赖和验收标准，再在用户指定的草稿目录生成文件。未经确认不要直接安装。', prompts: ['请帮我创建一个可以实现「……」的 Skill'], permissionProfile: 'workspace-approval', recommendedSkills: ['skill-creator'] });
     state.draftSkillIds = ['skill-creator'];
     openExpert(expertId);
-    setTimeout(() => { const textarea = document.getElementById('task-prompt'); if (textarea) { textarea.value = '请帮我创建一个可以实现「……」的 Skill。先询问我需求、触发条件、输入输出、依赖连接器、权限和验收标准，再生成草稿。'; textarea.focus(); } }, 0);
+    setTimeout(() => { const textarea = document.getElementById('task-prompt'); if (textarea) { textarea.value = '请帮我创建一个可以实现「……」的 Skill。先询问我需求、触发条件、输入输出、依赖工具、权限和验收标准，再生成草稿。'; textarea.focus(); } }, 0);
   }
 
-  api.skills = { importSkill, inspectBundled, inspect, manage, launchCreator };
+  api.skills = { importSkill, uploadSkill, inspectBundled, inspect, manage, launchCreator };
 })(typeof globalThis !== 'undefined' ? globalThis : window);

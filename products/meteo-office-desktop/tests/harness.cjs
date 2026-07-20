@@ -1,7 +1,9 @@
 const assert = require('node:assert/strict');
 
 const Shared = require('../harness/shared');
+const ContextWindow = require('../harness/context-window');
 const Project = require('../harness/project');
+const Automation = require('../harness/automation');
 const TaskStateMachine = require('../harness/task-state-machine');
 const CapabilityResolver = require('../harness/capability-resolver');
 const PolicyEngine = require('../harness/policy-engine');
@@ -19,6 +21,41 @@ function createDefaultPlan() {
     { id: 'deliver', title: '交付', status: 'pending' },
   ];
 }
+
+const normalContext = ContextWindow.contextStatus({
+  usage: { used: 64_000, contextLimit: 128_000 },
+});
+assert.equal(normalContext.percent, 50);
+assert.equal(normalContext.tone, 'normal');
+assert.equal(normalContext.remaining, 64_000);
+
+const warningContext = ContextWindow.contextStatus({
+  usage: { used: 92_000, size: 128_000 },
+});
+assert.equal(warningContext.tone, 'warning');
+assert.equal(warningContext.shouldCompact, false);
+
+const compactContext = ContextWindow.contextStatus({
+  usage: { used: 103_000, size: 128_000 },
+  contextState: { phase: 'compacting' },
+});
+assert.equal(compactContext.tone, 'active');
+assert.equal(compactContext.shouldCompact, true);
+assert.equal(ContextWindow.contextStatus({ contextState: { phase: 'compacted' } }).tone, 'success');
+assert.deepEqual(
+  ContextWindow.compactionStatus({
+    sessionUpdate: 'status_message',
+    status: { type: 'notice', message: 'Compaction complete' },
+  }),
+  { phase: 'compacted', message: 'Compaction complete' }
+);
+assert.deepEqual(
+  ContextWindow.mergeUsage(
+    { used: 12_000, accumulatedInputTokens: 30_000 },
+    { used: 14_000, size: 128_000 }
+  ),
+  { used: 14_000, accumulatedInputTokens: 30_000, size: 128_000 }
+);
 
 const catalog = {
   experts: [{ id: 'synoptic-expert', name: '天气形势分析专家', instruction: '基于证据分析天气形势。' }],
@@ -48,6 +85,7 @@ const project = Project.normalizeProject({
   instructions: ['所有时次使用北京时间'],
   skillIds: ['synoptic-analysis@1.2.0'],
   connectorIds: ['artifact-docx'],
+  toolSelections: { 'artifact-docx': ['create_document'] },
   meteorologicalContext: {
     region: '华南',
     defaultModels: ['ECMWF'],
@@ -62,6 +100,7 @@ const project = Project.normalizeProject({
 assert.equal(project.kind, 'Project');
 assert.equal(project.spec.meteorologicalContext.timezone, 'Asia/Shanghai');
 assert.deepEqual(project.spec.capabilities.skills, ['synoptic-analysis@1.2.0']);
+assert.deepEqual(project.spec.capabilities.toolSelections, { 'artifact-docx': ['create_document'] });
 assert.equal(project.spec.workspaces[0].root, '/data/heavy-rain');
 
 const expert = {
@@ -93,6 +132,20 @@ const capabilities = CapabilityResolver.resolveCapabilities({ project, expert, t
 assert.equal(capabilities.ready, true);
 assert.deepEqual(capabilities.skills.map((item) => item.id), ['synoptic-analysis']);
 assert.deepEqual(capabilities.connectors.map((item) => item.id).sort(), ['artifact-docx', 'weather-data']);
+assert.deepEqual(capabilities.toolSelections, { 'artifact-docx': ['create_document'] });
+
+const recommendedCapabilities = CapabilityResolver.resolveCapabilities({
+  project: null,
+  expert: {
+    id: 'recommended-expert',
+    recommendedSkills: ['synoptic-analysis'],
+    recommendedConnectors: ['weather-data'],
+  },
+  task: { capabilityMode: 'inherit', skillIds: [], connectorIds: [] },
+  catalog,
+});
+assert.deepEqual(recommendedCapabilities.skills.map((item) => item.id), ['synoptic-analysis']);
+assert.deepEqual(recommendedCapabilities.connectors.map((item) => item.id), ['weather-data']);
 
 const snapshot = ContextCompiler.compileTaskContext({ task, project, expert, catalog });
 assert.equal(snapshot.kind, 'TaskContextSnapshot');
@@ -108,6 +161,117 @@ const snapshotAgain = ContextCompiler.compileTaskContext({ task, project, expert
 assert.notEqual(snapshot.compiledAt, undefined);
 assert.equal(snapshot.project.hash, snapshotAgain.project.hash);
 assert.equal(ContextCompiler.runtimeEnvelope(snapshot).contextSnapshotId, snapshot.id);
+assert.deepEqual(ContextCompiler.runtimeEnvelope(snapshot).capabilities.toolSelections, { 'artifact-docx': ['create_document'] });
+assert.equal(snapshot.completionContract.required, true);
+assert.equal(ContextCompiler.runtimeEnvelope(snapshot).completionContract.id, snapshot.completionContract.id);
+const completionRecipe = ContextCompiler.completionRecipe(snapshot.completionContract);
+assert.equal(completionRecipe.settings.max_turns, 24);
+assert.ok(completionRecipe.response.json_schema.properties.status.enum.includes('partial'));
+assert.ok(!JSON.stringify(completionRecipe).includes('make_product'));
+assert.ok(!JSON.stringify(completionRecipe).includes('小福气'));
+
+const completedEnvelope = {
+  status: 'completed',
+  summary: '已生成天气产品。',
+  answer: '下周天气产品已生成。',
+  artifacts: [{ name: '下周天气.docx', uri: '/tmp/下周天气.docx' }],
+  evidence: ['文档生成工具返回成功。'],
+  blockers: [],
+  nextActions: [],
+};
+assert.deepEqual(
+  ContextCompiler.parseCompletionEnvelope(`处理中\n${JSON.stringify(completedEnvelope)}`),
+  completedEnvelope
+);
+assert.equal(
+  ContextCompiler.evaluateCompletion(snapshot.completionContract, JSON.stringify(completedEnvelope)).status,
+  'completed'
+);
+assert.equal(
+  ContextCompiler.evaluateCompletion(snapshot.completionContract, '现在开始生成产品。').valid,
+  false
+);
+const fallbackCompletion = [
+  '兼容层结果如下：',
+  'MeteomATE_COMPLETION',
+  'Status: completed',
+  'Summary: 已完成浏览器任务',
+  'Answer: 页面结果为 Forecast ready: Taipei',
+  'ARTIFACTS:',
+  '- none',
+  'EVIDENCE:',
+  '- browser_snapshot 返回 Forecast ready: Taipei',
+  'BLOCKERS:',
+  '- none',
+  'NEXT_ACTIONS:',
+  '- none',
+  'END_METEOMATE_COMPLETION',
+].join('\n');
+assert.deepEqual(ContextCompiler.parseCompletionEnvelope(fallbackCompletion), {
+  status: 'completed',
+  summary: '已完成浏览器任务',
+  answer: '页面结果为 Forecast ready: Taipei',
+  artifacts: [],
+  evidence: ['browser_snapshot 返回 Forecast ready: Taipei'],
+  blockers: [],
+  nextActions: [],
+});
+assert.equal(ContextCompiler.evaluateCompletion(snapshot.completionContract, fallbackCompletion).status, 'completed');
+assert.equal(
+  ContextCompiler.compileCompletionContract({
+    task: { workMode: 'ask', expectedOutputs: [] },
+    capabilities: { skills: [], connectors: [], toolSelections: {} },
+  }).required,
+  false
+);
+
+const narrowedCapabilities = CapabilityResolver.resolveCapabilities({
+  project,
+  expert: { ...expert, requiredConnectors: [], recommendedConnectors: [] },
+  task: { ...task, capabilityMode: 'custom', connectorIds: ['artifact-docx'], toolSelections: { 'artifact-docx': ['create_document'] } },
+  catalog,
+});
+assert.deepEqual(narrowedCapabilities.connectors.map((item) => item.id), ['artifact-docx']);
+assert.equal(narrowedCapabilities.grantMode, 'custom');
+const differentlyNarrowedCapabilities = CapabilityResolver.resolveCapabilities({
+  project,
+  expert: { ...expert, requiredConnectors: [], recommendedConnectors: [] },
+  task: { ...task, capabilityMode: 'custom', connectorIds: ['artifact-docx'], toolSelections: { 'artifact-docx': ['update_document'] } },
+  catalog,
+});
+assert.notEqual(differentlyNarrowedCapabilities.id, narrowedCapabilities.id);
+
+const emptyCustomCapabilities = CapabilityResolver.resolveCapabilities({
+  project,
+  expert: { ...expert, requiredConnectors: [], recommendedConnectors: [] },
+  task: { ...task, capabilityMode: 'custom', connectorIds: [], toolSelections: {} },
+  catalog,
+});
+assert.deepEqual(emptyCustomCapabilities.connectors, []);
+assert.deepEqual(emptyCustomCapabilities.toolSelections, {});
+
+const inheritedAutomation = Automation.normalizeAutomation({
+  id: 'auto-inherit',
+  name: '继承项目工具',
+  projectId: project.id,
+  taskTemplate: { prompt: '生成摘要', expertId: expert.id, capabilityMode: 'inherit', connectorIds: ['artifact-docx'] },
+});
+assert.equal(inheritedAutomation.taskTemplate.capabilityMode, 'inherit');
+assert.deepEqual(inheritedAutomation.taskTemplate.connectorIds, []);
+const pinnedAutomation = Automation.normalizeAutomation({
+  id: 'auto-pinned',
+  name: '固定工具',
+  projectId: project.id,
+  taskTemplate: {
+    prompt: '生成摘要',
+    expertId: expert.id,
+    capabilityMode: 'pinned',
+    connectorIds: ['artifact-docx'],
+    toolSelections: { 'artifact-docx': ['create_document'] },
+  },
+});
+assert.equal(pinnedAutomation.taskTemplate.capabilityMode, 'pinned');
+assert.deepEqual(pinnedAutomation.taskTemplate.toolSelections, { 'artifact-docx': ['create_document'] });
 
 const policy = PolicyEngine.resolvePolicy({ project, expert, task, permissionProfiles: catalog.permissionProfiles });
 assert.equal(PolicyEngine.authorize({ kind: 'read' }, policy, { insideWorkspace: true }).decision, 'allow');
@@ -216,6 +380,24 @@ const normalizedState = StateStore.normalizeStoredState(stored, {
 assert.equal(normalizedState.runtime.state, 'starting');
 assert.equal(normalizedState.tasks[0].messages[0].processPlan[0].title, '自定义步骤');
 assert.equal(normalizedState.tasks[0].lifecycleState, 'COMPLETED');
+
+const recoveredState = StateStore.normalizeStoredState({
+  projects: [],
+  tasks: [{
+    id: 'late-event-task',
+    title: '迟到事件恢复',
+    status: 'completed',
+    messages: [
+      { id: 'u1', role: 'user', text: '问题', status: 'completed' },
+      { id: 'a1', role: 'assistant', text: '回答', status: 'completed' },
+      { id: 'a2', role: 'assistant', text: '', status: 'streaming', responsePhase: 'responding' },
+    ],
+  }],
+}, {
+  initialState: { projects: [], tasks: [] },
+  createDefaultPlan,
+});
+assert.deepEqual(recoveredState.tasks[0].messages.map((message) => message.id), ['u1', 'a1']);
 
 assert.equal(Shared.contentHash({ b: 2, a: 1 }), Shared.contentHash({ a: 1, b: 2 }));
 console.log('MeteoMate harness tests passed.');

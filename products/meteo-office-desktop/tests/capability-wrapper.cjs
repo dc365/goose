@@ -8,16 +8,47 @@ const root = path.resolve(__dirname, '..');
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 const mainSource = fs.readFileSync(path.join(root, 'main.cjs'), 'utf8');
 const wrapperSource = fs.readFileSync(path.join(root, 'capabilities', 'main-wrapper.cjs'), 'utf8');
+const knowledgeSource = fs.readFileSync(path.join(root, 'capabilities', 'knowledge-service.cjs'), 'utf8');
+const skillHubSource = fs.readFileSync(path.join(root, 'capabilities', 'skillhub-client.cjs'), 'utf8');
 const preloadSource = fs.readFileSync(path.join(root, 'preload.cjs'), 'utf8');
 const indexSource = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+const runtimeServices = require('../capabilities/runtime-services.cjs');
 
 assert.equal(packageJson.main, 'capabilities/main-wrapper.cjs');
-assert.ok(mainSource.includes('const enabledExtensions = request.allowFileTools'));
-assert.ok(wrapperSource.includes('extensionsForRequest(request)'));
-assert.ok(wrapperSource.includes('could not locate the extension assembly point'));
+const macPackageScript = packageJson.scripts['package:mac'];
+for (const excludedPath of [
+  "^/services($|/)",
+  "^/tests($|/)",
+  "^/docs($|/)",
+  "^/README\\.md$",
+  "^/assets/icons/MeteoMate\\.icns$",
+]) {
+  assert.ok(macPackageScript.includes(excludedPath), `${excludedPath} must not enter the desktop bundle`);
+}
+assert.ok(macPackageScript.includes('cmp assets/icons/MeteoMate.icns'), 'packaging must verify the installed app icon bytes');
+assert.ok(!wrapperSource.includes('electron.safeStorage'), 'production startup must not access macOS Keychain');
+assert.ok(!knowledgeSource.includes('safeStorage'), 'knowledge sources must not access macOS Keychain');
+assert.ok(wrapperSource.includes('createProfileContext'));
+assert.ok(wrapperSource.includes('profileContext.registerIpc()'));
+assert.ok(wrapperSource.includes('registerRuntimeServices'));
+assert.ok(wrapperSource.includes("require('../main.cjs')"));
+assert.ok(!wrapperSource.includes('._compile('));
+assert.ok(!wrapperSource.includes('readFileSync'));
+assert.ok(!wrapperSource.includes('could not locate the extension assembly point'));
+assert.ok(!wrapperSource.includes('global.__METEOMATE'));
+assert.ok(mainSource.includes('runtimeServices().capabilityService?.extensionsForRequest(request)'));
+assert.ok(mainSource.includes('async verifySessionCapabilities('));
+assert.ok(mainSource.includes('sessionCapabilityMap'));
+assert.ok(mainSource.includes('sessionExtensionsAdd_unstable({ sessionId, config })'));
+assert.ok(!mainSource.includes('global.__METEOMATE'));
+assert.ok(mainSource.includes('filterModelSettings(settings)'));
+assert.ok(mainSource.includes('saveModelPreference(request)'));
+assert.ok(mainSource.includes('enforceRuntimePolicy(request)'));
 assert.ok(preloadSource.includes('listCapabilities'));
 assert.ok(preloadSource.includes('inspectSkill'));
 assert.ok(preloadSource.includes('saveConnector'));
+assert.ok(preloadSource.includes('loginAccount'));
+assert.ok(skillHubSource.includes('applyManagedPolicy'));
 assert.ok(indexSource.includes('styles-capability-center.css'));
 const modules = ['core.js', 'render.js', 'skills.js', 'connectors.js', 'integration.js'];
 for (const moduleName of modules) {
@@ -27,6 +58,14 @@ for (const moduleName of modules) {
 }
 assert.ok(indexSource.indexOf('capability-center/core.js') > indexSource.indexOf('renderer-actions.js'));
 assert.ok(indexSource.indexOf('capability-center/integration.js') > indexSource.indexOf('capability-center/connectors.js'));
+
+const registered = runtimeServices.registerRuntimeServices({
+  profileContext: { id: 'profile-context' },
+  capabilityService: { id: 'capability-service' },
+});
+assert.equal(runtimeServices.runtimeServices(), registered);
+assert.equal(registered.profileContext.id, 'profile-context');
+assert.equal(registered.capabilityService.id, 'capability-service');
 
 for (const skillId of ['synoptic-analysis', 'heavy-rain-score', 'forecast-writing', 'skill-creator']) {
   const skillFile = path.join(root, 'bundled-skills', skillId, 'SKILL.md');

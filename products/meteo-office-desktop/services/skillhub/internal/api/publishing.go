@@ -137,6 +137,9 @@ func (s *Server) uploadVersion(w http.ResponseWriter, r *http.Request) {
 			if actor.IsAdmin() {
 				skill.Featured = metadata.Featured
 			}
+			if skill.LatestVersion == "" {
+				skill.Status = "draft"
+			}
 			skill.UpdatedAt = now
 		}
 		version := &store.SkillVersion{
@@ -225,6 +228,16 @@ func (s *Server) deprecateVersion(w http.ResponseWriter, r *http.Request) {
 		version.DeprecatedAt = &now
 		if skill.LatestVersion == versionID {
 			skill.LatestVersion = latestPublishedVersion(state, skill)
+		}
+		if skill.LatestVersion == "" {
+			skill.Status = "deprecated"
+			for _, candidateID := range skill.Versions {
+				candidate := state.SkillVersions[store.VersionKey(skillID, candidateID)]
+				if candidate != nil && candidate.Status == "draft" {
+					skill.Status = "draft"
+					break
+				}
+			}
 		}
 		skill.UpdatedAt = now
 		return nil

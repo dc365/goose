@@ -9,11 +9,13 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/dc365/goose/products/meteo-office-desktop/services/skillhub/internal/api"
 	"github.com/dc365/goose/products/meteo-office-desktop/services/skillhub/internal/auth"
+	"github.com/dc365/goose/products/meteo-office-desktop/services/skillhub/internal/policy"
 	"github.com/dc365/goose/products/meteo-office-desktop/services/skillhub/internal/store"
 	"github.com/dc365/goose/products/meteo-office-desktop/services/skillhub/internal/trust"
 )
@@ -29,18 +31,32 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	tokens, err := auth.ParseTokensJSON(os.Getenv("METEOMATE_SKILLHUB_TOKENS"))
 	fatalIf(err, "parse METEOMATE_SKILLHUB_TOKENS")
-	if len(tokens) == 0 {
-		logger.Warn("no write tokens configured; public read APIs remain available", "env", "METEOMATE_SKILLHUB_TOKENS")
-	}
 
 	root, err := filepath.Abs(*dataDir)
 	fatalIf(err, "resolve data directory")
 	dataStore, err := store.Open(root)
 	fatalIf(err, "open store")
+	accounts, err := auth.OpenAccountStore(filepath.Join(root, "auth"))
+	fatalIf(err, "open account store")
+	policies, err := policy.Open(filepath.Join(root, "policy"))
+	fatalIf(err, "open organization policy store")
+	bootstrapUsername := strings.TrimSpace(os.Getenv("METEOMATE_SKILLHUB_BOOTSTRAP_USERNAME"))
+	bootstrapPassword := os.Getenv("METEOMATE_SKILLHUB_BOOTSTRAP_PASSWORD")
+	if accounts.Count() == 0 && bootstrapUsername != "" && bootstrapPassword != "" {
+		_, err := accounts.Create(auth.CreateUserInput{
+			Username: bootstrapUsername, DisplayName: envOr("METEOMATE_SKILLHUB_BOOTSTRAP_NAME", bootstrapUsername),
+			Password: bootstrapPassword, Role: "admin", MustChangePassword: true,
+		})
+		fatalIf(err, "create bootstrap administrator")
+		logger.Info("bootstrap administrator created", "username", bootstrapUsername)
+	}
+	if len(tokens) == 0 && accounts.Count() == 0 {
+		logger.Warn("no accounts or service tokens configured; set bootstrap credentials for the first administrator")
+	}
 	signer, err := trust.OpenOrCreate(filepath.Join(root, "trust"))
 	fatalIf(err, "open signing key")
 	server, err := api.New(api.Config{
-		Store: dataStore, Signer: signer, Authenticator: auth.New(tokens), Logger: logger,
+		Store: dataStore, Signer: signer, Authenticator: auth.NewWithAccounts(tokens, accounts, 12*time.Hour), Policies: policies, Logger: logger,
 	})
 	fatalIf(err, "create API server")
 	if *seedDir != "" {

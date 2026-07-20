@@ -65,6 +65,7 @@ spec:
     connectors: []
   assets:
     libraries: []
+    knowledgeSources: []
     templates: []
   policies:
     defaultWorkMode: ask

@@ -64,7 +64,7 @@ function checkTest(root, skillSource, report, item, index) {
   const expectedConnectors = Array.isArray(test.expected?.connectors) ? test.expected.connectors : [];
   for (const connector of expectedConnectors) {
     if (!availableConnectors.has(String(connector).split('@')[0])) {
-      failures.push(`未声明预期连接器：${connector}`);
+      failures.push(`未声明预期工具：${connector}`);
     }
   }
 

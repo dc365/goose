@@ -10,10 +10,13 @@
     skills: [],
     recommendations: [],
     collections: [],
+    managedSkills: [],
+    managedTotal: 0,
     collectionSkills: [],
     activeCollection: null,
     error: '',
     query: '',
+    category: '全部',
   };
 
   const list = (value) => (Array.isArray(value) ? value : []);
@@ -55,7 +58,7 @@
           q: hub.query || state.search,
           categories: project?.spec?.meteorologicalContext?.region ? ['气象业务'] : [],
           installedSkillIds: api.installedSkills().map((item) => item.skillId),
-          connectorIds: api.configuredConnectors().filter((item) => item.enabled).map((item) => item.id),
+          connectorIds: api.configuredConnectors().filter((item) => item.enabled && !item.policyBlocked).map((item) => item.id),
           limit: 24,
         });
         hub.recommendations = list(response?.items);
@@ -86,6 +89,25 @@
     if (rerender) render();
   }
 
+  async function loadManagedSkills({ rerender = true } = {}) {
+    hub.status = 'loading';
+    hub.error = '';
+    if (rerender) render();
+    try {
+      const response = await root.meteoDesktop.listManagedSkillHubSkills({
+        q: hub.query || state.search,
+        limit: 200,
+      });
+      hub.managedSkills = list(response?.items);
+      hub.managedTotal = Number(response?.total || hub.managedSkills.length);
+      hub.status = 'ready';
+    } catch (error) {
+      hub.status = 'error';
+      hub.error = error?.message || String(error);
+    }
+    if (rerender) render();
+  }
+
   api.skillHub = {
     state: hub,
     list,
@@ -95,5 +117,6 @@
     connect,
     loadRemoteSkills,
     loadCollections,
+    loadManagedSkills,
   };
 })(typeof globalThis !== 'undefined' ? globalThis : window);

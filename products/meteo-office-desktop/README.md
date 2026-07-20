@@ -6,13 +6,14 @@
 
 当前 Beta 聚焦把上一版展示型 MVP 升级为可持续使用的单用户桌面工作空间：
 
-- WorkBuddy 风格的信息架构：任务、助理、项目、专家、技能、连接器和自动化；
+- WorkBuddy 风格的信息架构：任务、助理、项目、专家、技能、工具和自动化；
 - Goose ACP 作为首选运行时，支持多轮会话、会话恢复、流式消息和取消；
 - ACP 不可用时自动降级到安全 Headless 模式；没有 Goose 时进入演示模式；
 - 工具调用、思考进展、执行计划和成果物在独立检查面板展示；
 - 文件写入与命令执行通过 ACP 权限请求逐次审批；
 - 项目、任务、会话 ID、收藏专家和运行历史保存在本地；
 - Expert、Skill、Connector 和 Scene 已拆分为独立 Manifest；
+- 浏览器操作复用 Goose 推荐的 Playwright MCP，提供隔离会话、工具白名单和任务级授权；
 - 后续气象数据、天气诊断、GIS 和 Office 文件能力通过 MCP/Artifact Service 接入。
 
 所有产品代码仍位于：
@@ -66,6 +67,12 @@ goose configure
 GOOSE_BINARY=../../target/release/goose npm start
 ```
 
+浏览器操作需要本机可用的 Node.js 与 `npx`。MeteoMate 会优先查找产品运行时和常见安装路径，也可以显式指定：
+
+```bash
+METEOMATE_NPX_PATH=/opt/homebrew/bin/npx npm start
+```
+
 强制演示模式：
 
 ```bash
@@ -93,6 +100,7 @@ goose serve --platform desktop
 - 创建、加载和继续 Goose Session；
 - Assistant 消息流；
 - Thought、Tool Call 和 Usage 事件；
+- 当前上下文窗口占用与自动压缩状态；
 - 任务取消；
 - 文件与命令权限审批。
 
@@ -100,9 +108,12 @@ Goose 服务默认以：
 
 ```text
 GOOSE_MODE=approve
+GOOSE_AUTO_COMPACT_THRESHOLD=0.8
 ```
 
-启动。
+启动。上下文超过 80% 时，Goose 会在下一次模型请求前自动总结较早对话。管理员可在
+SkillHub 后台的组织策略中设置 50%–95% 的自动压缩阈值；旧服务未下发该策略时，才使用
+`METEOMATE_AUTO_COMPACT_THRESHOLD` 或 `GOOSE_AUTO_COMPACT_THRESHOLD` 作为本机兜底。
 
 ### Headless 降级
 
@@ -112,7 +123,7 @@ GOOSE_MODE=approve
 goose run --no-session
 ```
 
-Headless 模式无法进行逐次权限审批，因此会自动关闭文件工具，只执行只读分析任务。
+Headless 模式无法进行逐次权限审批，因此会自动关闭文件工具，只执行无本地副作用的对话任务。
 
 ### 演示模式
 
@@ -160,9 +171,10 @@ Beta 已实现：
 
 ```bash
 npm run check
+npm run test:browser
 ```
 
-该命令执行所有 JavaScript 语法检查和 Manifest Smoke Test。
+`npm run check` 执行产品 JavaScript 语法检查和本地契约测试；`npm run test:browser` 会启动真实 Playwright MCP 和浏览器，验证导航、输入、点击、快照与截图链路。
 
 更多信息：
 

@@ -13,6 +13,16 @@
     modelPolicy: 'workspace-default',
   });
 
+  function normalizeToolSelections(value, connectorIds) {
+    const source = Shared.cleanObject(value);
+    const allowed = new Set(connectorIds);
+    return Object.fromEntries(
+      Object.entries(source)
+        .filter(([connectorId, toolNames]) => allowed.has(connectorId) && Array.isArray(toolNames))
+        .map(([connectorId, toolNames]) => [connectorId, Shared.uniqueStrings(toolNames)])
+    );
+  }
+
   function normalizeProject(project = {}, options = {}) {
     const now = options.now || Date.now();
     const id = project.id || Shared.createId('project');
@@ -30,6 +40,7 @@
       ...Shared.cleanObject(project.meteorologicalContext),
     };
 
+    const connectorIds = Shared.uniqueStrings(capabilities.connectors ?? project.connectorIds);
     return {
       ...project,
       apiVersion: project.apiVersion || 'meteomate/v1',
@@ -51,10 +62,12 @@
         capabilities: {
           experts: Shared.uniqueStrings(capabilities.experts ?? project.expertIds),
           skills: Shared.uniqueStrings(capabilities.skills ?? project.skillIds),
-          connectors: Shared.uniqueStrings(capabilities.connectors ?? project.connectorIds),
+          connectors: connectorIds,
+          toolSelections: normalizeToolSelections(capabilities.toolSelections ?? project.toolSelections, connectorIds),
         },
         assets: {
           libraries: Shared.uniqueStrings(assets.libraries ?? project.assetLibraryIds),
+          knowledgeSources: Shared.uniqueStrings(assets.knowledgeSources ?? project.knowledgeSourceIds),
           templates: Shared.uniqueStrings(assets.templates ?? project.templateIds),
         },
         policies,

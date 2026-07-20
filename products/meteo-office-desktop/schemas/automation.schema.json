@@ -3,18 +3,60 @@
   "$id": "https://meteomate.local/schemas/automation.schema.json",
   "title": "MeteoMate Automation",
   "type": "object",
-  "required": ["id", "name", "taskTemplate", "trigger", "executionPolicy"],
+  "required": ["id", "name", "projectId", "taskTemplate", "trigger", "executionPolicy"],
   "properties": {
     "id": { "type": "string" },
     "name": { "type": "string" },
-    "taskTemplate": { "type": "object" },
-    "trigger": {
+    "projectId": { "type": "string" },
+    "enabled": { "type": "boolean" },
+    "taskTemplate": {
       "type": "object",
-      "required": ["type"],
+      "required": ["prompt", "expertId", "permissionProfileId"],
       "properties": {
-        "type": { "enum": ["cron", "data-arrival", "file-change", "event", "manual", "task-completed"] }
+        "prompt": { "type": "string", "minLength": 1 },
+        "expertId": { "type": "string" },
+        "skillIds": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "capabilityMode": { "enum": ["inherit", "pinned"] },
+        "connectorIds": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "toolSelections": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": { "type": "string" },
+            "uniqueItems": true
+          }
+        },
+        "permissionProfileId": { "type": "string" },
+        "providerId": { "type": "string" },
+        "modelId": { "type": "string" }
       }
     },
-    "executionPolicy": { "type": "object" }
+    "trigger": {
+      "type": "object",
+      "required": ["type", "mode"],
+      "properties": {
+        "type": { "enum": ["cron", "data-arrival", "file-change", "event", "manual", "task-completed"] },
+        "mode": { "enum": ["recurring", "interval", "once"] },
+        "cadence": { "enum": ["daily", "workdays", "weekly"] },
+        "time": { "type": "string", "pattern": "^(?:[01][0-9]|2[0-3]):[0-5][0-9]$" },
+        "weekdays": { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 6 }, "uniqueItems": true },
+        "intervalValue": { "type": "integer", "minimum": 1 },
+        "intervalUnit": { "enum": ["minutes", "hours", "days"] },
+        "runAt": { "type": "string" }
+      }
+    },
+    "executionPolicy": {
+      "type": "object",
+      "properties": {
+        "mode": { "const": "local-active" },
+        "concurrent": { "type": "boolean" },
+        "approval": { "type": "string" }
+      }
+    },
+    "createdAt": { "type": "integer" },
+    "updatedAt": { "type": "integer" },
+    "lastRunAt": { "type": ["integer", "null"] },
+    "nextRunAt": { "type": ["integer", "null"] },
+    "lastStatus": { "type": "string" }
   }
 }

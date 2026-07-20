@@ -4,8 +4,129 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const vm = require('node:vm');
 const { createCapabilityService } = require('../capabilities/service.cjs');
+const ConnectorClient = require('../capabilities/connector-client.cjs');
+const BrowserConnector = require('../capabilities/browser-connector.js');
 const { parseZipBuffer } = require('../capabilities/safe-zip.cjs');
+
+const connectorsSource = fs.readFileSync(path.resolve(__dirname, '..', 'capability-center', 'connectors.js'), 'utf8');
+const capabilityRenderSource = fs.readFileSync(path.resolve(__dirname, '..', 'capability-center', 'render.js'), 'utf8');
+const capabilityCoreSource = fs.readFileSync(path.resolve(__dirname, '..', 'capability-center', 'core.js'), 'utf8');
+const capabilitiesManifestSource = fs.readFileSync(path.resolve(__dirname, '..', 'manifests', 'capabilities.js'), 'utf8');
+const skillHubRenderSource = fs.readFileSync(path.resolve(__dirname, '..', 'capability-center', 'skillhub-render.js'), 'utf8');
+const skillHubCoreSource = fs.readFileSync(path.resolve(__dirname, '..', 'capability-center', 'skillhub-core.js'), 'utf8');
+const skillCreatorSource = fs.readFileSync(path.resolve(__dirname, '..', 'capability-center', 'skill-creator.js'), 'utf8');
+const capabilityIntegrationSource = fs.readFileSync(path.resolve(__dirname, '..', 'capability-center', 'integration.js'), 'utf8');
+const rendererSource = fs.readFileSync(path.resolve(__dirname, '..', 'renderer-core.js'), 'utf8');
+const rendererActionsSource = fs.readFileSync(path.resolve(__dirname, '..', 'renderer-actions.js'), 'utf8');
+const taskStylesSource = fs.readFileSync(path.resolve(__dirname, '..', 'styles', 'app-4.css'), 'utf8');
+assert.ok(connectorsSource.includes('未使用钥匙串加密'));
+assert.ok(!connectorsSource.includes('值将加密保存'));
+assert.ok(rendererSource.includes('专家 · 技能 · 工具'));
+assert.ok(rendererSource.includes("catalogTabButton('connectors', '工具')"));
+assert.ok(!capabilityRenderSource.includes('class="top-tabs"'));
+assert.ok(!skillHubRenderSource.includes('class="top-tabs"'));
+assert.ok(!capabilityRenderSource.includes('class="topbar capability-toolbar"'));
+assert.ok(!skillHubRenderSource.includes('class="topbar capability-toolbar"'));
+assert.ok(capabilityRenderSource.includes('renderCapabilityTitlebarActions'));
+assert.ok(capabilityRenderSource.includes('data-add-skill="upload"'));
+assert.ok(capabilityRenderSource.includes('data-add-skill="create"'));
+assert.ok(!capabilityRenderSource.includes('data-add-skill="find"'));
+assert.ok(!capabilityRenderSource.includes('data-add-skill="zip"'));
+assert.ok(!capabilityRenderSource.includes('data-add-skill="directory"'));
+assert.ok(skillHubRenderSource.includes('renderSkillHubTitlebarActions'));
+assert.ok(skillHubRenderSource.includes('data-skillhub-category'));
+assert.ok(skillHubCoreSource.includes("category: '全部'"));
+assert.ok(skillCreatorSource.includes('renderSkillCreatorTitlebarActions'));
+assert.ok(capabilityRenderSource.includes('content-scroll window-content-full'));
+assert.ok(skillHubRenderSource.includes('content-scroll window-content-full'));
+assert.ok(capabilityRenderSource.includes('工具中心'));
+assert.ok(capabilityRenderSource.includes("item.id !== 'goose-runtime'"));
+assert.ok(capabilitiesManifestSource.includes("id: 'artifact-docx'"));
+assert.ok(capabilitiesManifestSource.includes("id: 'playwright-browser'"));
+assert.equal(BrowserConnector.MCP_VERSION, '0.0.78');
+assert.equal(BrowserConnector.SAFE_TOOLS.length, 18);
+assert.ok(BrowserConnector.SAFE_TOOLS.includes('browser_click'));
+assert.ok(!BrowserConnector.SAFE_TOOLS.includes('browser_run_code_unsafe'));
+assert.ok(capabilitiesManifestSource.includes("category: '办公'"));
+assert.ok(!capabilitiesManifestSource.includes("id: 'goose-runtime'"));
+assert.ok(connectorsSource.includes('添加工具服务'));
+assert.ok(connectorsSource.includes('可用工具'));
+assert.ok(connectorsSource.includes('data-tool-search-input'));
+assert.ok(connectorsSource.includes('该工具服务未提供描述'));
+assert.ok(capabilityRenderSource.includes('item.toolCount'));
+assert.ok(capabilityRenderSource.includes('tool.description'));
+assert.ok(![rendererSource, capabilityRenderSource, connectorsSource].some((source) => source.includes('连接器')));
+assert.ok(rendererSource.includes('new-task-launchpad'));
+assert.ok(rendererSource.includes('composer-more-popover'));
+assert.ok(rendererSource.includes('composer-project-popover'));
+assert.ok(rendererSource.includes('state.draftPrompt'));
+assert.ok(rendererActionsSource.includes('function persistComposerDraft(textarea)'));
+assert.ok(rendererActionsSource.includes('importLocalKnowledgeSources(projectId, { stayInTask: true })'));
+assert.ok(capabilityIntegrationSource.includes("getElementById('composer-capabilities')?.addEventListener('click'"));
+assert.ok(capabilityIntegrationSource.includes('[data-remove-task-skill]'));
+assert.ok(capabilityIntegrationSource.includes('[data-remove-task-tool]'));
+assert.ok(capabilityIntegrationSource.includes('readConnectorToolSelection'));
+assert.ok(capabilityIntegrationSource.includes('request.toolSelections'));
+assert.ok(capabilityRenderSource.includes('const enabledSkills = api.enabledSkillCatalog(project?.id || null)'));
+assert.ok(rendererSource.includes('data-tool-selection-count'));
+assert.ok(rendererSource.includes('选择本范围可调用的工具'));
+assert.ok(taskStylesSource.includes('.new-task-scene-list'));
+assert.ok(taskStylesSource.includes('--secondary-popover-label-size'));
+assert.ok(taskStylesSource.includes('.skillhub-section .skillhub-category-strip'));
+assert.ok(taskStylesSource.includes('.skillhub-section .skillhub-card-footer'));
+
+const capabilityContext = {
+  catalog: {
+    skills: [{ id: 'docx-template', name: 'Word 模板填充', status: 'planned' }],
+    connectors: [],
+  },
+  state: { projects: [] },
+  getActiveProject: () => ({ id: 'project-a' }),
+  saveState: () => {},
+  normalizeToolSelections: (value) => value || {},
+  runtimeRouter: {},
+};
+capabilityContext.globalThis = capabilityContext;
+vm.runInContext(capabilityCoreSource, vm.createContext(capabilityContext));
+const capabilityApi = capabilityContext.MeteoMateCapabilityCenter;
+capabilityApi.center.registry = {
+  bundledSkills: [],
+  connectors: [],
+  skills: [
+    { id: 'user:user-skill', skillId: 'user-skill', scope: 'user', enabled: true, name: '用户技能' },
+    { id: 'project:a-skill', skillId: 'project-a-skill', scope: 'project', projectId: 'project-a', enabled: true, name: '项目 A 技能' },
+    { id: 'project:b-skill', skillId: 'project-b-skill', scope: 'project', projectId: 'project-b', enabled: true, name: '项目 B 技能' },
+    { id: 'user:disabled', skillId: 'disabled-skill', scope: 'user', enabled: false, name: '已停用技能' },
+  ],
+};
+assert.deepEqual(
+  Array.from(capabilityApi.enabledSkillCatalog('project-a'), (item) => item.id).sort(),
+  ['project-a-skill', 'user-skill']
+);
+assert.deepEqual(
+  Array.from(capabilityApi.enabledSkillCatalog(null), (item) => item.id),
+  ['user-skill']
+);
+assert.ok(!capabilityApi.enabledSkillCatalog('project-a').some((item) => item.id === 'docx-template'));
+assert.deepEqual(
+  Array.from(capabilityApi.mergedCatalog(capabilityContext.catalog, 'project-a').skills, (item) => item.id).sort(),
+  ['project-a-skill', 'user-skill']
+);
+const projectSelectableSkills = capabilityApi.projectSelectableSkillCatalog([
+  { id: 'skill-creator', name: '技能创建助手', summary: '创建技能', latestVersion: '1.1.0', categories: ['效率工具'] },
+  { id: 'synoptic-analysis', name: '天气形势综合分析', summary: '分析天气形势', latestVersion: '1.0.0', categories: ['天气分析'] },
+  { id: 'heavy-rain-score', name: '强降水风险评分', summary: '评估强降水风险', latestVersion: '1.0.0', categories: ['灾害天气'] },
+  { id: 'forecast-writing', name: '气象预报稿件生成', summary: '生成预报稿件', latestVersion: '1.0.0', categories: ['内容创作'] },
+], 'project-a');
+assert.deepEqual(
+  Array.from(projectSelectableSkills, (item) => item.id).sort(),
+  ['forecast-writing', 'heavy-rain-score', 'project-a-skill', 'skill-creator', 'synoptic-analysis', 'user-skill']
+);
+assert.equal(projectSelectableSkills.find((item) => item.id === 'synoptic-analysis').status, 'skillhub');
+assert.equal(projectSelectableSkills.find((item) => item.id === 'synoptic-analysis').remoteSkill.latestVersion, '1.0.0');
+assert.ok(!projectSelectableSkills.some((item) => item.id === 'docx-template'));
 
 function crc32(buffer) {
   let crc = 0xffffffff;
@@ -144,9 +265,27 @@ const connectorResult = service.saveConnector({
   env: 'API_TOKEN=secret-value',
   projectIds: ['project-1'],
   enabled: true,
+  lastTest: {
+    ok: true,
+    checkedAt: Date.now(),
+    durationMs: 1,
+    result: {
+      ok: true,
+      transport: 'stdio',
+      tools: [
+        { name: 'get_forecast', description: '读取预报' },
+        { name: 'get_observation', description: '读取实况' },
+      ],
+    },
+  },
 });
 assert.deepEqual(connectorResult.connector.secretKeys.env, ['API_TOKEN']);
 assert.equal(Object.prototype.hasOwnProperty.call(connectorResult.connector, 'secrets'), false);
+assert.equal(connectorResult.connector.secretStorage, 'local-obfuscated');
+const registryPath = path.join(userData, 'capabilities', 'registry.json');
+const storedRegistry = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+assert.equal(storedRegistry.connectors[0].secrets.scheme, 'local-obfuscated');
+assert.equal(fs.statSync(registryPath).mode & 0o777, 0o600);
 const connectorUpdate = service.saveConnector({
   id: 'weather-data-local',
   name: 'Weather Data Local Updated',
@@ -158,11 +297,156 @@ const connectorUpdate = service.saveConnector({
   enabled: true,
 });
 assert.deepEqual(connectorUpdate.connector.secretKeys.env, ['API_TOKEN']);
+assert.equal(connectorUpdate.connector.lastTest.ok, true);
+const connectorChangedWithoutRetest = service.saveConnector({
+  id: 'weather-data-local',
+  name: 'Weather Data Local Updated',
+  description: 'Connection changed without retest',
+  transport: 'stdio',
+  command: process.execPath,
+  args: ['--help'],
+  projectIds: ['project-1'],
+  enabled: true,
+  lastTest: null,
+});
+assert.equal(connectorChangedWithoutRetest.connector.lastTest, null);
 const extensions = service.extensionsForRequest({ connectorIds: ['weather-data-local'], projectId: 'project-1' });
 assert.equal(extensions.length, 1);
-assert.equal(extensions[0].type, 'stdio');
-assert.equal(extensions[0].envs.API_TOKEN, 'secret-value');
+assert.equal(extensions[0].type, 'mcp');
+assert.equal(extensions[0].server.command, process.execPath);
+assert.deepEqual(extensions[0].server.env, [{ name: 'API_TOKEN', value: 'secret-value' }]);
+assert.equal(Object.prototype.hasOwnProperty.call(extensions[0], 'available_tools'), false);
+const filteredExtensions = service.extensionsForRequest({
+  connectorIds: ['weather-data-local'],
+  projectId: 'project-1',
+  toolSelections: { 'weather-data-local': ['get_forecast'] },
+});
+assert.deepEqual(filteredExtensions[0].available_tools, ['get_forecast']);
+assert.equal(filteredExtensions[0].server.name, 'weather-data-local');
+const sessionExtensions = service.sessionExtensionsForRequest({
+  connectorIds: ['weather-data-local'],
+  projectId: 'project-1',
+  toolSelections: { 'weather-data-local': ['get_forecast'] },
+});
+assert.equal(sessionExtensions[0].type, 'stdio');
+assert.equal(sessionExtensions[0].name, 'weather-data-local');
+assert.deepEqual(sessionExtensions[0].available_tools, ['get_forecast']);
+assert.equal(service.extensionsForRequest({
+  connectorIds: ['weather-data-local'],
+  projectId: 'project-1',
+  toolSelections: { 'weather-data-local': [] },
+}).length, 0);
+assert.equal(service.extensionsForRequest({ connectorIds: [], projectId: 'project-1' }).length, 0);
 
+const httpExtension = ConnectorClient.gooseExtensionConfig({
+  id: 'weather-http',
+  name: 'Weather HTTP',
+  description: 'Remote weather MCP',
+  transport: 'streamable-http',
+  url: 'http://127.0.0.1:3000/messages',
+  timeout: 30,
+}, { headers: { Authorization: 'Bearer test' } }, ['get_weather']);
+assert.equal(httpExtension.type, 'mcp');
+assert.deepEqual(httpExtension.server, {
+  type: 'http',
+  name: 'weather-http',
+  url: 'http://127.0.0.1:3000/messages',
+  headers: [{ name: 'Authorization', value: 'Bearer test' }],
+});
+assert.deepEqual(httpExtension.available_tools, ['get_weather']);
+
+service.saveConnector({
+  id: 'weather-http',
+  name: 'Weather HTTP',
+  description: 'Remote weather MCP',
+  transport: 'streamable-http',
+  url: 'http://127.0.0.1:3000/messages',
+  riskClassification: 'medium',
+  enabled: true,
+  lastTest: {
+    ok: true,
+    result: {
+      transport: 'streamable-http',
+      tools: [
+        { name: 'get_weather', description: '查询天气' },
+        { name: 'make_product', description: '生成产品' },
+      ],
+    },
+  },
+});
+assert.deepEqual(service.permissionContextForRequest({
+  connectorIds: ['weather-http'],
+  toolSelections: { 'weather-http': ['get_weather'] },
+}), {
+  connectors: [{
+    id: 'weather-http',
+    transport: 'streamable-http',
+    riskClassification: 'medium',
+    verified: true,
+    explicitToolSelection: true,
+    selectedTools: ['get_weather'],
+    tools: [
+      { name: 'get_weather', description: '查询天气' },
+      { name: 'make_product', description: '生成产品' },
+    ],
+  }],
+});
+
+assert.throws(() => service.saveConnector({
+  id: BrowserConnector.ID,
+  name: '浏览器操作',
+  transport: 'stdio',
+  command: 'unsafe-command',
+  args: ['--unsafe'],
+  enabled: true,
+}), /先完成连接测试/);
+const browserTools = [...BrowserConnector.SAFE_TOOLS, ...BrowserConnector.BLOCKED_TOOLS]
+  .map((name) => ({ name, description: name }));
+const browserResult = service.saveConnector({
+  id: BrowserConnector.ID,
+  name: '浏览器操作',
+  description: 'Playwright browser operations',
+  transport: 'stdio',
+  command: 'unsafe-command',
+  args: ['--unsafe'],
+  projectIds: ['project-1'],
+  enabled: true,
+  lastTest: {
+    ok: true,
+    result: { transport: 'stdio', tools: browserTools },
+  },
+});
+assert.equal(browserResult.connector.connectorType, 'browser');
+assert.equal(browserResult.connector.managedPreset, BrowserConnector.ID);
+assert.notEqual(browserResult.connector.command, 'unsafe-command');
+assert.ok(browserResult.connector.args.includes(BrowserConnector.MCP_PACKAGE));
+assert.ok(browserResult.connector.args.includes('--isolated'));
+assert.ok(browserResult.connector.args.includes('--output-dir'));
+assert.deepEqual(browserResult.connector.toolAllowlist, BrowserConnector.SAFE_TOOLS);
+const browserExtensions = service.extensionsForRequest({
+  connectorIds: [BrowserConnector.ID],
+  projectId: 'project-1',
+});
+assert.deepEqual(browserExtensions[0].available_tools, BrowserConnector.SAFE_TOOLS);
+const narrowedBrowserExtensions = service.extensionsForRequest({
+  connectorIds: [BrowserConnector.ID],
+  projectId: 'project-1',
+  toolSelections: {
+    [BrowserConnector.ID]: ['browser_snapshot', 'browser_click', 'browser_run_code_unsafe'],
+  },
+});
+assert.deepEqual(narrowedBrowserExtensions[0].available_tools, ['browser_snapshot', 'browser_click']);
+assert.equal(narrowedBrowserExtensions[0].server.name, BrowserConnector.ID);
+assert.deepEqual(
+  service.permissionContextForRequest({ connectorIds: [BrowserConnector.ID] }).connectors[0].selectedTools,
+  BrowserConnector.SAFE_TOOLS
+);
+
+const managed = service.syncManagedSkills(['sample-skill'], 9);
+assert.equal(managed.skills.find((item) => item.id === installed.installation.id).managedByPolicy, true);
+assert.throws(() => service.setSkillEnabled(installed.installation.id, false), /组织默认能力/);
+assert.throws(() => service.uninstallSkill(installed.installation.id), /组织默认能力/);
+service.syncManagedSkills([], 10);
 const removed = service.uninstallSkill(installed.installation.id);
 assert.equal(removed.removed, true);
 assert.equal(fs.existsSync(path.join(homeDir, '.agents', 'skills', 'sample-skill')), false);

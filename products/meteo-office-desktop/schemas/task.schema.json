@@ -14,6 +14,18 @@
     "workMode": { "enum": ["ask", "plan", "execute"] },
     "projectId": { "type": ["string", "null"] },
     "expertId": { "type": ["string", "null"] },
+    "capabilityMode": { "enum": ["inherit", "custom"] },
+    "connectorIds": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+    "toolSelections": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": { "type": "string" },
+        "uniqueItems": true
+      }
+    },
+    "sessionCapabilityHash": { "type": ["string", "null"] },
+    "capabilityLoad": { "type": ["object", "null"] },
     "contextSnapshotId": { "type": ["string", "null"] },
     "runAttempts": { "type": "array", "items": { "type": "object" } },
     "checkpoints": { "type": "array", "items": { "type": "object" } },

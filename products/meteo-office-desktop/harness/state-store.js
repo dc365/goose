@@ -55,7 +55,15 @@
 
   function normalizeStoredTask(task, env = {}) {
     const planFactory = env.createDefaultPlan;
-    const messages = Array.isArray(task?.messages) ? task.messages : [];
+    const sourceMessages = Array.isArray(task?.messages) ? task.messages : [];
+    const messages = sourceMessages.filter((message, index) => {
+      if (task?.status === 'running' || message?.role !== 'assistant') return true;
+      if (message.status !== 'streaming' || String(message.text || '').trim()) return true;
+      const previousMessage = sourceMessages.slice(0, index).reverse().find((candidate) =>
+        ['user', 'assistant'].includes(candidate?.role)
+      );
+      return previousMessage?.role !== 'assistant';
+    });
     const latestAssistantId = [...messages].reverse().find((message) => message?.role === 'assistant')?.id || null;
     const normalizedMessages = messages
       .map((message) => normalizeMessage(message, task, planFactory, message?.id === latestAssistantId))
@@ -154,8 +162,8 @@
         runtimePreference: 'auto',
         sessionId: null,
         permissionProfileId: task.allowFileTools ? 'workspace-approval' : 'analysis-readonly',
-        allowFileTools: Boolean(task.allowFileTools),
-        workMode: task.allowFileTools ? 'execute' : 'ask',
+        allowFileTools: true,
+        workMode: 'execute',
         messages: [
           ...(task.prompt
             ? [{ id: Shared.createId('message'), role: 'user', text: task.prompt, createdAt: task.createdAt || Date.now() }]

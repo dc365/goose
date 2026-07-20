@@ -61,8 +61,8 @@ function normalizeConnector(input = {}) {
     : 'stdio';
   const name = String(input.name || '').trim();
   const id = slug(input.id || name);
-  if (!id || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(id)) throw new Error('连接器 ID 只能包含小写字母、数字和连字符');
-  if (!name) throw new Error('连接器名称不能为空');
+  if (!id || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(id)) throw new Error('工具服务 ID 只能包含小写字母、数字和连字符');
+  if (!name) throw new Error('工具服务名称不能为空');
   const timeout = Math.max(3, Math.min(600, Number(input.timeout || 30)));
   const normalized = {
     apiVersion: 'meteomate.ai/v1',
@@ -76,6 +76,11 @@ function normalizeConnector(input = {}) {
     projectIds: [...new Set((Array.isArray(input.projectIds) ? input.projectIds : []).map(String).filter(Boolean))],
     timeout,
     riskClassification: input.riskClassification || 'medium',
+    connectorType: String(input.connectorType || '').trim() || null,
+    managedPreset: String(input.managedPreset || '').trim() || null,
+    toolAllowlist: Array.isArray(input.toolAllowlist)
+      ? [...new Set(input.toolAllowlist.map(String).filter(Boolean))]
+      : null,
     createdAt: input.createdAt || Date.now(),
     updatedAt: Date.now(),
   };
@@ -83,16 +88,16 @@ function normalizeConnector(input = {}) {
     normalized.command = String(input.command || '').trim();
     normalized.args = normalizeStringArray(input.args);
     normalized.cwd = String(input.cwd || '').trim() || null;
-    if (!normalized.command) throw new Error('STDIO 连接器需要命令');
+    if (!normalized.command) throw new Error('STDIO 工具服务需要命令');
   } else {
     normalized.url = String(input.url || '').trim();
     let parsed;
     try {
       parsed = new URL(normalized.url);
     } catch {
-      throw new Error('Streamable HTTP 连接器 URL 无效');
+      throw new Error('Streamable HTTP 工具服务 URL 无效');
     }
-    if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('连接器 URL 只支持 HTTP 或 HTTPS');
+    if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('工具服务 URL 只支持 HTTP 或 HTTPS');
     normalized.url = parsed.toString();
   }
   return {
@@ -135,6 +140,51 @@ function parseJsonRpcLine(line) {
   }
 }
 
+function normalizeDiscoveredTool(tool = {}) {
+  const properties = tool.inputSchema?.properties;
+  const parameters = Array.isArray(tool.parameters)
+    ? tool.parameters.map(String).slice(0, 200)
+    : properties && typeof properties === 'object' && !Array.isArray(properties)
+      ? Object.keys(properties).slice(0, 200)
+      : [];
+  const declaredRequired = Array.isArray(tool.requiredParameters)
+    ? tool.requiredParameters
+    : tool.inputSchema?.required;
+  const required = Array.isArray(declaredRequired)
+    ? declaredRequired.map(String).filter((name) => parameters.includes(name))
+    : [];
+  return {
+    name: String(tool.name || '').slice(0, 512),
+    description: String(tool.description || '').slice(0, 12000),
+    parameters,
+    requiredParameters: required,
+  };
+}
+
+function normalizeLastTest(value) {
+  if (!value || typeof value !== 'object' || typeof value.ok !== 'boolean') return null;
+  const normalized = {
+    ok: value.ok,
+    checkedAt: Number.isFinite(Number(value.checkedAt)) ? Number(value.checkedAt) : Date.now(),
+    durationMs: Math.max(0, Number(value.durationMs) || 0),
+  };
+  if (!value.ok) {
+    normalized.error = String(value.error || '连接失败').slice(0, 2000);
+    return normalized;
+  }
+  const result = value.result && typeof value.result === 'object' ? value.result : {};
+  normalized.result = {
+    ok: result.ok !== false,
+    transport: String(result.transport || ''),
+    status: Number(result.status) || undefined,
+    serverInfo: result.serverInfo && typeof result.serverInfo === 'object'
+      ? { name: String(result.serverInfo.name || ''), version: String(result.serverInfo.version || '') }
+      : null,
+    tools: (Array.isArray(result.tools) ? result.tools : []).slice(0, 5000).map(normalizeDiscoveredTool),
+  };
+  return normalized;
+}
+
 async function testStdioConnector(config, secrets = {}) {
   if (!executableExists(config.command)) throw new Error(`找不到命令：${config.command}`);
   return new Promise((resolve, reject) => {
@@ -145,7 +195,7 @@ async function testStdioConnector(config, secrets = {}) {
       env: { ...process.env, ...(secrets.env || {}) },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
-    const timer = setTimeout(() => finish(new Error('连接器初始化超时')), (config.timeout || 30) * 1000);
+    const timer = setTimeout(() => finish(new Error('工具服务初始化超时')), (config.timeout || 30) * 1000);
     let settled = false;
     let stdoutBuffer = '';
     let stderrTail = '';
@@ -187,14 +237,14 @@ async function testStdioConnector(config, secrets = {}) {
             ok: true,
             transport: 'stdio',
             serverInfo,
-            tools: tools.map((tool) => ({ name: tool.name, description: tool.description || '' })),
+            tools: tools.slice(0, 5000).map(normalizeDiscoveredTool),
             stderr: stderrTail.trim(),
           });
         }
       }
     });
     child.on('close', (code) => {
-      if (!settled && !initialized) finish(new Error(`连接器进程提前退出（code=${code}）${stderrTail ? `：${stderrTail.trim()}` : ''}`));
+      if (!settled && !initialized) finish(new Error(`工具服务进程提前退出（code=${code}）${stderrTail ? `：${stderrTail.trim()}` : ''}`));
     });
 
     child.stdin.write(`${JSON.stringify({
@@ -210,24 +260,43 @@ async function testStdioConnector(config, secrets = {}) {
   });
 }
 
-function parseHttpJson(text) {
+function parseHttpJson(text, expectedId = null) {
   const trimmed = String(text || '').trim();
   if (!trimmed) return null;
   try {
     return JSON.parse(trimmed);
   } catch {
-    const dataLine = trimmed.split(/\r?\n/).find((line) => line.startsWith('data:'));
-    return dataLine ? parseJsonRpcLine(dataLine) : null;
+    const messages = trimmed
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith('data:') && line.slice(5).trim() !== '[DONE]')
+      .map(parseJsonRpcLine)
+      .filter(Boolean);
+    return messages.find((message) => expectedId === null || message.id === expectedId) || messages[0] || null;
   }
 }
 
+async function postHttpMcpMessage(config, headers, payload) {
+  const response = await fetch(config.url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout((config.timeout || 30) * 1000),
+  });
+  const text = await response.text();
+  if (!response.ok) throw new Error(`HTTP ${response.status}：${text.slice(0, 400)}`);
+  const message = payload.id === undefined ? null : parseHttpJson(text, payload.id);
+  if (message?.error) throw new Error(message.error.message || `MCP ${payload.method} failed`);
+  if (payload.id !== undefined && !message?.result) throw new Error(`MCP ${payload.method} 未返回有效结果`);
+  return { response, message };
+}
+
 async function testHttpConnector(config, secrets = {}) {
-  const headers = {
+  const baseHeaders = {
     Accept: 'application/json, text/event-stream',
     'Content-Type': 'application/json',
     ...(secrets.headers || {}),
   };
-  const body = {
+  const initializeRequest = {
     jsonrpc: '2.0',
     id: crypto.randomUUID(),
     method: 'initialize',
@@ -237,23 +306,40 @@ async function testHttpConnector(config, secrets = {}) {
       clientInfo: { name: 'meteomate-capability-center', version: '0.1.0' },
     },
   };
-  const response = await fetch(config.url, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout((config.timeout || 30) * 1000),
+  const initialized = await postHttpMcpMessage(config, baseHeaders, initializeRequest);
+  const sessionId = initialized.response.headers.get('mcp-session-id');
+  const protocolVersion = initialized.message.result?.protocolVersion || '2025-06-18';
+  const sessionHeaders = {
+    ...baseHeaders,
+    'MCP-Protocol-Version': protocolVersion,
+    ...(sessionId ? { 'Mcp-Session-Id': sessionId } : {}),
+  };
+  await postHttpMcpMessage(config, sessionHeaders, {
+    jsonrpc: '2.0',
+    method: 'notifications/initialized',
+    params: {},
   });
-  const text = await response.text();
-  if (!response.ok) throw new Error(`HTTP ${response.status}：${text.slice(0, 400)}`);
-  const message = parseHttpJson(text);
-  if (message?.error) throw new Error(message.error.message || 'MCP initialize failed');
+  const tools = [];
+  let cursor = null;
+  for (let page = 0; page < 100; page += 1) {
+    const listed = await postHttpMcpMessage(config, sessionHeaders, {
+      jsonrpc: '2.0',
+      id: crypto.randomUUID(),
+      method: 'tools/list',
+      params: cursor ? { cursor } : {},
+    });
+    if (Array.isArray(listed.message.result?.tools)) tools.push(...listed.message.result.tools);
+    cursor = listed.message.result?.nextCursor || null;
+    if (!cursor) break;
+    if (page === 99) throw new Error('MCP tools/list 分页过多，已停止读取');
+  }
   return {
     ok: true,
     transport: 'streamable-http',
-    status: response.status,
-    serverInfo: message?.result?.serverInfo || null,
-    sessionId: response.headers.get('mcp-session-id'),
-    tools: [],
+    status: initialized.response.status,
+    serverInfo: initialized.message.result?.serverInfo || null,
+    sessionId,
+    tools: tools.slice(0, 5000).map(normalizeDiscoveredTool),
   };
 }
 
@@ -263,7 +349,10 @@ async function testConnector(config, secrets = {}) {
     : testStdioConnector(config, secrets);
 }
 
-function extensionConfig(config, secrets = {}) {
+function extensionConfig(config, secrets = {}, availableTools) {
+  const toolAllowlist = Array.isArray(availableTools) && availableTools.length
+    ? { available_tools: [...new Set(availableTools.map(String).filter(Boolean))] }
+    : {};
   if (config.transport === 'streamable-http') {
     return {
       type: 'streamable_http',
@@ -275,6 +364,7 @@ function extensionConfig(config, secrets = {}) {
       headers: secrets.headers || {},
       timeout: config.timeout || 30,
       bundled: false,
+      ...toolAllowlist,
     };
   }
   return {
@@ -288,6 +378,39 @@ function extensionConfig(config, secrets = {}) {
     timeout: config.timeout || 30,
     cwd: config.cwd || undefined,
     bundled: false,
+    ...toolAllowlist,
+  };
+}
+
+function gooseExtensionConfig(config, secrets = {}, availableTools) {
+  const extension = extensionConfig(config, secrets, availableTools);
+  const shared = {
+    type: 'mcp',
+    envKeys: extension.env_keys || [],
+    description: extension.description,
+    timeout: extension.timeout,
+    bundled: extension.bundled,
+    ...(extension.available_tools ? { available_tools: extension.available_tools } : {}),
+  };
+  if (extension.type === 'streamable_http') {
+    return {
+      ...shared,
+      server: {
+        type: 'http',
+        name: extension.name,
+        url: extension.uri,
+        headers: Object.entries(extension.headers || {}).map(([name, value]) => ({ name, value })),
+      },
+    };
+  }
+  return {
+    ...shared,
+    server: {
+      name: extension.name,
+      command: extension.cmd,
+      args: extension.args || [],
+      env: Object.entries(extension.envs || {}).map(([name, value]) => ({ name, value })),
+    },
   };
 }
 
@@ -295,7 +418,9 @@ module.exports = {
   RESERVED_ENV_KEYS,
   slug,
   normalizeConnector,
+  normalizeLastTest,
   testConnector,
   extensionConfig,
+  gooseExtensionConfig,
   executableExists,
 };

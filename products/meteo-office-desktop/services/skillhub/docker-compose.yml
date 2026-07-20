@@ -4,8 +4,9 @@ services:
     ports:
       - "8088:8088"
     environment:
-      METEOMATE_SKILLHUB_TOKENS: >-
-        {"dev-admin":{"subject":"admin","name":"Local Admin","role":"admin","orgId":"meteomate"},"dev-publisher":{"subject":"publisher","name":"Local Publisher","role":"publisher","orgId":"meteomate"},"dev-user":{"subject":"user-1","name":"Local User","role":"viewer","orgId":"meteomate"}}
+      METEOMATE_SKILLHUB_BOOTSTRAP_USERNAME: ${METEOMATE_SKILLHUB_BOOTSTRAP_USERNAME:-admin}
+      METEOMATE_SKILLHUB_BOOTSTRAP_PASSWORD: ${METEOMATE_SKILLHUB_BOOTSTRAP_PASSWORD:?set a one-time bootstrap password}
+      METEOMATE_SKILLHUB_BOOTSTRAP_NAME: ${METEOMATE_SKILLHUB_BOOTSTRAP_NAME:-系统管理员}
     volumes:
       - skillhub-data:/var/lib/meteomate-skillhub/data
 

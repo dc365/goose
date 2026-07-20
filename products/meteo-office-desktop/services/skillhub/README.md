@@ -13,7 +13,12 @@ The service is intentionally independent of Goose Core. It stores metadata in an
 - Ed25519 signatures for published packages;
 - featured collections and rule-based recommendations;
 - installation telemetry scoped to the authenticated user;
-- bearer-token roles: `viewer`, `publisher`, and `admin`;
+- managed intranet users with `viewer`, `publisher`, and `admin` roles;
+- Argon2id password hashing and revocable in-memory desktop sessions;
+- embedded `/admin/` console for users, roles, sessions, and audit records;
+- organization, role, and user policy delivery for desktop model, Skill, Connector, and permission controls;
+- owner-scoped Skill management with administrator ownership transfer;
+- failed-login throttling and last-active-administrator protection;
 - append-only JSONL audit log;
 - optional seeding from MeteoMate bundled Skills.
 
@@ -22,11 +27,9 @@ The service is intentionally independent of Goose Core. It stores metadata in an
 ```bash
 cd products/meteo-office-desktop/services/skillhub
 
-export METEOMATE_SKILLHUB_TOKENS='{
-  "dev-admin": {"subject":"admin","name":"Local Admin","role":"admin","orgId":"meteomate"},
-  "dev-publisher": {"subject":"publisher","name":"Local Publisher","role":"publisher","orgId":"meteomate"},
-  "dev-user": {"subject":"user-1","name":"Local User","role":"viewer","orgId":"meteomate"}
-}'
+export METEOMATE_SKILLHUB_BOOTSTRAP_USERNAME=admin
+export METEOMATE_SKILLHUB_BOOTSTRAP_PASSWORD='replace-this-password'
+export METEOMATE_SKILLHUB_BOOTSTRAP_NAME='系统管理员'
 
 go run ./cmd/skillhub \
   -addr 127.0.0.1:8088 \
@@ -40,11 +43,58 @@ Health check:
 curl http://127.0.0.1:8088/healthz
 ```
 
+Open the administration console:
+
+```text
+http://127.0.0.1:8088/admin/
+```
+
+The console does not use email, public registration, cookies, or browser password storage. Its bearer session exists only in the current page memory. Closing or refreshing the page requires another login.
+
+The bootstrap account is created only when the user store is empty. Remove the bootstrap password from the environment after the first successful start. The bootstrap administrator must change the temporary password at first login.
+
+Create an intranet user from the administration backend after logging in:
+
+```bash
+export METEOMATE_SKILLHUB_SESSION_TOKEN='<sessionToken returned by /v1/auth/login>'
+curl -X POST http://127.0.0.1:8088/v1/admin/users \
+  -H "Authorization: Bearer ${METEOMATE_SKILLHUB_SESSION_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"forecaster","displayName":"值班预报员","password":"temporary-password","role":"publisher","orgId":"meteomate","mustChangePassword":true}'
+```
+
+The bundled Compose configuration also requires an explicit bootstrap password:
+
+```bash
+export METEOMATE_SKILLHUB_BOOTSTRAP_PASSWORD='replace-this-password'
+docker compose up --build
+```
+
+Desktop login:
+
+```bash
+curl -X POST http://127.0.0.1:8088/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"forecaster","password":"temporary-password","clientId":"meteomate-desktop"}'
+```
+
 Public search:
 
 ```bash
 curl 'http://127.0.0.1:8088/v1/skills?q=weather'
 ```
+
+## Administration behavior
+
+- Five failed logins for the same username and source address cause a five-minute block.
+- Disabling a user, resetting a password, or choosing **退出所有设备** revokes the user's active sessions immediately.
+- The last active managed administrator cannot be disabled or demoted.
+- Temporary passwords are generated in the administration page, shown once, and never written to SkillHub logs.
+- Audit records include login results, user changes, session revocation, and Skill lifecycle operations.
+- User content, desktop conversations, local projects, and Connector secrets are not uploaded to the administration service.
+- Publishers manage only their own Skill records; administrators can manage all records and transfer ownership to another active publisher or administrator.
+
+For access from other computers, put SkillHub behind an internal HTTPS reverse proxy. Plain HTTP is suitable only for loopback development because login passwords otherwise travel unencrypted on the network.
 
 ## Publish a Skill
 
@@ -94,14 +144,21 @@ Public signing keys are available from `GET /v1/trust/keys`.
 | `METEOMATE_SKILLHUB_ADDR` | `127.0.0.1:8088` | HTTP listen address |
 | `METEOMATE_SKILLHUB_DATA` | `./data` | metadata, packages, trust keys, and audit log |
 | `METEOMATE_SKILLHUB_TOKENS` | empty | JSON object mapping bearer tokens to actors |
+| `METEOMATE_SKILLHUB_BOOTSTRAP_USERNAME` | empty | first administrator username when the user store is empty |
+| `METEOMATE_SKILLHUB_BOOTSTRAP_PASSWORD` | empty | first administrator temporary password; remove after bootstrap |
+| `METEOMATE_SKILLHUB_BOOTSTRAP_NAME` | username | first administrator display name |
 | `METEOMATE_SKILLHUB_SEED_DIR` | empty | optional directory containing one Skill per child directory |
 
-When no tokens are configured, public read APIs remain available but all write APIs are disabled.
+When neither managed accounts nor static service tokens are configured, public read APIs remain available but authenticated write APIs are unavailable.
 
 ## Data layout
 
 ```text
 data/
+├── auth/
+│   └── users.json
+├── policy/
+│   └── policies.json
 ├── metadata.json
 ├── audit.jsonl
 ├── packages/
@@ -116,10 +173,31 @@ The private signing key is generated with file mode `0600`. Back up the `trust` 
 
 ```text
 GET    /healthz
+POST   /v1/auth/login
+POST   /v1/auth/logout
 GET    /v1/me
+PATCH  /v1/me
+POST   /v1/me/password
+GET    /v1/me/policy
+GET    /v1/admin/users
+POST   /v1/admin/users
+PATCH  /v1/admin/users/{id}
+POST   /v1/admin/users/{id}/reset-password
+POST   /v1/admin/users/{id}/revoke-sessions
+GET    /v1/admin/sessions
+DELETE /v1/admin/sessions/{id}
+GET    /v1/admin/audit
+GET    /v1/admin/policies
+PUT    /v1/admin/policies/organization
+PUT    /v1/admin/policies/roles/{role}
+DELETE /v1/admin/policies/roles/{role}
+PUT    /v1/admin/policies/users/{id}
+DELETE /v1/admin/policies/users/{id}
+GET    /v1/admin/policies/effective/users/{id}
 GET    /v1/trust/keys
 GET    /v1/skills
 GET    /v1/skills/{id}
+PATCH  /v1/skills/{id}
 GET    /v1/skills/{id}/versions/{version}
 GET    /v1/skills/{id}/versions/{version}/download
 POST   /v1/packages/inspect

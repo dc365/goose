@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: MeteoMate SkillHub API
-  version: 1.0.0
+  version: 1.3.0
   description: Self-hosted registry for MeteoMate and Agent Skills packages.
 servers:
   - url: http://127.0.0.1:8088
@@ -10,6 +10,178 @@ paths:
     get:
       responses:
         '200': {description: Healthy}
+  /v1/auth/login:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/LoginRequest'}
+      responses:
+        '200': {description: Authenticated desktop session}
+        '401': {description: Invalid credentials or disabled account}
+        '429': {description: Too many failed login attempts}
+  /v1/auth/logout:
+    post:
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: Session revoked}
+  /v1/me:
+    get:
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: Current actor and managed user profile}
+    patch:
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: Profile updated}
+  /v1/me/password:
+    post:
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: Password changed and sessions revoked}
+  /v1/me/policy:
+    get:
+      security: [{bearerAuth: []}]
+      responses:
+        '200':
+          description: Effective organization, role, and user policy for the current desktop profile
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/EffectivePolicyContext'}
+  /v1/admin/users:
+    get:
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: Managed users}
+    post:
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateUserRequest'}
+      responses:
+        '201': {description: User created}
+  /v1/admin/users/{id}:
+    patch:
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {description: User updated}
+  /v1/admin/users/{id}/reset-password:
+    post:
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {description: Password reset and sessions revoked}
+  /v1/admin/users/{id}/revoke-sessions:
+    post:
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {description: All managed sessions for the user revoked}
+  /v1/admin/sessions:
+    get:
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: userId, in: query, schema: {type: string}}
+      responses:
+        '200':
+          description: Active managed-user sessions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/Session'}}
+                  total: {type: integer}
+  /v1/admin/sessions/{id}:
+    delete:
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {description: Session revoked}
+        '404': {description: Session not found}
+  /v1/admin/audit:
+    get:
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: q, in: query, schema: {type: string}}
+        - {name: action, in: query, schema: {type: string}}
+        - {name: limit, in: query, schema: {type: integer, maximum: 500}}
+      responses:
+        '200':
+          description: Newest matching audit events
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/AuditEvent'}}
+                  total: {type: integer}
+  /v1/admin/policies:
+    get:
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: Organization baseline and all role and user overrides}
+  /v1/admin/policies/organization:
+    put:
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PolicySettings'}
+      responses:
+        '200': {description: Organization policy updated}
+  /v1/admin/policies/roles/{role}:
+    parameters:
+      - {name: role, in: path, required: true, schema: {type: string, enum: [viewer, publisher, admin]}}
+    put:
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PolicyPatch'}
+      responses:
+        '200': {description: Role policy override updated}
+    delete:
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: Role policy override reset}
+  /v1/admin/policies/users/{id}:
+    parameters:
+      - {name: id, in: path, required: true, schema: {type: string}}
+    put:
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PolicyPatch'}
+      responses:
+        '200': {description: User policy override updated}
+    delete:
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: User policy override reset}
+  /v1/admin/policies/effective/users/{id}:
+    get:
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: Effective desktop policy preview for a user
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/EffectivePolicyContext'}
   /v1/trust/keys:
     get:
       responses:
@@ -19,6 +191,7 @@ paths:
       parameters:
         - {name: q, in: query, schema: {type: string}}
         - {name: category, in: query, schema: {type: string}}
+        - {name: includeDrafts, in: query, description: Include manageable drafts; publishers see their own Skills and administrators see all Skills, schema: {type: boolean}}
         - {name: limit, in: query, schema: {type: integer, maximum: 200}}
         - {name: offset, in: query, schema: {type: integer, minimum: 0}}
       responses:
@@ -30,6 +203,19 @@ paths:
       responses:
         '200': {description: Skill descriptor and visible versions}
         '404': {description: Not found}
+    patch:
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/UpdateSkillRequest'}
+      responses:
+        '200': {description: Skill metadata, visibility, or ownership updated}
+        '403': {description: Publisher is not the owner, or ownership transfer was attempted without administrator access}
+        '404': {description: Skill not found}
   /v1/skills/{id}/versions:
     post:
       security: [{bearerAuth: []}]
@@ -55,6 +241,14 @@ paths:
         - {name: version, in: path, required: true, schema: {type: string}}
       responses:
         '200': {description: Version published and signed}
+  /v1/skills/{id}/versions/{version}/deprecate:
+    post:
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+        - {name: version, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {description: Published version deprecated}
   /v1/skills/{id}/versions/{version}/download:
     get:
       parameters:
@@ -75,6 +269,107 @@ paths:
       responses:
         '200': {description: Ranked recommendations}
 components:
+  schemas:
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username: {type: string}
+        password: {type: string, format: password}
+        clientId: {type: string}
+    CreateUserRequest:
+      type: object
+      required: [username, password, role]
+      properties:
+        username: {type: string, pattern: '^[a-z0-9][a-z0-9._-]{2,63}$'}
+        displayName: {type: string}
+        password: {type: string, format: password, minLength: 8}
+        role: {type: string, enum: [viewer, publisher, admin]}
+        orgId: {type: string}
+        mustChangePassword: {type: boolean}
+    UpdateSkillRequest:
+      type: object
+      properties:
+        name: {type: string, minLength: 1, maxLength: 120}
+        summary: {type: string, maxLength: 300}
+        description: {type: string, maxLength: 4000}
+        categories: {type: array, maxItems: 12, items: {type: string}}
+        tags: {type: array, maxItems: 24, items: {type: string}}
+        icon: {type: string, maxLength: 16}
+        visibility: {type: string, enum: [private, organization, public]}
+        ownerId: {type: string, description: Administrator-only transfer to an active publisher or administrator}
+    Session:
+      type: object
+      required: [id, userId, clientId, createdAt, lastSeenAt, expiresAt]
+      properties:
+        id: {type: string}
+        userId: {type: string}
+        clientId: {type: string}
+        createdAt: {type: string, format: date-time}
+        lastSeenAt: {type: string, format: date-time}
+        expiresAt: {type: string, format: date-time}
+    AuditEvent:
+      type: object
+      required: [time, action, target, actor, remote]
+      properties:
+        time: {type: string, format: date-time}
+        action: {type: string}
+        target: {type: string}
+        actor:
+          type: object
+          properties:
+            subject: {type: string}
+            name: {type: string}
+            role: {type: string}
+            orgId: {type: string}
+        remote: {type: string}
+        detail: {type: object, additionalProperties: true}
+    PolicySettings:
+      type: object
+      required: [defaultModel, allowedModels, defaultSkillIds, allowedConnectorIds, defaultPermissionProfileId, allowedPermissionProfileIds, autoCompactThreshold]
+      properties:
+        defaultModel: {type: string, description: Provider and model ID separated by a slash}
+        allowedModels: {type: array, maxItems: 128, items: {type: string}}
+        autoCompactThreshold: {type: number, minimum: 0.5, maximum: 0.95, default: 0.8}
+        defaultSkillIds: {type: array, maxItems: 128, items: {type: string}}
+        allowedConnectorIds: {type: array, maxItems: 128, items: {type: string}}
+        defaultPermissionProfileId: {type: string, enum: ['', analysis-readonly, artifact-approval, workspace-approval]}
+        allowedPermissionProfileIds:
+          type: array
+          maxItems: 3
+          items: {type: string, enum: [analysis-readonly, artifact-approval, workspace-approval]}
+    PolicyPatch:
+      type: object
+      description: Omitted fields inherit from the lower-precedence scope.
+      properties:
+        defaultModel: {type: string}
+        allowedModels: {type: array, maxItems: 128, items: {type: string}}
+        autoCompactThreshold: {type: number, minimum: 0.5, maximum: 0.95}
+        defaultSkillIds: {type: array, maxItems: 128, items: {type: string}}
+        allowedConnectorIds: {type: array, maxItems: 128, items: {type: string}}
+        defaultPermissionProfileId: {type: string, enum: ['', analysis-readonly, artifact-approval, workspace-approval]}
+        allowedPermissionProfileIds:
+          type: array
+          maxItems: 3
+          items: {type: string, enum: [analysis-readonly, artifact-approval, workspace-approval]}
+    EffectivePolicy:
+      allOf:
+        - {$ref: '#/components/schemas/PolicySettings'}
+        - type: object
+          properties:
+            sources: {type: object, additionalProperties: {type: string}}
+            revision: {type: integer}
+            updatedAt: {type: string, format: date-time}
+    EffectivePolicyContext:
+      type: object
+      required: [userId, role, orgId, defaultSpaceId, profileBindingId, policy]
+      properties:
+        userId: {type: string}
+        role: {type: string}
+        orgId: {type: string}
+        defaultSpaceId: {type: string}
+        profileBindingId: {type: string}
+        policy: {$ref: '#/components/schemas/EffectivePolicy'}
   securitySchemes:
     bearerAuth:
       type: http

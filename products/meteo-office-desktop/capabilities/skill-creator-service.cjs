@@ -109,7 +109,7 @@ function renderBrief(input, skillId) {
     '',
     input.outputs || '由 Skill Creator 在对话中继续澄清。',
     '',
-    '## 依赖连接器',
+    '## 依赖工具',
     '',
     uniqueStrings(input.connectorIds).map((item) => `- ${item}`).join('\n') || '- 无',
     '',
@@ -138,7 +138,7 @@ function renderBrief(input, skillId) {
 
 function renderSkill(input, skillId) {
   const description = String(input.description || input.goal || '').replace(/\s+/g, ' ').trim();
-  return `---\nname: ${skillId}\ndescription: ${quoteYaml(description)}\nlicense: Apache-2.0\nmetadata:\n  author: MeteoMate Skill Creator\n  version: "0.1.0"\n---\n\n# ${input.displayName}\n\n## 使用场景\n\n${input.triggers || '请根据 BRIEF.md 继续完善 Skill 的触发场景。'}\n\n## 限制与禁止场景\n\n${input.nonGoals || '不得在缺少必要输入、权限或连接器时假装完成任务。'}\n\n## 输入\n\n${input.inputs || '请在对话中继续澄清输入。'}\n\n## 执行流程\n\n1. 核验任务目标、输入和约束。\n2. 检查所需连接器与权限是否可用。\n3. 按照专业流程完成任务。\n4. 输出结果并执行验证。\n\n## 输出\n\n${input.outputs || '输出结构化结果和可核验的完成摘要。'}\n\n## 安全边界\n\n- 只使用用户明确授权的文件、连接器和工作区。\n- 不得读取凭据、系统目录或任务无关资料。\n- 遇到高风险写入、外部发送或命令执行时必须请求审批。\n\n## 验证与完成标准\n\n${input.successCriteria || '结果符合用户要求，关键步骤可核验，且没有越权操作。'}\n`;
+  return `---\nname: ${skillId}\ndescription: ${quoteYaml(description)}\nlicense: Apache-2.0\nmetadata:\n  author: MeteoMate Skill Creator\n  version: "0.1.0"\n---\n\n# ${input.displayName}\n\n## 使用场景\n\n${input.triggers || '请根据 BRIEF.md 继续完善 Skill 的触发场景。'}\n\n## 限制与禁止场景\n\n${input.nonGoals || '不得在缺少必要输入、权限或工具时假装完成任务。'}\n\n## 输入\n\n${input.inputs || '请在对话中继续澄清输入。'}\n\n## 执行流程\n\n1. 核验任务目标、输入和约束。\n2. 检查所需工具与权限是否可用。\n3. 按照专业流程完成任务。\n4. 输出结果并执行验证。\n\n## 输出\n\n${input.outputs || '输出结构化结果和可核验的完成摘要。'}\n\n## 安全边界\n\n- 只使用用户明确授权的文件、工具和工作区。\n- 不得读取凭据、系统目录或任务无关资料。\n- 遇到高风险写入、外部发送或命令执行时必须请求审批。\n\n## 验证与完成标准\n\n${input.successCriteria || '结果符合用户要求，关键步骤可核验，且没有越权操作。'}\n`;
 }
 
 function renderSidecar(input) {

@@ -43,13 +43,22 @@
           "properties": {
             "experts": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
             "skills": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
-            "connectors": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
+            "connectors": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+            "toolSelections": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "array",
+                "items": { "type": "string" },
+                "uniqueItems": true
+              }
+            }
           }
         },
         "assets": {
           "type": "object",
           "properties": {
             "libraries": { "type": "array", "items": { "type": "string" } },
+            "knowledgeSources": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
             "templates": { "type": "array", "items": { "type": "string" } }
           }
         },

@@ -4,35 +4,23 @@
   const bootstrap = root.__METEOMATE_STATE_BOOTSTRAP__;
   if (!harness?.StateStore || !bootstrap) return;
 
-  function parseJson(value) {
-    if (!value) return null;
-    try {
-      return JSON.parse(value);
-    } catch {
-      return null;
-    }
-  }
-
   function latestRunningAttempt(task) {
     return [...(task?.runAttempts || [])].reverse().find((attempt) => attempt.status === 'running') || null;
   }
 
-  const envelope = parseJson(bootstrap.payload) || {};
-  const restored = harness.StateStore.restoreState({
-    current: parseJson(envelope.current),
-    legacy: parseJson(envelope.legacy),
-    initialState,
-    catalog,
-    primaryAssistant,
-    createDefaultPlan,
-    createId: cryptoRandomId,
-    pathBaseName,
-  });
+  function latestAssistantText(task) {
+    return [...(task?.messages || [])].reverse().find((message) => message.role === 'assistant')?.text || '';
+  }
 
-  state = restored;
-  localStorage.setItem(harness.StateStore.STORAGE_KEY, JSON.stringify(restored));
-  localStorage.removeItem(harness.StateStore.BACKUP_KEY);
-  localStorage.removeItem(harness.StateStore.LEGACY_STORAGE_KEY);
+  function finishPartialAttempt(task, attempt, reason) {
+    attempt.status = 'partial';
+    attempt.error = reason || null;
+    attempt.completedAt = Date.now();
+    harness.TaskStateMachine.transition(task, harness.TaskStateMachine.STATES.PARTIAL, {
+      reason: 'run_partial',
+      at: attempt.completedAt,
+    });
+  }
 
   const originalSend = runtimeRouter.send.bind(runtimeRouter);
   runtimeRouter.send = async (task, request) => {
@@ -51,6 +39,11 @@
     task.workMode = snapshot.task.workMode;
     task.capabilityResolution = snapshot.capabilities;
     task.updatedAt = Date.now();
+    if (task.sessionId && task.sessionCapabilityHash !== snapshot.capabilities.id) {
+      task.sessionId = null;
+      task.runtimeMode = null;
+      task.capabilityLoad = null;
+    }
     const attempt = harness.TaskStateMachine.beginRunAttempt(task, {
       runtime: task.runtimeMode || 'auto',
       providerId: request.providerId,
@@ -59,6 +52,13 @@
     });
     request.contextSnapshot = snapshot;
     request.contextEnvelope = harness.ContextCompiler.runtimeEnvelope(snapshot);
+    request.completionContract = structuredClone(snapshot.completionContract);
+    request.completionRecipe = harness.ContextCompiler.completionRecipe(snapshot.completionContract);
+    request.skillIds = snapshot.capabilities.skills.map((item) => item.id);
+    request.connectorIds = snapshot.capabilities.connectors.map((item) => item.id);
+    request.toolSelections = structuredClone(snapshot.capabilities.toolSelections || {});
+    request.capabilityHash = snapshot.capabilities.id;
+    request.sessionCapabilityHash = task.sessionCapabilityHash || null;
     request.runAttemptId = attempt.id;
     saveState();
     try {
@@ -115,7 +115,17 @@
             });
           }
         } else if (event.type === 'turn_completed' && attempt) {
-          harness.TaskStateMachine.finishRunAttempt(task, attempt.id, 'completed');
+          const contract = task.contextSnapshot?.completionContract;
+          const completion = event.runtime === 'acp'
+            ? harness.ContextCompiler.evaluateCompletion(contract, latestAssistantText(task))
+            : { required: false, valid: true, status: 'completed' };
+          if (!completion.required || (completion.valid && completion.status === 'completed')) {
+            harness.TaskStateMachine.finishRunAttempt(task, attempt.id, 'completed');
+          } else if (completion.valid && completion.status === 'failed') {
+            harness.TaskStateMachine.finishRunAttempt(task, attempt.id, 'failed', completion.reason || '任务执行失败');
+          } else {
+            finishPartialAttempt(task, attempt, completion.reason || '任务尚未完整交付');
+          }
         } else if (event.type === 'turn_cancelled' && attempt) {
           harness.TaskStateMachine.finishRunAttempt(task, attempt.id, 'cancelled');
         } else if (event.type === 'turn_failed' && attempt) {

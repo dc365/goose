@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meteomate.local/schemas/knowledge-source.schema.json",
+  "title": "MeteoMate Knowledge Source",
+  "type": "object",
+  "required": ["id", "name", "type", "projectIds", "enabled", "createdAt", "updatedAt"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "name": { "type": "string", "minLength": 1 },
+    "type": { "enum": ["local", "dify"] },
+    "projectIds": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+    "enabled": { "type": "boolean" },
+    "path": { "type": "string" },
+    "localKind": { "enum": ["file", "directory"] },
+    "apiUrl": { "type": "string", "format": "uri" },
+    "datasetId": { "type": "string" },
+    "credentialSet": { "type": "boolean" },
+    "retrieval": {
+      "type": "object",
+      "properties": {
+        "searchMethod": { "const": "hybrid_search" },
+        "topK": { "type": "integer", "minimum": 1, "maximum": 20 },
+        "scoreThreshold": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "lastTest": { "type": ["object", "null"] },
+    "createdAt": { "type": "number" },
+    "updatedAt": { "type": "number" }
+  }
+}

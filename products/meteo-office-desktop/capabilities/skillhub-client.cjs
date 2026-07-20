@@ -24,34 +24,24 @@ function normalizeBaseURL(value) {
   return parsed.toString().replace(/\/$/, '');
 }
 
-function createSkillHubClient({ app, ipcMain, safeStorage, capabilityService, skillCreatorService }) {
+function createSkillHubClient({ app, ipcMain, capabilityService, skillCreatorService, profileContext }) {
   let settingsCache = null;
+  let policySync = Promise.resolve({ installed: [], skipped: [], errors: [] });
+
+  function currentProfileKey() {
+    return profileContext?.publicState?.().profileKey || null;
+  }
+
+  function assertActiveProfile(expectedProfileKey) {
+    if (expectedProfileKey && currentProfileKey() !== expectedProfileKey) {
+      throw new Error('用户已切换，已取消组织默认 Skill 同步');
+    }
+  }
 
   function settingsPath() {
-    const root = path.join(app.getPath('userData'), 'capabilities');
+    const root = profileContext?.currentPaths().capabilities || path.join(app.getPath('userData'), 'capabilities');
     fs.mkdirSync(root, { recursive: true, mode: 0o700 });
     return path.join(root, 'skillhub.json');
-  }
-
-  function encryptToken(token) {
-    const text = String(token || '');
-    if (!text) return null;
-    if (safeStorage?.isEncryptionAvailable?.()) {
-      return { scheme: 'electron-safe-storage', data: safeStorage.encryptString(text).toString('base64') };
-    }
-    return { scheme: 'base64-plain', data: Buffer.from(text, 'utf8').toString('base64') };
-  }
-
-  function decryptToken(record) {
-    if (!record?.data) return '';
-    try {
-      const data = Buffer.from(record.data, 'base64');
-      return record.scheme === 'electron-safe-storage' && safeStorage?.isEncryptionAvailable?.()
-        ? safeStorage.decryptString(data)
-        : data.toString('utf8');
-    } catch {
-      return '';
-    }
   }
 
   function loadSettings() {
@@ -59,14 +49,10 @@ function createSkillHubClient({ app, ipcMain, safeStorage, capabilityService, sk
     try {
       const parsed = JSON.parse(fs.readFileSync(settingsPath(), 'utf8'));
       settingsCache = {
-        baseUrl: normalizeBaseURL(parsed.baseUrl || process.env.METEOMATE_SKILLHUB_URL || DEFAULT_BASE_URL),
-        token: parsed.token || null,
         requireSignature: parsed.requireSignature !== false,
       };
     } catch {
       settingsCache = {
-        baseUrl: normalizeBaseURL(process.env.METEOMATE_SKILLHUB_URL || DEFAULT_BASE_URL),
-        token: encryptToken(process.env.METEOMATE_SKILLHUB_TOKEN || ''),
         requireSignature: true,
       };
     }
@@ -76,19 +62,16 @@ function createSkillHubClient({ app, ipcMain, safeStorage, capabilityService, sk
   function publicSettings() {
     const settings = loadSettings();
     return {
-      baseUrl: settings.baseUrl,
-      tokenConfigured: Boolean(decryptToken(settings.token)),
-      tokenStorage: settings.token?.scheme || 'none',
-      encryptionAvailable: Boolean(safeStorage?.isEncryptionAvailable?.()),
+      baseUrl: profileContext?.baseUrl() || normalizeBaseURL(process.env.METEOMATE_SKILLHUB_URL || DEFAULT_BASE_URL),
+      tokenConfigured: Boolean(profileContext?.isAuthenticated()),
+      tokenStorage: profileContext?.isAuthenticated() ? 'memory' : 'none',
+      encryptionAvailable: false,
       requireSignature: settings.requireSignature,
     };
   }
 
   function saveSettings(input = {}) {
-    const current = loadSettings();
     const next = {
-      baseUrl: normalizeBaseURL(input.baseUrl || current.baseUrl),
-      token: input.clearToken ? null : typeof input.token === 'string' && input.token ? encryptToken(input.token) : current.token,
       requireSignature: input.requireSignature !== false,
     };
     const target = settingsPath();
@@ -100,13 +83,12 @@ function createSkillHubClient({ app, ipcMain, safeStorage, capabilityService, sk
   }
 
   function authHeaders(extra = {}) {
-    const token = decryptToken(loadSettings().token);
-    return { ...extra, ...(token ? { Authorization: `Bearer ${token}` } : {}) };
+    return profileContext?.authHeaders(extra) || extra;
   }
 
   async function request(relative, options = {}) {
-    const settings = loadSettings();
-    const target = `${settings.baseUrl}${relative.startsWith('/') ? relative : `/${relative}`}`;
+    const baseUrl = profileContext?.baseUrl() || DEFAULT_BASE_URL;
+    const target = `${baseUrl}${relative.startsWith('/') ? relative : `/${relative}`}`;
     const response = await fetch(target, {
       ...options,
       headers: authHeaders(options.headers || {}),
@@ -138,7 +120,8 @@ function createSkillHubClient({ app, ipcMain, safeStorage, capabilityService, sk
     const health = await jsonRequest('/healthz', { timeoutMs: 8_000 });
     let identity = null;
     try {
-      identity = await jsonRequest('/v1/me', { timeoutMs: 8_000 });
+      const me = await jsonRequest('/v1/me', { timeoutMs: 8_000 });
+      identity = me?.user || me?.actor || null;
     } catch {
       // Public browsing remains usable without an authenticated token.
     }
@@ -149,9 +132,56 @@ function createSkillHubClient({ app, ipcMain, safeStorage, capabilityService, sk
     const query = new URLSearchParams();
     if (input.q) query.set('q', input.q);
     if (input.category) query.set('category', input.category);
+    if (input.includeDrafts) query.set('includeDrafts', 'true');
     query.set('limit', String(Math.min(200, Math.max(1, Number(input.limit || 60)))));
     query.set('offset', String(Math.max(0, Number(input.offset || 0))));
     return jsonRequest(`/v1/skills?${query}`);
+  }
+
+  async function listManagedSkills(input = {}) {
+    return listSkills({ ...input, includeDrafts: true });
+  }
+
+  async function listPublishers() {
+    const response = await jsonRequest('/v1/admin/users');
+    return {
+      ...response,
+      items: (response?.items || []).filter(
+        (user) => user.status === 'active' && ['publisher', 'admin'].includes(user.role)
+      ),
+    };
+  }
+
+  async function updateSkill(input = {}) {
+    const skillId = String(input.skillId || '').trim();
+    if (!skillId) throw new Error('更新 Skill 需要 skillId');
+    const body = { ...input };
+    delete body.skillId;
+    return jsonRequest(`/v1/skills/${encodeURIComponent(skillId)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  async function publishVersion(input = {}) {
+    const skillId = String(input.skillId || '').trim();
+    const version = String(input.version || '').trim();
+    if (!skillId || !version) throw new Error('发布版本需要 skillId 和 version');
+    return jsonRequest(
+      `/v1/skills/${encodeURIComponent(skillId)}/versions/${encodeURIComponent(version)}/publish`,
+      { method: 'POST' }
+    );
+  }
+
+  async function deprecateVersion(input = {}) {
+    const skillId = String(input.skillId || '').trim();
+    const version = String(input.version || '').trim();
+    if (!skillId || !version) throw new Error('弃用版本需要 skillId 和 version');
+    return jsonRequest(
+      `/v1/skills/${encodeURIComponent(skillId)}/versions/${encodeURIComponent(version)}/deprecate`,
+      { method: 'POST' }
+    );
   }
 
   async function listCollections() {
@@ -198,7 +228,10 @@ function createSkillHubClient({ app, ipcMain, safeStorage, capabilityService, sk
     const skillId = String(input.skillId || '');
     const version = String(input.version || '');
     if (!skillId || !version) throw new Error('下载 Skill 需要 skillId 和 version');
+    const expectedProfileKey = input.expectedProfileKey || currentProfileKey();
+    assertActiveProfile(expectedProfileKey);
     const { response } = await request(`/v1/skills/${encodeURIComponent(skillId)}/versions/${encodeURIComponent(version)}/download`, { timeoutMs: 45_000 });
+    assertActiveProfile(expectedProfileKey);
     if (!response.ok) {
       let message = `下载失败：${response.status}`;
       try { message = (await response.json())?.error?.message || message; } catch {}
@@ -207,6 +240,7 @@ function createSkillHubClient({ app, ipcMain, safeStorage, capabilityService, sk
     const length = Number(response.headers.get('content-length') || 0);
     if (length > PACKAGE_LIMIT) throw new Error('SkillHub 包超过 64 MB 限制');
     const bytes = Buffer.from(await response.arrayBuffer());
+    assertActiveProfile(expectedProfileKey);
     if (bytes.length > PACKAGE_LIMIT) throw new Error('SkillHub 包超过 64 MB 限制');
     const verification = await verifyPackage({
       skillId,
@@ -216,12 +250,13 @@ function createSkillHubClient({ app, ipcMain, safeStorage, capabilityService, sk
       signature: response.headers.get('x-meteomate-signature'),
       keyId: response.headers.get('x-meteomate-key-id'),
     });
+    assertActiveProfile(expectedProfileKey);
     const temporary = path.join(capabilityService.paths().temp, `skillhub-${skillId}-${version}-${crypto.randomUUID()}.zip`);
     fs.writeFileSync(temporary, bytes, { mode: 0o600 });
     try {
       const inspection = capabilityService.inspectSkill(temporary);
       fs.rmSync(temporary, { force: true });
-      return { ...inspection, remote: { skillId, version, baseUrl: loadSettings().baseUrl, ...verification } };
+      return { ...inspection, remote: { skillId, version, baseUrl: profileContext?.baseUrl() || DEFAULT_BASE_URL, ...verification } };
     } catch (error) {
       fs.rmSync(temporary, { force: true });
       throw error;
@@ -229,7 +264,7 @@ function createSkillHubClient({ app, ipcMain, safeStorage, capabilityService, sk
   }
 
   async function reportInstallation(input = {}) {
-    if (!decryptToken(loadSettings().token)) return { skipped: true, reason: 'anonymous' };
+    if (!profileContext?.isAuthenticated()) return { skipped: true, reason: 'anonymous' };
     return jsonRequest('/v1/installations', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -241,6 +276,60 @@ function createSkillHubClient({ app, ipcMain, safeStorage, capabilityService, sk
         projectId: input.projectId || '',
       }),
     });
+  }
+
+  async function applyManagedPolicy(snapshot = null) {
+    const policyContext = snapshot?.policyContext || profileContext?.policyContext();
+    const policy = policyContext?.policy;
+    if (!policy || !profileContext?.hasActiveProfile()) return { installed: [], skipped: [], errors: [] };
+    const expectedProfileKey = snapshot?.profileKey || currentProfileKey();
+    assertActiveProfile(expectedProfileKey);
+    const revision = Number(policy.revision || 0);
+    const defaultSkillIds = [...new Set((policy.defaultSkillIds || []).map(String).filter(Boolean))];
+    capabilityService.syncManagedSkills(defaultSkillIds, revision);
+    const result = { installed: [], skipped: [], errors: [] };
+    for (const skillId of defaultSkillIds) {
+      assertActiveProfile(expectedProfileKey);
+      const current = capabilityService.registrySnapshot().skills.find(
+        (item) => item.scope === 'user' && item.skillId === skillId && item.enabled
+      );
+      if (current) {
+        result.skipped.push({ skillId, reason: 'installed' });
+        continue;
+      }
+      try {
+        const bundled = capabilityService.installBundledDefault(skillId, revision);
+        if (bundled) {
+          result.installed.push({ skillId, source: 'bundled', version: bundled.installation.version });
+          continue;
+        }
+        if (!profileContext.isAuthenticated()) {
+          result.skipped.push({ skillId, reason: 'offline' });
+          continue;
+        }
+        const detail = await skillDetail(skillId);
+        assertActiveProfile(expectedProfileKey);
+        const version = detail?.skill?.latestVersion;
+        const published = (detail?.versions || []).some((item) => item.version === version && item.status === 'published');
+        if (!version || !published) throw new Error('组织默认 Skill 没有可安装的已发布版本');
+        const inspection = await downloadAndInspect({ skillId, version, expectedProfileKey });
+        if (!inspection.report.autoInstallEligible) throw new Error('组织默认 Skill 风险较高，需要管理员改为低风险包后再下发');
+        assertActiveProfile(expectedProfileKey);
+        const installed = capabilityService.installSkill({
+          token: inspection.token,
+          reportHash: inspection.report.reportHash,
+          scope: 'user',
+          managedByPolicy: true,
+          managedPolicyRevision: revision,
+        });
+        assertActiveProfile(expectedProfileKey);
+        await reportInstallation({ skillId, version, scope: 'user' });
+        result.installed.push({ skillId, source: 'skillhub', version: installed.installation.version });
+      } catch (error) {
+        result.errors.push({ skillId, message: error?.message || String(error) });
+      }
+    }
+    return result;
   }
 
   async function publishDraft(input = {}) {
@@ -276,6 +365,11 @@ function createSkillHubClient({ app, ipcMain, safeStorage, capabilityService, sk
     ipcMain.handle('skillhub:save-settings', async (_event, request) => saveSettings(request || {}));
     ipcMain.handle('skillhub:test', async () => testConnection());
     ipcMain.handle('skillhub:list-skills', async (_event, request) => listSkills(request || {}));
+    ipcMain.handle('skillhub:list-managed-skills', async (_event, request) => listManagedSkills(request || {}));
+    ipcMain.handle('skillhub:list-publishers', async () => listPublishers());
+    ipcMain.handle('skillhub:update-skill', async (_event, request) => updateSkill(request || {}));
+    ipcMain.handle('skillhub:publish-version', async (_event, request) => publishVersion(request || {}));
+    ipcMain.handle('skillhub:deprecate-version', async (_event, request) => deprecateVersion(request || {}));
     ipcMain.handle('skillhub:list-collections', async () => listCollections());
     ipcMain.handle('skillhub:recommendations', async (_event, request) => recommendations(request || {}));
     ipcMain.handle('skillhub:get-skill', async (_event, id) => skillDetail(id));
@@ -284,17 +378,28 @@ function createSkillHubClient({ app, ipcMain, safeStorage, capabilityService, sk
     ipcMain.handle('skillhub:publish-draft', async (_event, request) => publishDraft(request || {}));
   }
 
+  profileContext?.onChange((snapshot) => {
+    settingsCache = null;
+    policySync = policySync.then(() => applyManagedPolicy(snapshot)).catch(() => ({ installed: [], skipped: [], errors: [] }));
+  });
+
   return {
     registerIpc,
     publicSettings,
     saveSettings,
     testConnection,
     listSkills,
+    listManagedSkills,
+    listPublishers,
+    updateSkill,
+    publishVersion,
+    deprecateVersion,
     listCollections,
     recommendations,
     skillDetail,
     downloadAndInspect,
     reportInstallation,
+    applyManagedPolicy,
     publishDraft,
   };
 }

@@ -4,27 +4,24 @@
   const api = root.MeteoMateCapabilityCenter;
   const skillHub = api.skillHub;
   const hub = skillHub.state;
-  const { connect, loadRemoteSkills } = skillHub;
+  const { connect, loadRemoteSkills, loadManagedSkills, list } = skillHub;
+  const visibilityLabels = { private: '仅自己', organization: '当前组织', public: '全体用户' };
+  const statusLabels = { draft: '草稿', published: '已发布', deprecated: '已弃用' };
 
   function settingsDialog() {
     const settings = hub.settings || { baseUrl: 'http://127.0.0.1:8088', requireSignature: true };
-    api.ui.modal(`<header class="capability-modal-header"><div><h2>SkillHub 设置</h2><p>连接自托管 SkillHub，浏览、安装和发布团队技能</p></div><button data-modal-close>×</button></header><div class="capability-modal-body skillhub-settings-form"><label><span>服务器地址</span><input id="skillhub-base-url" value="${escapeHtml(
+    api.ui.modal(`<header class="capability-modal-header"><div><h2>SkillHub 设置</h2><p>当前账户使用登录会话连接单位内网 SkillHub</p></div><button data-modal-close>×</button></header><div class="capability-modal-body skillhub-settings-form"><div class="skillhub-connection-info"><strong>服务器</strong><span>${escapeHtml(
       settings.baseUrl || ''
-    )}" placeholder="http://127.0.0.1:8088"/></label><label><span>访问 Token</span><input id="skillhub-token" type="password" placeholder="${
-      settings.tokenConfigured ? '已保存；留空保持不变' : '可选；发布和组织技能需要'
-    }"/></label><label><input type="checkbox" id="skillhub-clear-token"/> 清除已保存 Token</label><label><input type="checkbox" id="skillhub-require-signature" ${
+    )}</span></div><label><input type="checkbox" id="skillhub-require-signature" ${
       settings.requireSignature !== false ? 'checked' : ''
-    }/> 安装前必须验证 Ed25519 签名</label><div class="skillhub-connection-info">${
-      hub.identity?.subject
-        ? `当前身份：${escapeHtml(hub.identity.name || hub.identity.subject)} · ${escapeHtml(hub.identity.role)}`
-        : '当前为匿名浏览'
-    }</div><div class="capability-error-block" id="skillhub-settings-result" hidden></div></div><footer class="capability-modal-footer"><button class="ghost-button" id="skillhub-test-connection">测试连接</button><span class="capability-modal-spacer"></span><button class="ghost-button" data-modal-close>取消</button><button class="primary-button" id="skillhub-save-settings">保存</button></footer>`, {
+    }/> 安装前必须验证 Ed25519 签名</label><div class="skillhub-connection-info"><strong>当前用户</strong><span>${
+      hub.identity?.id || hub.identity?.subject
+        ? `${escapeHtml(hub.identity.displayName || hub.identity.name || hub.identity.username || hub.identity.subject)} · ${escapeHtml(hub.identity.role)}`
+        : '离线或未登录'
+    }</span></div><div class="capability-error-block" id="skillhub-settings-result" hidden></div></div><footer class="capability-modal-footer"><button class="ghost-button" id="skillhub-test-connection">测试连接</button><span class="capability-modal-spacer"></span><button class="ghost-button" data-modal-close>取消</button><button class="primary-button" id="skillhub-save-settings">保存</button></footer>`, {
       onReady(element) {
         const resultBox = element.querySelector('#skillhub-settings-result');
         const values = () => ({
-          baseUrl: element.querySelector('#skillhub-base-url').value,
-          token: element.querySelector('#skillhub-token').value,
-          clearToken: element.querySelector('#skillhub-clear-token').checked,
           requireSignature: element.querySelector('#skillhub-require-signature').checked,
         });
         element.querySelector('#skillhub-test-connection').addEventListener('click', async (event) => {
@@ -95,6 +92,7 @@
               result.published ? '版本已经发布并签名。' : '版本已保存为草稿。'
             }</p></div><footer class="capability-modal-footer"><button class="primary-button" data-modal-close>完成</button></footer>`);
             await loadRemoteSkills({ rerender: false });
+            await loadManagedSkills({ rerender: false });
           } catch (error) {
             button.disabled = false;
             button.textContent = '上传到 SkillHub';
@@ -106,5 +104,116 @@
     });
   }
 
-  Object.assign(skillHub, { settingsDialog, publishDraftDialog });
+  async function manageSkillDialog(skillId) {
+    api.ui.modal('<div class="capability-modal-loading">正在读取发布记录…</div>');
+    try {
+      const [detail, publisherResponse] = await Promise.all([
+        root.meteoDesktop.getSkillHubSkill(skillId),
+        hub.identity?.role === 'admin'
+          ? root.meteoDesktop.listSkillHubPublishers().catch(() => ({ items: [] }))
+          : Promise.resolve({ items: [] }),
+      ]);
+      const skill = detail.skill;
+      const versions = list(detail.versions);
+      const publishers = list(publisherResponse?.items);
+      if (hub.identity?.role === 'admin' && !publishers.some((user) => user.id === skill.ownerId)) {
+        publishers.unshift({ id: skill.ownerId, displayName: skill.publisher?.name || skill.ownerId, status: 'disabled', role: 'publisher' });
+      }
+      const ownerField = hub.identity?.role === 'admin'
+        ? `<label><span>负责人</span><select id="skillhub-manage-owner">${publishers
+          .filter((user) => user.id === skill.ownerId || (user.status === 'active' && ['publisher', 'admin'].includes(user.role)))
+          .map((user) => `<option value="${escapeHtml(user.id)}" ${user.id === skill.ownerId ? 'selected' : ''}>${escapeHtml(user.displayName || user.username || user.id)} · ${user.role === 'admin' ? '管理员' : '发布者'}${user.status === 'active' ? '' : '（已停用）'}</option>`)
+          .join('')}</select></label>`
+        : '';
+      const versionRows = versions
+        .map((version) => `<article class="skillhub-managed-version">
+          <div><span class="skillhub-lifecycle ${escapeHtml(version.status)}">${escapeHtml(statusLabels[version.status] || version.status)}</span><strong>${escapeHtml(version.version)}</strong><small>${escapeHtml(version.changelog || '没有版本说明')}</small></div>
+          <dl><div><dt>风险</dt><dd>${escapeHtml(version.risk?.level || 'low')}</dd></div><div><dt>大小</dt><dd>${Math.max(1, Math.ceil(Number(version.packageSize || 0) / 1024))} KB</dd></div></dl>
+          ${version.status === 'draft' ? `<button class="secondary-action" data-publish-version="${escapeHtml(version.version)}">发布</button>` : ''}
+          ${version.status === 'published' ? `<button class="danger-text-button" data-deprecate-version="${escapeHtml(version.version)}">弃用</button>` : ''}
+        </article>`)
+        .join('');
+      const element = api.ui.modal(`<header class="capability-modal-header"><div><h2>${escapeHtml(skill.name || skill.id)}</h2><p>${escapeHtml(skill.id)} · ${escapeHtml(skill.publisher?.name || '')}</p></div><button data-modal-close aria-label="关闭">×</button></header>
+        <div class="capability-modal-body skillhub-management">
+          <section class="skillhub-management-form"><h3>发布资料</h3><div class="skillhub-management-grid"><label><span>名称</span><input id="skillhub-manage-name" maxlength="120" value="${escapeHtml(skill.name || '')}" required /></label><label><span>可见范围</span><select id="skillhub-manage-visibility">${Object.entries(visibilityLabels).map(([value, label]) => `<option value="${value}" ${skill.visibility === value ? 'selected' : ''}>${label}</option>`).join('')}</select></label>${ownerField}<label class="full"><span>摘要</span><input id="skillhub-manage-summary" maxlength="300" value="${escapeHtml(skill.summary || '')}" /></label><label class="full"><span>详细说明</span><textarea id="skillhub-manage-description" maxlength="4000">${escapeHtml(skill.description || '')}</textarea></label><label><span>分类</span><input id="skillhub-manage-categories" value="${escapeHtml(list(skill.categories).join('，'))}" placeholder="天气分析，预报服务" /></label><label><span>标签</span><input id="skillhub-manage-tags" value="${escapeHtml(list(skill.tags).join('，'))}" placeholder="天气，复盘" /></label></div></section>
+          <section class="skillhub-management-versions"><div><h3>不可变版本</h3><span>${versions.length} 个版本</span></div>${versionRows || '<p class="capability-muted">尚未上传版本。</p>'}</section>
+          <div class="capability-error-block" id="skillhub-manage-error" hidden></div>
+        </div>
+        <footer class="capability-modal-footer"><button class="ghost-button" data-modal-close>关闭</button><span class="capability-modal-spacer"></span><button class="primary-button" id="skillhub-save-managed">保存资料</button></footer>`, {
+        wide: true,
+        onReady(modal) {
+          const errorBox = modal.querySelector('#skillhub-manage-error');
+          const refreshDialog = async () => {
+            await loadManagedSkills({ rerender: false });
+            await manageSkillDialog(skillId);
+          };
+          modal.querySelector('#skillhub-save-managed').addEventListener('click', async (event) => {
+            const button = event.currentTarget;
+            button.disabled = true;
+            errorBox.hidden = true;
+            try {
+              const nameInput = modal.querySelector('#skillhub-manage-name');
+              if (!nameInput.value.trim()) {
+                nameInput.setCustomValidity('请输入 Skill 名称');
+                nameInput.reportValidity();
+                nameInput.addEventListener('input', () => nameInput.setCustomValidity(''), { once: true });
+                button.disabled = false;
+                return;
+              }
+              const split = (value) => value.split(/[，,]/).map((item) => item.trim()).filter(Boolean);
+              const request = {
+                skillId,
+                name: modal.querySelector('#skillhub-manage-name').value,
+                summary: modal.querySelector('#skillhub-manage-summary').value,
+                description: modal.querySelector('#skillhub-manage-description').value,
+                visibility: modal.querySelector('#skillhub-manage-visibility').value,
+                categories: split(modal.querySelector('#skillhub-manage-categories').value),
+                tags: split(modal.querySelector('#skillhub-manage-tags').value),
+              };
+              const owner = modal.querySelector('#skillhub-manage-owner');
+              if (owner && owner.value !== skill.ownerId) request.ownerId = owner.value;
+              await root.meteoDesktop.updateSkillHubSkill(request);
+              await refreshDialog();
+            } catch (error) {
+              button.disabled = false;
+              errorBox.hidden = false;
+              errorBox.textContent = error?.message || String(error);
+            }
+          });
+          modal.querySelectorAll('[data-publish-version]').forEach((button) => button.addEventListener('click', async () => {
+            const version = button.dataset.publishVersion;
+            if (!confirm(`确定发布 ${skill.id} ${version} 吗？发布后该版本内容不可修改。`)) return;
+            button.disabled = true;
+            try {
+              await root.meteoDesktop.publishSkillHubVersion({ skillId, version });
+              await refreshDialog();
+            } catch (error) {
+              button.disabled = false;
+              errorBox.hidden = false;
+              errorBox.textContent = error?.message || String(error);
+            }
+          }));
+          modal.querySelectorAll('[data-deprecate-version]').forEach((button) => button.addEventListener('click', async () => {
+            const version = button.dataset.deprecateVersion;
+            if (!confirm(`确定弃用 ${skill.id} ${version} 吗？已安装副本不会被删除。`)) return;
+            button.disabled = true;
+            try {
+              await root.meteoDesktop.deprecateSkillHubVersion({ skillId, version });
+              await refreshDialog();
+            } catch (error) {
+              button.disabled = false;
+              errorBox.hidden = false;
+              errorBox.textContent = error?.message || String(error);
+            }
+          }));
+        },
+      });
+      return element;
+    } catch (error) {
+      api.ui.error('无法读取发布记录', error?.message || String(error));
+      return null;
+    }
+  }
+
+  Object.assign(skillHub, { settingsDialog, publishDraftDialog, manageSkillDialog });
 })(typeof globalThis !== 'undefined' ? globalThis : window);

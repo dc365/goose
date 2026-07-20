@@ -96,7 +96,38 @@ Runtime Request
 Goose enabledExtensions
 ```
 
-环境变量和 Header 使用 Electron `safeStorage` 加密。操作系统不提供安全存储时，界面会显示降级状态；正式企业版应接系统钥匙串或服务端 Vault。
+环境变量、Header 和 SkillHub Token 当前仅保存在权限为 `0600` 的本地配置文件中，并使用 Base64 编码，不访问系统钥匙串。Base64 不属于加密，不应在当前版本中保存高敏感凭据；后续企业用户版本应接入服务端 Vault 或稳定签名下的安全存储。
+
+连接测试会完成 `initialize`、`notifications/initialized` 和 `tools/list`，并继续读取分页工具目录。最近一次发现结果保存在 Connector Binding 的 `lastTest` 中：工具中心卡片显示工具数量，管理弹窗提供可搜索的工具名称、描述和参数摘要。连接参数发生修改后，旧目录立即失效，需重新测试后再保存。
+
+### 5.1 浏览器操作预设
+
+浏览器操作不在 MeteoMate 内重新实现自动化引擎，而是复用 Goose 的 MCP 扩展机制和官方 Playwright MCP：
+
+```text
+MeteoMate 任务授权
+        ↓
+Goose ACP enabledExtensions
+        ↓
+@playwright/mcp@0.0.78（STDIO）
+        ↓
+隔离的 Playwright 浏览器会话
+```
+
+产品固定 MCP 版本、`--isolated`、视口和成果目录，用户无需填写命令参数。首次启用前必须连接测试成功。每个任务只能在产品安全上限内继续收窄工具，不能扩大权限。
+
+当前开放 18 个网页读取与交互工具，包括导航、快照、截图、查找、输入、点击、选择、拖拽、标签页和等待；默认隐藏以下 6 个高风险或不稳定工具：
+
+- `browser_evaluate`
+- `browser_file_upload`
+- `browser_drop`
+- `browser_network_requests`
+- `browser_network_request`
+- `browser_run_code_unsafe`
+
+只读网页操作在连接已验证且任务显式选择时可自动执行；输入、点击等交互操作继续服从任务权限策略；对话框处理按敏感操作审批。浏览器产物写入当前 MeteoMate Profile 的 `capabilities/browser/artifacts/`，不与其他用户 Profile 混用。
+
+当前随产品捆绑的 Goose 1.37.0 会忽略较新的 ACP recipe metadata。MeteoMate 会检测 ACP 响应中的 `recipe` / `hasRecipe`：支持原生 recipe 的新版 Goose 继续使用 `final_output`；旧版仅在提示层追加等价的结构化完成块，使浏览器任务能正确收口，不修改 Goose Core。
 
 ## 6. 与 Harness 的关系
 
