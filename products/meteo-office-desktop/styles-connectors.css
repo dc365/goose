@@ -275,6 +275,7 @@
 
 .connector-test-result {
   display: flex;
+  flex-wrap: wrap;
   min-height: 44px;
   align-items: center;
   gap: 9px;
@@ -285,6 +286,14 @@
   padding: 11px 13px;
   color: var(--muted);
   font-size: 12px;
+}
+
+.connector-test-result > small {
+  flex: 0 0 100%;
+  padding-left: 16px;
+  font-size: 10px;
+  line-height: 1.45;
+  opacity: 0.82;
 }
 
 .connector-test-result::before {

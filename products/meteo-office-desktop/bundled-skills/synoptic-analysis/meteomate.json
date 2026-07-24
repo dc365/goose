@@ -1,7 +1,13 @@
 {
   "displayName": "天气形势综合分析",
-  "version": "1.0.0",
+  "version": "1.1.0",
+  "icon": "形",
   "categories": ["天气分析"],
+  "tags": ["形势", "槽线", "切变线", "天气图", "图件"],
   "requires": {"connectors": ["weather-data", "weather-diagnosis"]},
-  "permissions": {"filesystem": {"read": ["project"], "write": []}, "shell": false, "network": []}
+  "permissions": {"filesystem": {"read": ["project"], "write": []}, "shell": false, "network": []},
+  "outputs": {
+    "files": ["artifacts/synoptic-*.png"],
+    "mediaTypes": ["image/png", "image/jpeg"]
+  }
 }

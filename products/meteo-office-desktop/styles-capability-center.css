@@ -250,3 +250,13 @@
     grid-template-columns: 1fr;
   }
 }
+
+.capability-update-block {
+  margin-bottom: 16px;
+  border: 1px solid rgba(77, 112, 190, 0.22);
+  border-radius: 12px;
+  background: #f2f6ff;
+  padding: 11px 13px;
+  color: #46659c;
+  font-size: 12px;
+}

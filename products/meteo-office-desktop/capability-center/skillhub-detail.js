@@ -13,6 +13,8 @@
       const skill = detail.skill;
       const versions = list(detail.versions).filter((item) => item.status === 'published');
       const latest = versions.find((item) => item.version === skill.latestVersion) || versions[0];
+      const installed = skillHub.installedVersion(skillId);
+      const updateAvailable = Boolean(installed && latest?.version && api.compareSkillVersions(installed, latest.version) < 0);
       api.ui.modal(`<header class="capability-modal-header"><div><h2>${escapeHtml(
         skill.name || skill.id
       )}</h2><p>${escapeHtml(skill.publisher?.name || '')} · ${escapeHtml(
@@ -41,7 +43,7 @@
           .join('')}</div><div class="capability-error-block" id="skillhub-install-error" hidden></div></div>
         <footer class="capability-modal-footer"><button class="ghost-button" data-modal-close>取消</button><button class="primary-button" id="install-skillhub-skill" ${
           latest ? '' : 'disabled'
-        }>校验并安装</button></footer>`, {
+        }>${updateAvailable ? `更新到 ${escapeHtml(latest.version)}` : installed === latest?.version ? '重新安装' : '校验并安装'}</button></footer>`, {
         wide: true,
         onReady(element) {
           element.querySelector('#install-skillhub-skill')?.addEventListener('click', async (event) => {

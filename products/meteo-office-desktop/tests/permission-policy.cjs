@@ -3,6 +3,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const PermissionPolicy = require('../capabilities/permission-policy.cjs');
 const BrowserConnector = require('../capabilities/browser-connector.js');
+const ComputerConnector = require('../capabilities/computer-connector.js');
+const OfficeConnector = require('../capabilities/office-connector.js');
 
 const workspace = '/Users/test/Documents/MeteoMate/Claw/session';
 
@@ -168,9 +170,148 @@ assert.equal(browserUnsafe.safeRemoteRead, false);
 assert.equal(PermissionPolicy.permissionHandling('workspace-approval', browserUnsafe), 'deny');
 assert.equal(PermissionPolicy.permissionHandling('artifact-approval', browserUnsafe), 'deny');
 
+const computerContext = {
+  workspace,
+  connectors: [{
+    id: ComputerConnector.ID,
+    connectorType: 'computer',
+    transport: 'stdio',
+    riskClassification: 'high',
+    verified: true,
+    explicitToolSelection: true,
+    selectedTools: [...ComputerConnector.SAFE_TOOLS],
+    tools: [...ComputerConnector.SAFE_TOOLS, ...ComputerConnector.BLOCKED_TOOLS]
+      .map((name) => ({ name, description: name })),
+  }],
+};
+const computerApps = PermissionPolicy.classifyPermissionRequest(
+  { toolCall: { title: 'cua-desktop__list_apps', kind: 'other', rawInput: {} } },
+  computerContext
+);
+assert.equal(computerApps.computerRisk, 'observe');
+assert.equal(computerApps.safeRemoteRead, true);
+assert.equal(PermissionPolicy.permissionHandling('analysis-readonly', computerApps), 'allow_once');
+
+const computerDesktop = PermissionPolicy.classifyPermissionRequest(
+  { toolCall: { title: 'cua-desktop__get_desktop_state', kind: 'other', rawInput: {} } },
+  computerContext
+);
+assert.equal(computerDesktop.computerRisk, 'inspect');
+assert.equal(computerDesktop.requiresSmartApproval, true);
+assert.equal(PermissionPolicy.permissionHandling('artifact-approval', computerDesktop), 'prompt');
+assert.equal(PermissionPolicy.permissionHandling('workspace-approval', computerDesktop), 'allow_always');
+
+const computerClick = PermissionPolicy.classifyPermissionRequest(
+  { toolCall: { title: 'cua-desktop__click', kind: 'other', rawInput: { pid: 100, x: 10, y: 10 } } },
+  computerContext
+);
+assert.equal(computerClick.computerRisk, 'interaction');
+assert.equal(computerClick.kind, 'execute');
+assert.equal(computerClick.requiresSmartApproval, true);
+assert.equal(PermissionPolicy.permissionHandling('analysis-readonly', computerClick), 'prompt');
+assert.equal(PermissionPolicy.permissionHandling('artifact-approval', computerClick), 'prompt');
+assert.equal(PermissionPolicy.permissionHandling('workspace-approval', computerClick), 'allow_always');
+
+const computerType = PermissionPolicy.classifyPermissionRequest(
+  { toolCall: { title: 'cua-desktop__type_text', kind: 'other', rawInput: { pid: 100, text: 'forecast' } } },
+  computerContext
+);
+assert.equal(computerType.computerRisk, 'sensitive');
+assert.equal(computerType.requiresSmartApproval, true);
+assert.equal(PermissionPolicy.permissionHandling('artifact-approval', computerType), 'prompt');
+assert.equal(PermissionPolicy.permissionHandling('workspace-approval', computerType), 'allow_always');
+
+const computerBlocked = PermissionPolicy.classifyPermissionRequest(
+  { toolCall: { title: 'cua-desktop__kill_app', kind: 'other', rawInput: { pid: 100 } } },
+  computerContext
+);
+assert.equal(computerBlocked.computerRisk, 'blocked');
+assert.equal(PermissionPolicy.permissionHandling('workspace-approval', computerBlocked), 'deny');
+
+const officeContext = {
+  workspace,
+  connectors: [{
+    id: OfficeConnector.ID,
+    connectorType: 'office',
+    transport: 'stdio',
+    riskClassification: 'medium',
+    verified: true,
+    explicitToolSelection: true,
+    selectedTools: [...OfficeConnector.SAFE_TOOLS],
+    tools: [...OfficeConnector.SAFE_TOOLS, 'shell']
+      .map((name) => ({ name, description: name })),
+  }],
+};
+const officeInspect = PermissionPolicy.classifyPermissionRequest(
+  {
+    toolCall: {
+      title: 'office-artifacts__docx_inspect',
+      kind: 'other',
+      rawInput: { sourcePath: 'inputs/report.docx' },
+    },
+  },
+  officeContext
+);
+assert.equal(officeInspect.officeRisk, 'observe');
+assert.equal(officeInspect.safeRemoteRead, true);
+assert.equal(PermissionPolicy.permissionHandling('analysis-readonly', officeInspect), 'allow_once');
+
+const officeCreate = PermissionPolicy.classifyPermissionRequest(
+  {
+    toolCall: {
+      title: 'office-artifacts__pdf_create',
+      kind: 'other',
+      rawInput: { outputPath: 'artifacts/report.pdf' },
+    },
+  },
+  officeContext
+);
+assert.equal(officeCreate.officeRisk, 'mutation');
+assert.equal(officeCreate.kind, 'edit');
+assert.equal(PermissionPolicy.permissionHandling('analysis-readonly', officeCreate), 'prompt');
+assert.equal(PermissionPolicy.permissionHandling('artifact-approval', officeCreate), 'allow_once');
+
+const presentationInspect = PermissionPolicy.classifyPermissionRequest(
+  {
+    toolCall: {
+      title: 'office-artifacts__pptx_inspect',
+      kind: 'other',
+      rawInput: { sourcePath: 'inputs/briefing.pptx' },
+    },
+  },
+  officeContext
+);
+assert.equal(presentationInspect.officeRisk, 'observe');
+assert.equal(PermissionPolicy.permissionHandling('analysis-readonly', presentationInspect), 'allow_once');
+
+const spreadsheetEdit = PermissionPolicy.classifyPermissionRequest(
+  {
+    toolCall: {
+      title: 'office-artifacts__xlsx_edit',
+      kind: 'other',
+      rawInput: {
+        sourcePath: 'inputs/rainfall.xlsx',
+        outputPath: 'artifacts/rainfall-v2.xlsx',
+      },
+    },
+  },
+  officeContext
+);
+assert.equal(spreadsheetEdit.officeRisk, 'mutation');
+assert.equal(PermissionPolicy.permissionHandling('analysis-readonly', spreadsheetEdit), 'prompt');
+assert.equal(PermissionPolicy.permissionHandling('artifact-approval', spreadsheetEdit), 'allow_once');
+
+const officeBlocked = PermissionPolicy.classifyPermissionRequest(
+  { toolCall: { title: 'office-artifacts__shell', kind: 'other', rawInput: {} } },
+  officeContext
+);
+assert.equal(officeBlocked.officeRisk, 'blocked');
+assert.equal(PermissionPolicy.permissionHandling('workspace-approval', officeBlocked), 'deny');
+
 const mainSource = fs.readFileSync(path.resolve(__dirname, '..', 'main.cjs'), 'utf8');
 assert.ok(mainSource.includes('对于问候、寒暄、能力介绍、一般知识问答'));
 assert.ok(mainSource.includes("PermissionPolicy.permissionHandling("));
 assert.ok(mainSource.includes("handling === 'deny'"));
+assert.ok(mainSource.includes('完全访问下，已允许的桌面操作无需再次请求审批'));
 
 console.log('permission policy tests passed');

@@ -15,6 +15,7 @@ import (
 const (
 	maxListItems                = 128
 	DefaultAutoCompactThreshold = 0.8
+	DefaultSkillPublishMode     = "publisher_direct"
 	minimumAutoCompactThreshold = 0.5
 	maximumAutoCompactThreshold = 0.95
 )
@@ -29,16 +30,19 @@ type Settings struct {
 	DefaultModel                string   `json:"defaultModel"`
 	AllowedModels               []string `json:"allowedModels"`
 	DefaultSkillIDs             []string `json:"defaultSkillIds"`
+	AllowedSkillIDs             []string `json:"allowedSkillIds"`
 	AllowedConnectorIDs         []string `json:"allowedConnectorIds"`
 	DefaultPermissionProfileID  string   `json:"defaultPermissionProfileId"`
 	AllowedPermissionProfileIDs []string `json:"allowedPermissionProfileIds"`
 	AutoCompactThreshold        float64  `json:"autoCompactThreshold"`
+	SkillPublishMode            string   `json:"skillPublishMode"`
 }
 
 type Patch struct {
 	DefaultModel                *string   `json:"defaultModel,omitempty"`
 	AllowedModels               *[]string `json:"allowedModels,omitempty"`
 	DefaultSkillIDs             *[]string `json:"defaultSkillIds,omitempty"`
+	AllowedSkillIDs             *[]string `json:"allowedSkillIds,omitempty"`
 	AllowedConnectorIDs         *[]string `json:"allowedConnectorIds,omitempty"`
 	DefaultPermissionProfileID  *string   `json:"defaultPermissionProfileId,omitempty"`
 	AllowedPermissionProfileIDs *[]string `json:"allowedPermissionProfileIds,omitempty"`
@@ -73,9 +77,11 @@ func DefaultSettings() Settings {
 	return Settings{
 		AllowedModels:               []string{},
 		DefaultSkillIDs:             []string{},
+		AllowedSkillIDs:             []string{},
 		AllowedConnectorIDs:         []string{},
 		AllowedPermissionProfileIDs: []string{},
 		AutoCompactThreshold:        DefaultAutoCompactThreshold,
+		SkillPublishMode:            DefaultSkillPublishMode,
 	}
 }
 
@@ -261,9 +267,9 @@ func (s *Store) Effective(userID, role string) Effective {
 	settings := cloneSettings(s.state.Organization)
 	sources := map[string]string{
 		"defaultModel": "organization", "allowedModels": "organization",
-		"defaultSkillIds": "organization", "allowedConnectorIds": "organization",
+		"defaultSkillIds": "organization", "allowedSkillIds": "organization", "allowedConnectorIds": "organization",
 		"defaultPermissionProfileId": "organization", "allowedPermissionProfileIds": "organization",
-		"autoCompactThreshold": "organization",
+		"autoCompactThreshold": "organization", "skillPublishMode": "organization",
 	}
 	applyPatch(&settings, sources, s.state.Roles[role], "role:"+role)
 	applyPatch(&settings, sources, s.state.Users[userID], "user:"+userID)
@@ -275,15 +281,26 @@ func (s *Store) Effective(userID, role string) Effective {
 		settings.DefaultPermissionProfileID = settings.AllowedPermissionProfileIDs[0]
 		sources["defaultPermissionProfileId"] = "policy-fallback"
 	}
+	if len(settings.AllowedSkillIDs) > 0 {
+		filtered := intersection(settings.DefaultSkillIDs, settings.AllowedSkillIDs)
+		if len(filtered) != len(settings.DefaultSkillIDs) {
+			sources["defaultSkillIds"] = "policy-fallback"
+		}
+		settings.DefaultSkillIDs = filtered
+	}
 	return Effective{Settings: settings, Sources: sources, Revision: s.state.Revision, UpdatedAt: s.state.UpdatedAt}
 }
 
 func normalizeSettings(input Settings) (Settings, error) {
+	publishMode, err := normalizeSkillPublishMode(input.SkillPublishMode)
+	if err != nil {
+		return Settings{}, err
+	}
 	result := Settings{
 		DefaultModel:               strings.TrimSpace(input.DefaultModel),
 		DefaultPermissionProfileID: strings.TrimSpace(input.DefaultPermissionProfileID),
+		SkillPublishMode:           publishMode,
 	}
-	var err error
 	if result.AutoCompactThreshold, err = normalizeAutoCompactThreshold(input.AutoCompactThreshold, true); err != nil {
 		return Settings{}, err
 	}
@@ -291,6 +308,9 @@ func normalizeSettings(input Settings) (Settings, error) {
 		return Settings{}, err
 	}
 	if result.DefaultSkillIDs, err = normalizeList(input.DefaultSkillIDs, "defaultSkillIds"); err != nil {
+		return Settings{}, err
+	}
+	if result.AllowedSkillIDs, err = normalizeList(input.AllowedSkillIDs, "allowedSkillIds"); err != nil {
 		return Settings{}, err
 	}
 	if result.AllowedConnectorIDs, err = normalizeList(input.AllowedConnectorIDs, "allowedConnectorIds"); err != nil {
@@ -306,6 +326,9 @@ func normalizeSettings(input Settings) (Settings, error) {
 	}
 	if len(result.AllowedModels) > 0 && result.DefaultModel != "" && !contains(result.AllowedModels, result.DefaultModel) {
 		return Settings{}, errors.New("defaultModel must be included in allowedModels")
+	}
+	if len(result.AllowedSkillIDs) > 0 && !isSubset(result.DefaultSkillIDs, result.AllowedSkillIDs) {
+		return Settings{}, errors.New("defaultSkillIds must be included in allowedSkillIds")
 	}
 	if len(result.AllowedPermissionProfileIDs) > 0 && result.DefaultPermissionProfileID != "" && !contains(result.AllowedPermissionProfileIDs, result.DefaultPermissionProfileID) {
 		return Settings{}, errors.New("defaultPermissionProfileId must be included in allowedPermissionProfileIds")
@@ -342,6 +365,7 @@ func normalizePatch(input Patch) (Patch, error) {
 	}{
 		{input.AllowedModels, &result.AllowedModels, "allowedModels"},
 		{input.DefaultSkillIDs, &result.DefaultSkillIDs, "defaultSkillIds"},
+		{input.AllowedSkillIDs, &result.AllowedSkillIDs, "allowedSkillIds"},
 		{input.AllowedConnectorIDs, &result.AllowedConnectorIDs, "allowedConnectorIds"},
 	}
 	for _, field := range fields {
@@ -372,6 +396,17 @@ func normalizeAutoCompactThreshold(value float64, useDefault bool) (float64, err
 		return 0, fmt.Errorf("autoCompactThreshold must be between %.2f and %.2f", minimumAutoCompactThreshold, maximumAutoCompactThreshold)
 	}
 	return value, nil
+}
+
+func normalizeSkillPublishMode(value string) (string, error) {
+	switch strings.TrimSpace(value) {
+	case "", DefaultSkillPublishMode:
+		return DefaultSkillPublishMode, nil
+	case "admin_approval":
+		return "admin_approval", nil
+	default:
+		return "", errors.New("skillPublishMode must be publisher_direct or admin_approval")
+	}
 }
 
 func normalizePermissionProfiles(values []string) ([]string, error) {
@@ -424,6 +459,10 @@ func applyPatch(settings *Settings, sources map[string]string, patch Patch, sour
 		settings.DefaultSkillIDs = append([]string(nil), (*patch.DefaultSkillIDs)...)
 		sources["defaultSkillIds"] = source
 	}
+	if patch.AllowedSkillIDs != nil {
+		settings.AllowedSkillIDs = append([]string(nil), (*patch.AllowedSkillIDs)...)
+		sources["allowedSkillIds"] = source
+	}
 	if patch.AllowedConnectorIDs != nil {
 		settings.AllowedConnectorIDs = append([]string(nil), (*patch.AllowedConnectorIDs)...)
 		sources["allowedConnectorIds"] = source
@@ -451,9 +490,29 @@ func contains(values []string, target string) bool {
 	return false
 }
 
+func isSubset(values, allowed []string) bool {
+	for _, value := range values {
+		if !contains(allowed, value) {
+			return false
+		}
+	}
+	return true
+}
+
+func intersection(values, allowed []string) []string {
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if contains(allowed, value) {
+			result = append(result, value)
+		}
+	}
+	return result
+}
+
 func cloneSettings(input Settings) Settings {
 	input.AllowedModels = append([]string(nil), input.AllowedModels...)
 	input.DefaultSkillIDs = append([]string(nil), input.DefaultSkillIDs...)
+	input.AllowedSkillIDs = append([]string(nil), input.AllowedSkillIDs...)
 	input.AllowedConnectorIDs = append([]string(nil), input.AllowedConnectorIDs...)
 	input.AllowedPermissionProfileIDs = append([]string(nil), input.AllowedPermissionProfileIDs...)
 	return input

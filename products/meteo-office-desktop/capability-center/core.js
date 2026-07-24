@@ -3,7 +3,7 @@
 
   const center = {
     status: 'loading',
-    registry: { skills: [], connectors: [], bundledSkills: [] },
+    registry: { skills: [], connectors: [], experts: [], bundledSkills: [] },
     installedOnly: false,
     connectedOnly: false,
     error: '',
@@ -13,6 +13,22 @@
   const installedSkills = () => list(center.registry.skills);
   const configuredConnectors = () => list(center.registry.connectors);
   const bundledSkills = () => list(center.registry.bundledSkills);
+  const userExperts = () => list(center.registry.experts);
+
+  function compareSkillVersions(left, right) {
+    const parts = (value) => String(value || '0.0.0').replace(/^v/i, '').split('-', 2);
+    const [leftCore, leftPrerelease = ''] = parts(left);
+    const [rightCore, rightPrerelease = ''] = parts(right);
+    const a = leftCore.split('.').map((part) => Number.parseInt(part, 10) || 0);
+    const b = rightCore.split('.').map((part) => Number.parseInt(part, 10) || 0);
+    for (let index = 0; index < Math.max(a.length, b.length, 3); index += 1) {
+      if ((a[index] || 0) !== (b[index] || 0)) return (a[index] || 0) < (b[index] || 0) ? -1 : 1;
+    }
+    if (leftPrerelease === rightPrerelease) return 0;
+    if (!leftPrerelease) return 1;
+    if (!rightPrerelease) return -1;
+    return leftPrerelease.localeCompare(rightPrerelease, 'en', { numeric: true });
+  }
 
   function skillInstallation(skillId, projectId) {
     const matches = installedSkills().filter((item) => item.skillId === skillId);
@@ -30,22 +46,36 @@
   function skillCatalog(projectId) {
     const builtIn = new Map(list(catalog.skills).map((item) => [item.id, item]));
     const bundled = new Map(bundledSkills().map((item) => [item.id, item]));
+    const remoteSkills = [
+      ...list(root.MeteoMateCapabilityCenter?.skillHub?.state?.skills),
+      ...list(root.MeteoMateCapabilityCenter?.skillHub?.state?.recommendations).map((item) => item?.skill),
+    ].filter(Boolean);
+    const remote = new Map(remoteSkills.map((item) => [item.id, item]));
     const ids = new Set([...builtIn.keys(), ...bundled.keys(), ...installedSkills().map((item) => item.skillId)]);
     return [...ids].map((id) => {
       const base = builtIn.get(id) || {};
       const shipped = bundled.get(id) || null;
       const installation = skillInstallation(id, projectId);
+      const remoteSkill = remote.get(id) || null;
+      const sidecar = installation?.sidecar || shipped?.sidecar || {};
+      const latestVersion = remoteSkill?.latestVersion || '';
+      const updateAvailable = Boolean(
+        installation?.version && latestVersion && compareSkillVersions(installation.version, latestVersion) < 0
+      );
       return {
         id,
         name: installation?.name || shipped?.name || base.name || id,
         description: installation?.description || shipped?.description || base.description || '',
         version: installation?.version || shipped?.version || base.version || '0.1.0',
-        category: base.category || '本地技能',
-        icon: base.icon || (installation?.name || shipped?.name || id).slice(0, 1).toUpperCase(),
-        tags: list(base.tags),
+        category: list(sidecar.categories)[0] || shipped?.category || base.category || '本地技能',
+        icon: sidecar.icon || shipped?.icon || base.icon || (installation?.name || shipped?.name || id).slice(0, 1).toUpperCase(),
+        tags: list(sidecar.tags).length ? list(sidecar.tags) : list(shipped?.tags).length ? list(shipped.tags) : list(base.tags),
         status: installation ? (installation.enabled ? 'installed-enabled' : 'installed-disabled') : shipped ? 'bundled' : base.status,
         installation,
         bundled: shipped,
+        remoteSkill,
+        latestVersion,
+        updateAvailable,
         risk: installation?.risk || shipped?.risk || null,
         warnings: installation?.warnings || shipped?.warnings || [],
         capabilityType: 'skill',
@@ -58,7 +88,11 @@
   }
 
   function projectSelectableSkillCatalog(remoteSkills = [], projectId = null) {
-    const items = new Map(enabledSkillCatalog(projectId).map((item) => [item.id, item]));
+    const items = new Map(
+      skillCatalog(projectId)
+        .filter((item) => item.installation?.enabled || item.bundled)
+        .map((item) => [item.id, item])
+    );
     for (const remote of list(remoteSkills)) {
       const id = String(remote?.id || '').trim();
       if (!id) continue;
@@ -118,6 +152,16 @@
         capabilityType: 'connector',
       };
     });
+  }
+
+  function expertCatalog({ includeInactive = false } = {}) {
+    return userExperts()
+      .filter((item) => includeInactive || item.status === 'enabled')
+      .map((item) => ({
+        ...item,
+        capabilityType: 'expert',
+        userManaged: item.source?.type === 'user',
+      }));
   }
 
   function mergedCatalog(input = catalog, projectId) {
@@ -224,15 +268,18 @@
     installedSkills,
     configuredConnectors,
     bundledSkills,
+    userExperts,
     skillInstallation,
     skillCatalog,
     enabledSkillCatalog,
     projectSelectableSkillCatalog,
     connectorCatalog,
+    expertCatalog,
     mergedCatalog,
     refresh,
     syncProjectCapability,
     effectiveConnectorSelection,
     clearSessionIfCapabilitiesChanged,
+    compareSkillVersions,
   };
 })(typeof globalThis !== 'undefined' ? globalThis : window);

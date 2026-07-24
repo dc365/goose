@@ -1,0 +1,18 @@
+{
+  "displayName": "Presentations",
+  "version": "1.0.0",
+  "icon": "P",
+  "categories": ["办公成果物"],
+  "tags": ["PPTX", "PowerPoint", "模板", "汇报", "图表"],
+  "requires": {
+    "connectors": ["office-artifacts"]
+  },
+  "permissions": {
+    "filesystem": {
+      "read": ["project"],
+      "write": ["artifacts"]
+    },
+    "shell": false,
+    "network": []
+  }
+}

@@ -8,7 +8,10 @@ const vm = require('node:vm');
 const { createCapabilityService } = require('../capabilities/service.cjs');
 const ConnectorClient = require('../capabilities/connector-client.cjs');
 const BrowserConnector = require('../capabilities/browser-connector.js');
+const ComputerConnector = require('../capabilities/computer-connector.js');
+const OfficeConnector = require('../capabilities/office-connector.js');
 const { parseZipBuffer } = require('../capabilities/safe-zip.cjs');
+const { compareSkillVersions } = require('../capabilities/skill-version.cjs');
 
 const connectorsSource = fs.readFileSync(path.resolve(__dirname, '..', 'capability-center', 'connectors.js'), 'utf8');
 const capabilityRenderSource = fs.readFileSync(path.resolve(__dirname, '..', 'capability-center', 'render.js'), 'utf8');
@@ -21,6 +24,10 @@ const capabilityIntegrationSource = fs.readFileSync(path.resolve(__dirname, '..'
 const rendererSource = fs.readFileSync(path.resolve(__dirname, '..', 'renderer-core.js'), 'utf8');
 const rendererActionsSource = fs.readFileSync(path.resolve(__dirname, '..', 'renderer-actions.js'), 'utf8');
 const taskStylesSource = fs.readFileSync(path.resolve(__dirname, '..', 'styles', 'app-4.css'), 'utf8');
+const nmcSkillSource = fs.readFileSync(path.resolve(__dirname, '..', 'bundled-skills', 'nmc-upper-air-chart-analysis', 'SKILL.md'), 'utf8');
+const nmcSkillSidecar = JSON.parse(fs.readFileSync(path.resolve(__dirname, '..', 'bundled-skills', 'nmc-upper-air-chart-analysis', 'meteomate.json'), 'utf8'));
+const synopticSkillSource = fs.readFileSync(path.resolve(__dirname, '..', 'bundled-skills', 'synoptic-analysis', 'SKILL.md'), 'utf8');
+const synopticSkillSidecar = JSON.parse(fs.readFileSync(path.resolve(__dirname, '..', 'bundled-skills', 'synoptic-analysis', 'meteomate.json'), 'utf8'));
 assert.ok(connectorsSource.includes('未使用钥匙串加密'));
 assert.ok(!connectorsSource.includes('值将加密保存'));
 assert.ok(rendererSource.includes('专家 · 技能 · 工具'));
@@ -37,19 +44,34 @@ assert.ok(!capabilityRenderSource.includes('data-add-skill="zip"'));
 assert.ok(!capabilityRenderSource.includes('data-add-skill="directory"'));
 assert.ok(skillHubRenderSource.includes('renderSkillHubTitlebarActions'));
 assert.ok(skillHubRenderSource.includes('data-skillhub-category'));
+assert.ok(skillHubRenderSource.includes('renderOfflineSkills'));
+assert.ok(skillHubRenderSource.includes('更新到'));
 assert.ok(skillHubCoreSource.includes("category: '全部'"));
 assert.ok(skillCreatorSource.includes('renderSkillCreatorTitlebarActions'));
 assert.ok(capabilityRenderSource.includes('content-scroll window-content-full'));
 assert.ok(skillHubRenderSource.includes('content-scroll window-content-full'));
 assert.ok(capabilityRenderSource.includes('工具中心'));
 assert.ok(capabilityRenderSource.includes("item.id !== 'goose-runtime'"));
-assert.ok(capabilitiesManifestSource.includes("id: 'artifact-docx'"));
+assert.ok(capabilitiesManifestSource.includes("id: 'office-artifacts'"));
 assert.ok(capabilitiesManifestSource.includes("id: 'playwright-browser'"));
+assert.ok(capabilitiesManifestSource.includes("id: 'cua-desktop'"));
+assert.ok(capabilitiesManifestSource.includes('window.METEOMATE_SKILL_ROADMAP'));
+assert.ok(!capabilitiesManifestSource.includes("status: 'built-in'"));
 assert.equal(BrowserConnector.MCP_VERSION, '0.0.78');
 assert.equal(BrowserConnector.SAFE_TOOLS.length, 18);
 assert.ok(BrowserConnector.SAFE_TOOLS.includes('browser_click'));
 assert.ok(!BrowserConnector.SAFE_TOOLS.includes('browser_run_code_unsafe'));
-assert.ok(capabilitiesManifestSource.includes("category: '办公'"));
+assert.equal(ComputerConnector.DRIVER_VERSION, '0.12.2');
+assert.ok(ComputerConnector.SAFE_TOOLS.includes('get_window_state'));
+assert.ok(ComputerConnector.SAFE_TOOLS.includes('click'));
+assert.ok(!ComputerConnector.SAFE_TOOLS.includes('browser_navigate'));
+assert.ok(!ComputerConnector.SAFE_TOOLS.includes('kill_app'));
+assert.equal(OfficeConnector.SAFE_TOOLS.length, 14);
+assert.ok(OfficeConnector.SAFE_TOOLS.includes('docx_create'));
+assert.ok(OfficeConnector.SAFE_TOOLS.includes('pptx_create'));
+assert.ok(OfficeConnector.SAFE_TOOLS.includes('xlsx_create'));
+assert.ok(OfficeConnector.SAFE_TOOLS.includes('artifact_validate'));
+assert.ok(capabilitiesManifestSource.includes("category: '办公成果物'"));
 assert.ok(!capabilitiesManifestSource.includes("id: 'goose-runtime'"));
 assert.ok(connectorsSource.includes('添加工具服务'));
 assert.ok(connectorsSource.includes('可用工具'));
@@ -69,6 +91,21 @@ assert.ok(capabilityIntegrationSource.includes('[data-remove-task-skill]'));
 assert.ok(capabilityIntegrationSource.includes('[data-remove-task-tool]'));
 assert.ok(capabilityIntegrationSource.includes('readConnectorToolSelection'));
 assert.ok(capabilityIntegrationSource.includes('request.toolSelections'));
+assert.ok(capabilityIntegrationSource.includes('installation?.runtimeInstruction'));
+assert.ok(capabilityIntegrationSource.includes('不要再调用 load_skill'));
+assert.ok(capabilityIntegrationSource.includes('if (request.sessionId)'));
+assert.ok(capabilityIntegrationSource.includes('从官方首页或已确认的父级入口开始'));
+assert.ok(rendererActionsSource.includes('function retryIncompleteCompletion'));
+assert.ok(rendererActionsSource.includes("activity.status = 'interrupted'"));
+assert.ok(rendererSource.includes("activity.status === 'cancelled' || activity.status === 'interrupted' ? '已停止'"));
+assert.match(nmcSkillSource, /https:\/\/www\.nmc\.cn\/publish\/observations\/china\/dm\/weatherchart-h500\.htm/);
+assert.match(nmcSkillSource, /不要先点击“数值预报”/);
+assert.equal(nmcSkillSidecar.version, '1.0.1');
+assert.match(synopticSkillSource, /browser_take_screenshot/);
+assert.match(synopticSkillSource, /图件速览/);
+assert.match(synopticSkillSource, /完成结果的 `artifacts` 中登记实际图片文件/);
+assert.equal(synopticSkillSidecar.version, '1.1.0');
+assert.deepEqual(synopticSkillSidecar.outputs.mediaTypes, ['image/png', 'image/jpeg']);
 assert.ok(capabilityRenderSource.includes('const enabledSkills = api.enabledSkillCatalog(project?.id || null)'));
 assert.ok(rendererSource.includes('data-tool-selection-count'));
 assert.ok(rendererSource.includes('选择本范围可调用的工具'));
@@ -76,6 +113,50 @@ assert.ok(taskStylesSource.includes('.new-task-scene-list'));
 assert.ok(taskStylesSource.includes('--secondary-popover-label-size'));
 assert.ok(taskStylesSource.includes('.skillhub-section .skillhub-category-strip'));
 assert.ok(taskStylesSource.includes('.skillhub-section .skillhub-card-footer'));
+assert.equal(compareSkillVersions('1.1.0', '1.0.9'), 1);
+assert.equal(compareSkillVersions('1.0.0-beta.2', '1.0.0'), -1);
+assert.equal(compareSkillVersions('v2.0', '2.0.0'), 0);
+
+const managedConnectorSaveCalls = [];
+const managedConnectorProjectSyncs = [];
+const managedConnectorUiContext = {
+  MeteoMateCapabilityCenter: {
+    center: { registry: { connectors: [] } },
+    syncProjectCapability: (...args) => managedConnectorProjectSyncs.push(args),
+    ui: {
+      modal: () => {},
+      error: () => {},
+      projectOptions: () => '',
+    },
+  },
+  meteoDesktop: {
+    saveConnector: async (request) => {
+      managedConnectorSaveCalls.push(request);
+      return {
+        connector: { id: request.id, projectIds: request.projectIds || [] },
+        registry: { connectors: [{ id: request.id, enabled: request.enabled }] },
+      };
+    },
+  },
+};
+managedConnectorUiContext.globalThis = managedConnectorUiContext;
+vm.runInContext(connectorsSource, vm.createContext(managedConnectorUiContext));
+const managedConnectorPersistence = managedConnectorUiContext.MeteoMateCapabilityCenter.connectors
+  .persistManagedConnector(
+    { id: ComputerConnector.ID, enabled: true, projectIds: ['project-1'] },
+    { ok: true, result: { tools: [{ name: 'list_windows' }] } },
+  )
+  .then(() => {
+    assert.equal(managedConnectorSaveCalls.length, 1);
+    assert.equal(managedConnectorSaveCalls[0].lastTest.ok, true);
+    assert.deepEqual(managedConnectorProjectSyncs, [
+      ['connectors', ComputerConnector.ID, ['project-1']],
+    ]);
+    assert.equal(
+      managedConnectorUiContext.MeteoMateCapabilityCenter.center.registry.connectors[0].id,
+      ComputerConnector.ID,
+    );
+  });
 
 const capabilityContext = {
   catalog: {
@@ -92,15 +173,30 @@ capabilityContext.globalThis = capabilityContext;
 vm.runInContext(capabilityCoreSource, vm.createContext(capabilityContext));
 const capabilityApi = capabilityContext.MeteoMateCapabilityCenter;
 capabilityApi.center.registry = {
-  bundledSkills: [],
+  bundledSkills: [{
+    id: 'bundled-analysis',
+    name: '随包分析技能',
+    version: '1.2.0',
+    description: '离线可安装的分析流程',
+    category: '天气分析',
+    icon: '析',
+    tags: ['离线', '分析'],
+    sidecar: { categories: ['天气分析'], icon: '析', tags: ['离线', '分析'] },
+  }],
   connectors: [],
   skills: [
-    { id: 'user:user-skill', skillId: 'user-skill', scope: 'user', enabled: true, name: '用户技能' },
+    { id: 'user:user-skill', skillId: 'user-skill', scope: 'user', enabled: true, name: '用户技能', version: '1.0.0' },
     { id: 'project:a-skill', skillId: 'project-a-skill', scope: 'project', projectId: 'project-a', enabled: true, name: '项目 A 技能' },
     { id: 'project:b-skill', skillId: 'project-b-skill', scope: 'project', projectId: 'project-b', enabled: true, name: '项目 B 技能' },
     { id: 'user:disabled', skillId: 'disabled-skill', scope: 'user', enabled: false, name: '已停用技能' },
   ],
 };
+capabilityApi.skillHub = { state: { skills: [{ id: 'user-skill', latestVersion: '1.1.0' }], recommendations: [] } };
+const bundledCatalogEntry = capabilityApi.skillCatalog('project-a').find((item) => item.id === 'bundled-analysis');
+assert.equal(bundledCatalogEntry.category, '天气分析');
+assert.equal(bundledCatalogEntry.icon, '析');
+assert.deepEqual(Array.from(bundledCatalogEntry.tags), ['离线', '分析']);
+assert.equal(capabilityApi.skillCatalog('project-a').find((item) => item.id === 'user-skill').updateAvailable, true);
 assert.deepEqual(
   Array.from(capabilityApi.enabledSkillCatalog('project-a'), (item) => item.id).sort(),
   ['project-a-skill', 'user-skill']
@@ -122,11 +218,64 @@ const projectSelectableSkills = capabilityApi.projectSelectableSkillCatalog([
 ], 'project-a');
 assert.deepEqual(
   Array.from(projectSelectableSkills, (item) => item.id).sort(),
-  ['forecast-writing', 'heavy-rain-score', 'project-a-skill', 'skill-creator', 'synoptic-analysis', 'user-skill']
+  ['bundled-analysis', 'forecast-writing', 'heavy-rain-score', 'project-a-skill', 'skill-creator', 'synoptic-analysis', 'user-skill']
 );
 assert.equal(projectSelectableSkills.find((item) => item.id === 'synoptic-analysis').status, 'skillhub');
 assert.equal(projectSelectableSkills.find((item) => item.id === 'synoptic-analysis').remoteSkill.latestVersion, '1.0.0');
 assert.ok(!projectSelectableSkills.some((item) => item.id === 'docx-template'));
+
+const runtimeRequests = [];
+const runtimeSkillContext = {
+  MeteoMateCapabilityCenter: {
+    enabledSkillCatalog: () => [{ id: 'nmc-upper-air-chart-analysis' }],
+    mergedCatalog: () => ({ skills: [{ id: 'nmc-upper-air-chart-analysis' }], connectors: [] }),
+    skillCatalog: () => [{
+      id: 'nmc-upper-air-chart-analysis',
+      name: '中央气象台高空实况图分析',
+      installation: { runtimeInstruction: '# 中央气象台高空实况图分析\n\n先核验页面，再获取截图。' },
+    }],
+  },
+  MeteoMateHarness: {
+    CapabilityResolver: {
+      resolveCapabilities: ({ expert }) => ({
+        skills: (expert.recommendedSkills || []).map((id) => ({ id })),
+      }),
+      capabilityMode: () => 'inherit',
+    },
+  },
+  MeteoMateAccountReady: { then: () => {} },
+  state: { draftSkillIds: [], draftConnectorIds: [], draftToolSelections: {}, tasks: [] },
+  catalog: { skills: [], connectors: [] },
+  primaryAssistant: {},
+  getConversationProject: () => null,
+  getActiveProject: () => null,
+  getTaskExpert: () => ({ recommendedSkills: ['nmc-upper-air-chart-analysis'] }),
+  getExpert: () => ({ recommendedSkills: ['nmc-upper-air-chart-analysis'] }),
+  getSelectedExpert: () => null,
+  normalizeToolSelections: (value) => value || {},
+  createTask: () => ({}),
+  bindEvents: () => {},
+  runtimeRouter: {
+    send: (_task, request) => {
+      runtimeRequests.push(request);
+      return request;
+    },
+  },
+};
+runtimeSkillContext.globalThis = runtimeSkillContext;
+vm.runInContext(capabilityIntegrationSource, vm.createContext(runtimeSkillContext));
+runtimeSkillContext.runtimeRouter.send(
+  { projectId: 'project-a', expertId: 'synoptic-expert', skillIds: [], connectorIds: [], toolSelections: {} },
+  {
+    sessionId: null,
+    skillIds: [],
+    expertInstruction: '专家基础指令',
+    prompt: '分析最新 500hPa 图',
+  }
+);
+assert.deepEqual(Array.from(runtimeRequests[0].skillIds), ['nmc-upper-air-chart-analysis']);
+assert.match(runtimeRequests[0].expertInstruction, /<selected-skill id="nmc-upper-air-chart-analysis"/);
+assert.match(runtimeRequests[0].expertInstruction, /先核验页面，再获取截图/);
 
 function crc32(buffer) {
   let crc = 0xffffffff;
@@ -203,7 +352,42 @@ const homeDir = path.join(temp, 'home');
 const productRoot = path.join(temp, 'product');
 fs.mkdirSync(path.join(productRoot, 'bundled-skills'), { recursive: true });
 fs.mkdirSync(homeDir, { recursive: true });
+const bundledWeather = path.join(productRoot, 'bundled-skills', 'bundled-weather');
+fs.mkdirSync(bundledWeather, { recursive: true });
+fs.writeFileSync(path.join(bundledWeather, 'SKILL.md'), '---\nname: bundled-weather\ndescription: Bundled weather workflow used to verify local fallback metadata and upgrades.\n---\n\n# Workflow\n\nVerify the result.\n');
+fs.writeFileSync(path.join(bundledWeather, 'meteomate.json'), JSON.stringify({
+  displayName: '本地天气技能',
+  version: '1.0.0',
+  icon: '天',
+  categories: ['天气分析'],
+  tags: ['离线', '天气'],
+  requires: { connectors: [] },
+}, null, 2));
 const ipcHandlers = new Map();
+const computerConnection = {
+  pid: 100,
+  generation: 'test-generation',
+  driverVersion: ComputerConnector.DRIVER_VERSION,
+  contractVersion: 'test-contract',
+  mcpProtocolVersion: '2025-06-18',
+  mcp: {
+    command: '/product/runtime/cua-driver',
+    args: ['mcp', '--embedded', '--socket', '/tmp/meteomate-cua-test.sock'],
+    environment: [{ name: 'CUA_DRIVER_EMBEDDED', value: '1' }],
+  },
+};
+const computerRuntime = {
+  start: async () => computerConnection,
+  stop: async () => {},
+  connection: () => computerConnection,
+  runtimeInfo: () => ({
+    source: 'bundled-runtime',
+    driverVersion: ComputerConnector.DRIVER_VERSION,
+    embedded: true,
+    telemetry: false,
+    updateCheck: false,
+  }),
+};
 const service = createCapabilityService({
   app: { getPath: (name) => (name === 'userData' ? userData : path.join(temp, name)) },
   dialog: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }) },
@@ -215,11 +399,24 @@ const service = createCapabilityService({
   },
   shell: { openPath: async () => '' },
   productRoot,
+  computerRuntime,
   homeDir,
 });
 service.registerIpc();
 assert.ok(ipcHandlers.has('capability:install-skill'));
 assert.ok(ipcHandlers.has('capability:save-connector'));
+const bundledEntry = service.registrySnapshot().bundledSkills.find((item) => item.id === 'bundled-weather');
+assert.equal(bundledEntry.category, '天气分析');
+assert.equal(bundledEntry.icon, '天');
+assert.deepEqual(bundledEntry.tags, ['离线', '天气']);
+const bundledInstall = service.installBundledDefault('bundled-weather', 1);
+assert.equal(bundledInstall.installation.version, '1.0.0');
+const bundledSidecar = JSON.parse(fs.readFileSync(path.join(bundledWeather, 'meteomate.json'), 'utf8'));
+bundledSidecar.version = '1.1.0';
+fs.writeFileSync(path.join(bundledWeather, 'meteomate.json'), JSON.stringify(bundledSidecar, null, 2));
+const bundledUpgrade = service.installBundledDefault('bundled-weather', 2);
+assert.equal(bundledUpgrade.installation.version, '1.1.0');
+assert.equal(bundledUpgrade.upgraded, true);
 
 const sourceRoot = path.join(temp, 'source');
 fs.mkdirSync(sourceRoot, { recursive: true });
@@ -232,9 +429,21 @@ const installed = service.installSkill({ token: inspection.token, reportHash: in
 assert.equal(installed.installation.enabled, true);
 assert.deepEqual(installed.installation.sidecar.requires.connectors, ['weather-data-local']);
 assert.ok(fs.existsSync(path.join(homeDir, '.agents', 'skills', 'sample-skill', 'SKILL.md')));
+assert.match(
+  service.registrySnapshot().skills.find((item) => item.skillId === 'sample-skill').runtimeInstruction,
+  /# Test[\s\S]*Verify the result\./
+);
+assert.match(
+  service.registrySnapshot().skills.find((item) => item.skillId === 'sample-skill').runtimeInstruction,
+  /<skill-resource path="references\/guide\.md">[\s\S]*# Guide[\s\S]*<\/skill-resource>/
+);
 
 const disabled = service.setSkillEnabled(installed.installation.id, false);
 assert.equal(disabled.installation.enabled, false);
+assert.equal(
+  service.registrySnapshot().skills.find((item) => item.skillId === 'sample-skill').runtimeInstruction,
+  ''
+);
 assert.ok(fs.existsSync(path.join(homeDir, '.agents', 'disabled-skills', 'sample-skill', 'SKILL.md')));
 const enabled = service.setSkillEnabled(installed.installation.id, true);
 assert.equal(enabled.installation.enabled, true);
@@ -391,6 +600,14 @@ assert.deepEqual(service.permissionContextForRequest({
     ],
   }],
 });
+const staleToolSelectionValidation = assert.rejects(
+  service.prepareForRequest({
+    connectorIds: ['weather-http'],
+    toolSelections: { 'weather-http': ['removed_weather_tool'] },
+  }),
+  (error) => error.code === 'CAPABILITY_TOOLS_NOT_READY'
+    && /removed_weather_tool/.test(error.message)
+);
 
 assert.throws(() => service.saveConnector({
   id: BrowserConnector.ID,
@@ -419,7 +636,9 @@ const browserResult = service.saveConnector({
 assert.equal(browserResult.connector.connectorType, 'browser');
 assert.equal(browserResult.connector.managedPreset, BrowserConnector.ID);
 assert.notEqual(browserResult.connector.command, 'unsafe-command');
-assert.ok(browserResult.connector.args.includes(BrowserConnector.MCP_PACKAGE));
+assert.equal(browserResult.connector.command, process.execPath);
+assert.ok(browserResult.connector.args[0].endsWith(path.join('@playwright', 'mcp', 'cli.js')));
+assert.ok(!browserResult.connector.args.includes(BrowserConnector.MCP_PACKAGE));
 assert.ok(browserResult.connector.args.includes('--isolated'));
 assert.ok(browserResult.connector.args.includes('--output-dir'));
 assert.deepEqual(browserResult.connector.toolAllowlist, BrowserConnector.SAFE_TOOLS);
@@ -428,6 +647,8 @@ const browserExtensions = service.extensionsForRequest({
   projectId: 'project-1',
 });
 assert.deepEqual(browserExtensions[0].available_tools, BrowserConnector.SAFE_TOOLS);
+assert.equal(browserExtensions[0].server.command, process.execPath);
+assert.ok(browserExtensions[0].server.env.some((item) => item.name === 'PATH'));
 const narrowedBrowserExtensions = service.extensionsForRequest({
   connectorIds: [BrowserConnector.ID],
   projectId: 'project-1',
@@ -442,6 +663,44 @@ assert.deepEqual(
   BrowserConnector.SAFE_TOOLS
 );
 
+assert.throws(() => service.saveConnector({
+  id: ComputerConnector.ID,
+  name: '桌面应用操作',
+  transport: 'stdio',
+  enabled: true,
+}), /先完成连接测试/);
+const computerTools = [...ComputerConnector.SAFE_TOOLS, ...ComputerConnector.BLOCKED_TOOLS]
+  .map((name) => ({ name, description: name }));
+const computerResult = service.saveConnector({
+  id: ComputerConnector.ID,
+  name: '桌面应用操作',
+  description: 'Embedded Cua Driver',
+  transport: 'stdio',
+  command: 'unsafe-command',
+  args: ['--unsafe'],
+  projectIds: ['project-1'],
+  enabled: true,
+  lastTest: {
+    ok: true,
+    result: { transport: 'stdio', tools: computerTools },
+  },
+});
+assert.equal(computerResult.connector.connectorType, 'computer');
+assert.equal(computerResult.connector.managedPreset, ComputerConnector.ID);
+assert.equal(computerResult.connector.command, computerConnection.mcp.command);
+assert.deepEqual(computerResult.connector.args, computerConnection.mcp.args);
+assert.deepEqual(computerResult.connector.toolAllowlist, ComputerConnector.SAFE_TOOLS);
+const computerExtensions = service.extensionsForRequest({
+  connectorIds: [ComputerConnector.ID],
+  projectId: 'project-1',
+  toolSelections: {
+    [ComputerConnector.ID]: ['get_window_state', 'click', 'browser_navigate', 'kill_app'],
+  },
+});
+assert.deepEqual(computerExtensions[0].available_tools, ['get_window_state', 'click']);
+assert.equal(computerExtensions[0].server.command, computerConnection.mcp.command);
+assert.ok(computerExtensions[0].server.env.some((entry) => entry.name === 'CUA_DRIVER_EMBEDDED'));
+
 const managed = service.syncManagedSkills(['sample-skill'], 9);
 assert.equal(managed.skills.find((item) => item.id === installed.installation.id).managedByPolicy, true);
 assert.throws(() => service.setSkillEnabled(installed.installation.id, false), /组织默认能力/);
@@ -451,6 +710,14 @@ const removed = service.uninstallSkill(installed.installation.id);
 assert.equal(removed.removed, true);
 assert.equal(fs.existsSync(path.join(homeDir, '.agents', 'skills', 'sample-skill')), false);
 service.uninstallSkill(zipInstall.installation.id);
+service.syncManagedSkills([], 11);
+service.uninstallSkill(bundledUpgrade.installation.id);
 
 fs.rmSync(temp, { recursive: true, force: true });
-console.log('MeteoMate Capability Center tests passed.');
+Promise.all([managedConnectorPersistence, staleToolSelectionValidation]).then(
+  () => console.log('MeteoMate Capability Center tests passed.'),
+  (error) => {
+    console.error(error);
+    process.exitCode = 1;
+  },
+);

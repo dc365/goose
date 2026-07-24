@@ -6,8 +6,11 @@ const os = require('node:os');
 const path = require('node:path');
 const { createServer } = require('node:net');
 const { ReadableStream, WritableStream } = require('node:stream/web');
+const { pathToFileURL } = require('node:url');
 const { runtimeServices } = require('./capabilities/runtime-services.cjs');
+const GooseRuntimeEnvironment = require('./capabilities/goose-runtime-environment.cjs');
 const PermissionPolicy = require('./capabilities/permission-policy.cjs');
+const OfficeArtifactCollector = require('./capabilities/office-artifact-collector.cjs');
 const ProjectWorkspace = require('./capabilities/project-workspace.cjs');
 const ContextWindow = require('./harness/context-window');
 const CompletionCompat = require('./harness/completion-compat.cjs');
@@ -22,6 +25,15 @@ function configuredAutoCompactThreshold() {
   const managed = profileContext?.policyContext?.()?.policy?.autoCompactThreshold;
   const personal = profileContext?.desktopPreferences?.()?.autoCompactThreshold;
   return ContextWindow.normalizeAutoCompactThreshold(managed ?? personal ?? AUTO_COMPACT_THRESHOLD_FALLBACK);
+}
+
+function gooseRuntimeEnvironment(overrides = {}) {
+  return GooseRuntimeEnvironment.createEnvironment({
+    env: process.env,
+    profileContext: runtimeServices().profileContext,
+    userDataDir: app.getPath('userData'),
+    overrides,
+  });
 }
 
 const COMPOSER_FILE_LIMIT = 400;
@@ -415,6 +427,102 @@ function safeJson(value) {
   }
 }
 
+const ACP_IMAGE_TYPES = Object.freeze({
+  'image/gif': { extension: 'gif', signature: (buffer) => ['GIF87a', 'GIF89a'].includes(buffer.subarray(0, 6).toString('ascii')) },
+  'image/jpeg': { extension: 'jpg', signature: (buffer) => buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff },
+  'image/png': { extension: 'png', signature: (buffer) => buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) },
+  'image/webp': { extension: 'webp', signature: (buffer) => buffer.subarray(0, 4).toString('ascii') === 'RIFF' && buffer.subarray(8, 12).toString('ascii') === 'WEBP' },
+});
+const ACP_IMAGE_MAX_BYTES = 25 * 1024 * 1024;
+
+function collectAcpImages(value, images = []) {
+  if (!value) return images;
+  if (Array.isArray(value)) {
+    value.forEach((entry) => collectAcpImages(entry, images));
+    return images;
+  }
+  if (typeof value !== 'object') return images;
+  if (value.type === 'image' && typeof value.data === 'string' && typeof value.mimeType === 'string') {
+    images.push(value);
+    return images;
+  }
+  Object.values(value).forEach((entry) => collectAcpImages(entry, images));
+  return images;
+}
+
+function sanitizeAcpPayload(value, seen = new WeakMap()) {
+  if (!value || typeof value !== 'object') return value;
+  if (seen.has(value)) return seen.get(value);
+  if (Array.isArray(value)) {
+    const result = [];
+    seen.set(value, result);
+    value.forEach((entry) => result.push(sanitizeAcpPayload(entry, seen)));
+    return result;
+  }
+  const result = {};
+  seen.set(value, result);
+  for (const [key, entry] of Object.entries(value)) {
+    if (value.type === 'image' && key === 'data') {
+      result.sizeBytes = Math.floor((entry.replace(/\s/g, '').length * 3) / 4);
+      continue;
+    }
+    result[key] = sanitizeAcpPayload(entry, seen);
+  }
+  return result;
+}
+
+function decodeAcpImage(image) {
+  const mediaType = String(image?.mimeType || '').toLowerCase();
+  const definition = ACP_IMAGE_TYPES[mediaType];
+  if (!definition) return null;
+  const encoded = String(image.data || '').replace(/^data:[^,]+,/, '').replace(/\s/g, '');
+  if (!encoded || encoded.length > Math.ceil((ACP_IMAGE_MAX_BYTES * 4) / 3) + 4) return null;
+  const buffer = Buffer.from(encoded, 'base64');
+  if (!buffer.length || buffer.length > ACP_IMAGE_MAX_BYTES || !definition.signature(buffer)) return null;
+  return { buffer, extension: definition.extension, mediaType };
+}
+
+function materializeAcpImageArtifacts(value, context = {}) {
+  const outputRoot = runtimeServices().profileContext?.currentPaths()?.capabilities
+    || path.join(app.getPath('userData'), 'capabilities');
+  const source = context.extensionName === 'cua-desktop' ? 'computer' : 'browser';
+  const outputDir = path.join(outputRoot, source, 'artifacts');
+  fs.mkdirSync(outputDir, { recursive: true, mode: 0o700 });
+  const artifacts = [];
+  const seenHashes = new Set();
+
+  for (const image of collectAcpImages(value)) {
+    const decoded = decodeAcpImage(image);
+    if (!decoded) continue;
+    const contentHash = crypto.createHash('sha256').update(decoded.buffer).digest('hex');
+    if (seenHashes.has(contentHash)) continue;
+    seenHashes.add(contentHash);
+    const fileName = `${source}-image-${contentHash.slice(0, 16)}.${decoded.extension}`;
+    const target = path.join(outputDir, fileName);
+    if (!fs.existsSync(target)) fs.writeFileSync(target, decoded.buffer, { mode: 0o600 });
+    artifacts.push({
+      apiVersion: 'meteomate/v1',
+      kind: 'Artifact',
+      id: `artifact-acp-${contentHash.slice(0, 24)}`,
+      name: fileName,
+      type: decoded.extension.toUpperCase(),
+      path: target,
+      mediaType: decoded.mediaType,
+      status: 'ready',
+      sizeBytes: decoded.buffer.length,
+      contentHash,
+      createdAt: Date.now(),
+      metadata: {
+        source: `acp-${source}-image`,
+        sessionId: context.sessionId || null,
+        toolCallId: context.toolCallId || null,
+        previewUri: pathToFileURL(target).href,
+      },
+    });
+  }
+  return artifacts;
+}
+
 function permissionKey() {
   return crypto.randomUUID();
 }
@@ -454,13 +562,22 @@ function sessionPermissionContext(request) {
 
 function permissionPromptInstruction(request) {
   const workspace = request.workspace || '未选择';
+  const desktopInstruction = Array.isArray(request.connectorIds) && request.connectorIds.includes('cua-desktop')
+    ? request.permissionProfileId === 'workspace-approval'
+      ? ' 使用桌面应用操作前，必须先通过 list_apps、list_windows 和 get_window_state 明确目标应用与窗口。完全访问下，已允许的桌面操作无需再次请求审批；仍不得操作终端、密码管理器、系统隐私设置或 MeteoMate 自身窗口。'
+      : ' 使用桌面应用操作前，必须先通过 list_apps、list_windows 和 get_window_state 明确目标应用与窗口；每次请求交互审批时说明目标应用、窗口和预期结果。不得操作终端、密码管理器、系统隐私设置或 MeteoMate 自身窗口。'
+    : '';
+  const officeInstruction = Array.isArray(request.connectorIds) && request.connectorIds.includes('office-artifacts')
+    ? ' Office 二进制文件必须通过 office-artifacts 工具处理，所有路径使用当前项目内相对路径；创建或编辑后必须执行 artifact_render 和 artifact_validate，不得回退到 Shell 或任意脚本。'
+    : '';
+  const capabilityInstruction = `${desktopInstruction}${officeInstruction}`;
   switch (request.permissionProfileId) {
     case 'workspace-approval':
-      return '用户已开启完全访问。可访问互联网和本机文件并执行命令；仍应围绕当前任务，避免无必要的破坏性操作。';
+      return `用户已开启完全访问。可访问互联网和本机文件并执行命令；仍应围绕当前任务，避免无必要的破坏性操作。${capabilityInstruction}`;
     case 'artifact-approval':
-      return `当前为智能审批。工作区为：${workspace}。常规操作可自动执行；删除、工作区外访问、敏感信息、发布和高风险命令必须请求用户审批。`;
+      return `当前为智能审批。工作区为：${workspace}。常规操作可自动执行；删除、工作区外访问、敏感信息、发布和高风险命令必须请求用户审批。${capabilityInstruction}`;
     default:
-      return `当前为请求批准。工作区为：${workspace}。可信且已明确选择的只读工具可自动执行；编辑文件、执行命令、发布成果或高风险联网操作必须请求用户审批。`;
+      return `当前为请求批准。工作区为：${workspace}。可信且已明确选择的只读工具可自动执行；编辑文件、执行命令、发布成果或高风险联网操作必须请求用户审批。${capabilityInstruction}`;
   }
 }
 
@@ -639,13 +756,12 @@ class GooseAcpRuntime {
       cwd: os.homedir(),
       windowsHide: true,
       shell: false,
-      env: {
-        ...process.env,
+      env: gooseRuntimeEnvironment({
         GOOSE_SERVER__SECRET_KEY: secret,
         GOOSE_MODE: process.env.METEOMATE_GOOSE_MODE || 'approve',
         GOOSE_CONTEXT_STRATEGY: process.env.GOOSE_CONTEXT_STRATEGY || 'summarize',
         GOOSE_AUTO_COMPACT_THRESHOLD: String(this.autoCompactThreshold),
-      },
+      }),
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     this.server = child;
@@ -716,6 +832,7 @@ class GooseAcpRuntime {
       throw new Error('ACP runtime is unavailable');
     }
 
+    await runtimeServices().capabilityService?.prepareForRequest?.(request);
     const enabledExtensions = [
       ...(request.allowFileTools
         ? [
@@ -1056,15 +1173,20 @@ class GooseAcpRuntime {
 
   requestPermission(request) {
     const taskId = this.sessionTaskMap.get(request.sessionId) || null;
-    const grantKey = sessionPermissionGrantKey(request);
-    if (grantKey && this.sessionPermissionGrants.get(grantKey.sessionId)?.has(grantKey.toolName)) {
-      return Promise.resolve(automaticPermissionResponse(request));
-    }
     const context = this.sessionPermissionMap.get(request.sessionId) || {
       permissionProfileId: 'analysis-readonly',
       workspace: os.homedir(),
     };
     const assessment = PermissionPolicy.classifyPermissionRequest(request, context);
+    const protectedDesktopAction = ['inspect', 'interaction', 'sensitive'].includes(assessment.computerRisk);
+    const grantKey = sessionPermissionGrantKey(request);
+    if (
+      !protectedDesktopAction
+      && grantKey
+      && this.sessionPermissionGrants.get(grantKey.sessionId)?.has(grantKey.toolName)
+    ) {
+      return Promise.resolve(automaticPermissionResponse(request));
+    }
     const handling = PermissionPolicy.permissionHandling(
       context.permissionProfileId,
       assessment
@@ -1081,7 +1203,7 @@ class GooseAcpRuntime {
 
     const key = permissionKey(request);
     return new Promise((resolve) => {
-      pendingPermissions.set(key, { request, resolve, taskId });
+      pendingPermissions.set(key, { request, resolve, taskId, assessment });
       sendRuntimeEvent({
         type: 'permission_requested',
         taskId,
@@ -1089,6 +1211,7 @@ class GooseAcpRuntime {
         permissionId: key,
         toolCall: safeJson(request.toolCall),
         options: safeJson(request.options || []),
+        allowAlways: !protectedDesktopAction,
       });
     });
   }
@@ -1097,11 +1220,17 @@ class GooseAcpRuntime {
     const pending = pendingPermissions.get(permissionId);
     if (!pending) return false;
     pendingPermissions.delete(permissionId);
-    const response = action === 'always_allow'
+    const protectedDesktopAction = ['inspect', 'interaction', 'sensitive'].includes(
+      pending.assessment?.computerRisk
+    );
+    const effectiveAction = action === 'always_allow' && protectedDesktopAction
+      ? 'allow_once'
+      : action;
+    const response = effectiveAction === 'always_allow'
       ? automaticPermissionResponse(pending.request)
-      : selectedPermissionResponse(pending.request, action);
+      : selectedPermissionResponse(pending.request, effectiveAction);
     const grantKey = sessionPermissionGrantKey(pending.request);
-    if (action === 'always_allow' && grantKey && response.outcome?.outcome === 'selected') {
+    if (effectiveAction === 'always_allow' && grantKey && response.outcome?.outcome === 'selected') {
       const grants = this.sessionPermissionGrants.get(grantKey.sessionId) || new Set();
       grants.add(grantKey.toolName);
       this.sessionPermissionGrants.set(grantKey.sessionId, grants);
@@ -1112,7 +1241,7 @@ class GooseAcpRuntime {
       taskId: pending.taskId,
       sessionId: pending.request.sessionId,
       permissionId,
-      action,
+      action: effectiveAction,
     });
     return true;
   }
@@ -1121,11 +1250,12 @@ class GooseAcpRuntime {
     const taskId = this.sessionTaskMap.get(notification.sessionId);
     if (!taskId) return;
     const update = notification.update || {};
+    const sanitizedUpdate = sanitizeAcpPayload(update);
     const common = {
       taskId,
       sessionId: notification.sessionId,
       runtime: 'acp',
-      raw: safeJson(update),
+      raw: safeJson(sanitizedUpdate),
     };
     if (['agent_message_chunk', 'agent_thought_chunk', 'tool_call'].includes(update.sessionUpdate)) {
       const timing = this.turnTimingMap.get(taskId);
@@ -1172,6 +1302,20 @@ class GooseAcpRuntime {
       case 'tool_call_update':
         {
           const toolCall = runtimeToolIdentity(update);
+          const artifacts = materializeAcpImageArtifacts([update.content, update.rawOutput], {
+            sessionId: notification.sessionId,
+            toolCallId: update.toolCallId,
+            extensionName: toolCall.extensionName,
+          });
+          artifacts.push(...OfficeArtifactCollector.collectOfficeArtifacts(
+            [update.content, update.rawOutput],
+            {
+              workspace: this.sessionPermissionMap.get(notification.sessionId)?.workspace,
+              sessionId: notification.sessionId,
+              toolCallId: update.toolCallId,
+              extensionName: toolCall.extensionName,
+            }
+          ));
         sendRuntimeEvent({
           ...common,
           type: 'tool_call_updated',
@@ -1180,8 +1324,16 @@ class GooseAcpRuntime {
           toolName: toolCall.toolName || null,
           extensionName: toolCall.extensionName || null,
           status: update.status,
-          rawOutput: safeJson(update.rawOutput),
-          content: safeJson(update.content),
+          rawOutput: safeJson(sanitizeAcpPayload(update.rawOutput)),
+          content: safeJson(sanitizeAcpPayload(update.content)),
+        });
+        artifacts.forEach((artifact) => {
+          sendRuntimeEvent({
+            ...common,
+            type: 'artifact_created',
+            toolCallId: update.toolCallId,
+            artifact,
+          });
         });
         break;
         }
@@ -1497,7 +1649,7 @@ function runMockTask(request) {
     '## MeteoMate 演示模式\n\n当前尚未调用真实 Goose 模型。\n\n',
     `**已选择专家：** ${request.expertName}\n\n`,
     request.workspace ? `**项目工作区：** \`${request.workspace}\`\n\n` : '**项目工作区：** 未选择\n\n',
-    '### 建议执行计划\n\n1. 核验资料时次与数据来源\n2. 调用气象数据和诊断工具\n3. 生成结构化结论与证据链\n4. 通过 Artifact Service 生成 Word/PDF 成果物\n\n',
+    '### 建议执行计划\n\n1. 核验资料时次与数据来源\n2. 调用气象数据和诊断工具\n3. 生成结构化结论与证据链\n4. 通过 Artifact Service 生成 DOCX、PPTX、XLSX 或 PDF 成果物\n\n',
     '> 请先完成 Goose Provider 配置，或接入 `weather-data-mcp`、`weather-diagnosis-mcp` 与 `artifact-mcp`。\n',
   ];
 
@@ -1548,14 +1700,13 @@ async function runHeadlessTask(request) {
     cwd: request.workspace || os.homedir(),
     windowsHide: true,
     shell: false,
-    env: {
-      ...process.env,
+    env: gooseRuntimeEnvironment({
       GOOSE_CONTEXT_STRATEGY: process.env.GOOSE_CONTEXT_STRATEGY || 'summarize',
       GOOSE_AUTO_COMPACT_THRESHOLD: String(acpRuntime.autoCompactThreshold),
       GOOSE_DISABLE_SESSION_NAMING: 'true',
       GOOSE_MODE: 'chat',
       NO_COLOR: '1',
-    },
+    }),
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 

@@ -13,8 +13,11 @@
 - 文件写入与命令执行通过 ACP 权限请求逐次审批；
 - 项目、任务、会话 ID、收藏专家和运行历史保存在本地；
 - Expert、Skill、Connector 和 Scene 已拆分为独立 Manifest；
+- 个人专家可离线编辑并同步到 SkillHub，组织和系统专家支持远程审核、灰度分发、停用与历史回滚；
 - 浏览器操作复用 Goose 推荐的 Playwright MCP，提供隔离会话、工具白名单和任务级授权；
-- 后续气象数据、天气诊断、GIS 和 Office 文件能力通过 MCP/Artifact Service 接入。
+- 桌面应用操作使用内嵌 Cua Driver，继承 MeteoMate 的系统权限，并经过 Driver 策略与 ACP 审批；
+- Office 成果物通过本地 MCP Runtime 创建、编辑、渲染和校验 DOCX、PPTX、XLSX 与 PDF；
+- 后续气象数据、天气诊断、GIS 和 Office 模板中心能力继续通过 MCP/Artifact Service 接入。
 
 所有产品代码仍位于：
 
@@ -42,6 +45,35 @@ main
 
 ## 启动
 
+### 启动 SkillHub 后台
+
+首次启动时设置管理员临时密码，并在产品目录执行：
+
+```bash
+cd products/meteo-office-desktop
+METEOMATE_SKILLHUB_BOOTSTRAP_USERNAME=admin \
+METEOMATE_SKILLHUB_BOOTSTRAP_PASSWORD='请替换为临时密码' \
+METEOMATE_SKILLHUB_BOOTSTRAP_NAME='系统管理员' \
+npm run skillhub:start
+```
+
+管理员已经创建后，日常启动只需要：
+
+```bash
+cd products/meteo-office-desktop
+npm run skillhub:start
+```
+
+默认服务地址为 `http://127.0.0.1:8088`，管理后台为 `http://127.0.0.1:8088/admin/`。验证服务：
+
+```bash
+curl http://127.0.0.1:8088/healthz
+```
+
+该命令会自动把 `bundled-skills/` 同步为 SkillHub 种子；已发布版本内容有变化时，需要先提升对应 `meteomate.json` 的版本号。
+
+### 启动桌面端
+
 ```bash
 cd products/meteo-office-desktop
 npm install
@@ -67,11 +99,41 @@ goose configure
 GOOSE_BINARY=../../target/release/goose npm start
 ```
 
-浏览器操作需要本机可用的 Node.js 与 `npx`。MeteoMate 会优先查找产品运行时和常见安装路径，也可以显式指定：
+浏览器操作默认使用 MeteoMate 随应用提供的 Playwright MCP，并由 Electron 内置 Node.js 直接启动，不依赖用户的 `node`、`npx` 或 shell `PATH`。桌面应用操作使用 `@trycua/cua-driver` 的 Electron 嵌入模式和随产品提供的 `cua-driver` 可执行文件。Office 成果物使用隔离 Python、LibreOffice 和固定工具白名单。打包前准备 Chromium、Cua Driver 与 Office Runtime：
 
 ```bash
-METEOMATE_NPX_PATH=/opt/homebrew/bin/npx npm start
+npm run runtime:prepare
 ```
+
+发布构建需要向 Office Runtime 准备器提供完整、可搬迁的 Python Home 和 LibreOffice 应用目录；准备器会复制运行时、安装锁定依赖并写入校验清单：
+
+```bash
+METEOMATE_PYTHON_HOME_PATH=/path/to/portable-python \
+METEOMATE_LIBREOFFICE_APP_PATH=/path/to/LibreOffice.app \
+npm run runtime:prepare:office
+```
+
+开发阶段可以显式覆盖 Node.js 或 Playwright MCP 入口；仅在开发模式下允许降级到系统 `npx`：
+
+```bash
+METEOMATE_NODE_PATH=/opt/homebrew/bin/node npm start
+METEOMATE_PLAYWRIGHT_MCP_PATH=/path/to/playwright-mcp/cli.js npm start
+METEOMATE_ALLOW_SYSTEM_BROWSER_RUNTIME=1 METEOMATE_NPX_PATH=/opt/homebrew/bin/npx npm start
+METEOMATE_CUA_DRIVER_PATH=/path/to/cua-driver npm start
+METEOMATE_PYTHON_PATH=/path/to/office-python METEOMATE_SOFFICE_PATH=/path/to/soffice npm start
+```
+
+首次测试“桌面应用操作”时，macOS 会要求 MeteoMate 获得“辅助功能”和“屏幕与系统音频录制”权限。产品默认关闭 Cua 遥测和独立更新检查；浏览器、Shell、文件、配置更新、轨迹录制、应用启动与强制结束等 Cua 工具不进入 Agent 工具范围。网页任务继续使用 Playwright。
+
+MeteoMate 不读取系统中的 `goose` 钥匙串项目。ACP 与 Headless 运行时都使用当前 MeteoMate 用户独立的 `GOOSE_PATH_ROOT`，并设置 `GOOSE_DISABLE_KEYRING=1`；首次切换到独立目录时仅迁移旧 Goose 中 OpenAI 兼容 Provider 的名称、地址和模型定义，不复制 API Key、OAuth Token、请求头或旧 `config.yaml`。在模型设置中重新填写的 Provider 密钥由 Goose 写入该用户目录下权限为 `0600` 的 `config/secrets.yaml`。
+
+macOS 的桌面权限会绑定应用的代码签名身份。`npm run package:mac` 首次运行时会在 MeteoMate 专用本地钥匙串中创建并复用 `MeteoMate Local Signing (com.meteomate.desktop)` 签名身份，使重新打包后的 MeteoMate 继续沿用同一权限身份；专用钥匙串密码仅以 `0600` 权限保存在本机 MeteoMate 数据目录。打包时若 MeteoMate 仍在运行会直接停止并提示先完全退出。正式发布时设置 `METEOMATE_CODESIGN_IDENTITY` 使用 Developer ID：
+
+```bash
+METEOMATE_CODESIGN_IDENTITY='Developer ID Application: Example Corp (TEAMID)' npm run package:mac
+```
+
+从旧的 ad-hoc 包首次切换到稳定签名包时，需要在“系统设置 → 隐私与安全性”中为新的 MeteoMate 身份重新授权一次，之后重新打包不应再丢失权限。
 
 强制演示模式：
 
@@ -141,10 +203,19 @@ manifests/
 
 - `brand.js`：品牌与版本；
 - `experts.js`：专家、专家团和权限策略；
-- `capabilities.js`：Skills 与 Connectors；
+- `capabilities.js`：Connectors 与尚未交付的能力路线图；
 - `scenes.js`：精选业务场景。
 
 这些对象将来可以迁移到 Go Control Plane，并保留当前客户端数据结构。
+
+## Skill 数据源
+
+- 联网时以 SkillHub 的已发布、已签名版本为技能目录，并显示本机版本与可更新状态；
+- `bundled-skills/<skill-id>/SKILL.md` 是执行说明，`meteomate.json` 是名称、版本、图标、分类、标签、依赖和权限的唯一随包元数据；
+- 随应用提供的包只承担离线安装与 SkillHub 初始化种子的职责，不再在 `manifests/capabilities.js` 重复维护；
+- Documents、Presentations、Spreadsheets 与 PDF 作为 bundled skills 随应用提供；模板中心和实时编辑仍保存在 `METEOMATE_SKILL_ROADMAP`；
+- SkillHub 相同 `skillId@version` 的包内容不可变。修改包内容必须提升版本，启动时的 seed 会拒绝覆盖已发布版本；
+- 组织默认技能优先升级到 SkillHub 最新已发布版本，服务不可用时才使用随应用提供的版本，且不会降级本机较新版本。
 
 ## 安全边界
 
@@ -155,6 +226,7 @@ Beta 已实现：
 - Renderer Sandbox；
 - ACP `approve` 模式；
 - 权限请求在桌面端显式展示；
+- Cua Driver 使用私有嵌入进程、固定版本、托管工具策略，并关闭遥测和独立更新检查；
 - Headless 降级模式禁止文件工具；
 - 进程使用参数数组启动，不经过系统 Shell。
 

@@ -32,14 +32,15 @@
   function remoteCard(skill, reasons = []) {
     const installed = installedVersion(skill.id);
     const latest = skill.latestVersion || '';
+    const updateAvailable = Boolean(installed && latest && api.compareSkillVersions(installed, latest) < 0);
     const categories = list(skill.categories);
     return `<article class="capability-card capability-center-card skillhub-card">
       <div class="capability-icon">${escapeHtml(skill.icon || skill.name?.slice(0, 1) || 'S')}</div>
       <div class="capability-copy"><h3>${escapeHtml(skill.name || skill.id)}</h3><span>${escapeHtml(
         skill.publisher?.name || 'SkillHub'
       )}</span></div>
-      <span class="capability-status ${skill.featured ? 'ready' : ''}">${
-        skill.featured ? '精选' : escapeHtml(latest || '已发布')
+      <span class="capability-status ${skill.featured || installed === latest ? 'ready' : ''}">${
+        updateAvailable ? '可更新' : skill.featured ? '精选' : escapeHtml(latest || '已发布')
       }</span>
       <p>${escapeHtml(skill.summary || skill.description || '')}</p>
       <div class="tag-row small">${categories
@@ -63,7 +64,7 @@
           skill.visibility || 'public'
         )}</span></div>
         <button class="secondary-action" data-skillhub-skill="${escapeHtml(skill.id)}">${
-          installed === latest && latest ? '已安装 · 查看' : '查看与安装'
+          installed === latest && latest ? '已安装 · 查看' : updateAvailable ? `更新到 ${escapeHtml(latest)}` : '查看与安装'
         }</button>
       </footer>
     </article>`;
@@ -124,6 +125,36 @@
       recommended ? '结合已安装能力、项目和工具给出推荐' : '浏览服务器中已发布和签名的 Skill',
       `${categoryStrip(categories, activeCategory)}<div class="catalog-grid compact">${cards || empty}</div>`
     );
+  }
+
+  function renderOfflineSkills() {
+    const previous = api.center.installedOnly;
+    const previousCategory = state.category;
+    const previousSearch = state.search;
+    api.center.installedOnly = false;
+    state.category = '全部';
+    state.search = '';
+    let html;
+    try {
+      html = originalCatalogView();
+    } finally {
+      api.center.installedOnly = previous;
+      state.category = previousCategory;
+      state.search = previousSearch;
+    }
+    html = html.replace(
+      /<div class="capability-subtabs">[\s\S]*?<\/div>/,
+      `<div class="capability-subtabs">${tabs()}</div>`
+    );
+    html = html.replace(
+      '<span class="capability-local-badge">本地能力中心 V1</span>',
+      `${serverBadge()}<span class="capability-local-badge">离线包</span>`
+    );
+    html = html.replace(
+      '<div class="category-strip">',
+      `<div class="capability-error">${escapeHtml(hub.error || 'SkillHub 暂时不可用')}。已切换到随应用提供的本地技能，不影响离线安装和使用。</div><div class="category-strip">`
+    );
+    return html;
   }
 
   function renderCollections() {
@@ -188,6 +219,7 @@
   const originalCatalogView = renderCatalogView;
   renderCatalogView = function renderSkillHubCatalog() {
     if (state.catalogTab !== 'skills') return originalCatalogView();
+    if (hub.status === 'error' && ['skillhub', 'recommendations', 'collections'].includes(hub.view)) return renderOfflineSkills();
     if (hub.view === 'skillhub') return renderRemoteSkills(false);
     if (hub.view === 'recommendations') return renderRemoteSkills(true);
     if (hub.view === 'collections') return renderCollections();
@@ -203,5 +235,5 @@
     return html;
   };
 
-  Object.assign(skillHub, { tabs, serverBadge, remoteCard, remoteShell, renderRemoteSkills, renderCollections, renderManagedSkills });
+  Object.assign(skillHub, { tabs, serverBadge, remoteCard, remoteShell, renderRemoteSkills, renderOfflineSkills, renderCollections, renderManagedSkills });
 })(typeof globalThis !== 'undefined' ? globalThis : window);

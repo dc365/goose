@@ -33,15 +33,30 @@ func (s *Server) SeedDirectory(root string) error {
 			return err
 		}
 		now := time.Now().UTC()
+		categories := stringSlice(report.Sidecar["categories"])
+		tags := stringSlice(report.Sidecar["tags"])
+		icon, _ := report.Sidecar["icon"].(string)
 		err = s.store.Update(func(state *store.State) error {
 			key := store.VersionKey(report.Skill.ID, report.Skill.Version)
-			if state.SkillVersions[key] != nil {
+			if existing := state.SkillVersions[key]; existing != nil {
+				if existing.PackageDigest != digest {
+					return fmt.Errorf("seed %s content differs from published %s; bump the Skill version", entry.Name(), key)
+				}
+				if skill := state.Skills[report.Skill.ID]; skill != nil && skill.OwnerID == "meteomate" && skill.LatestVersion == report.Skill.Version {
+					skill.Name = report.Skill.DisplayName
+					skill.Summary = report.Skill.Description
+					skill.Description = report.Skill.Description
+					skill.Categories = categories
+					skill.Tags = tags
+					skill.Icon = icon
+					skill.UpdatedAt = now
+				}
 				return nil
 			}
 			skill := state.Skills[report.Skill.ID]
 			if skill == nil {
 				skill = &store.Skill{ID: report.Skill.ID, Name: report.Skill.DisplayName, Summary: report.Skill.Description, Description: report.Skill.Description,
-					Categories: stringSlice(report.Sidecar["categories"]), Tags: []string{"MeteoMate"}, Publisher: store.Publisher{ID: "meteomate", Name: "MeteoMate"},
+					Categories: categories, Tags: tags, Icon: icon, Publisher: store.Publisher{ID: "meteomate", Name: "MeteoMate"},
 					OwnerID: "meteomate", Visibility: "public", Status: "published", Featured: true, Versions: []string{}, CreatedAt: now, UpdatedAt: now}
 				state.Skills[skill.ID] = skill
 			}
@@ -54,6 +69,12 @@ func (s *Server) SeedDirectory(root string) error {
 			skill.Versions = append(skill.Versions, report.Skill.Version)
 			if skill.LatestVersion == "" || semverCompare(report.Skill.Version, skill.LatestVersion) >= 0 {
 				skill.LatestVersion = report.Skill.Version
+				skill.Name = report.Skill.DisplayName
+				skill.Summary = report.Skill.Description
+				skill.Description = report.Skill.Description
+				skill.Categories = categories
+				skill.Tags = tags
+				skill.Icon = icon
 			}
 			skill.UpdatedAt = now
 			return nil

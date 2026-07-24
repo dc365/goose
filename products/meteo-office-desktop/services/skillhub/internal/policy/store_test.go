@@ -71,6 +71,15 @@ func TestPolicyValidationAndFallback(t *testing.T) {
 	}); err == nil {
 		t.Fatal("organization accepted a default model outside the allowlist")
 	}
+	if _, err := store.SetOrganization(Settings{
+		DefaultSkillIDs: []string{"blocked-skill"},
+		AllowedSkillIDs: []string{"approved-skill"},
+	}); err == nil {
+		t.Fatal("organization accepted a default Skill outside the allowlist")
+	}
+	if _, err := store.SetOrganization(Settings{SkillPublishMode: "automatic"}); err == nil {
+		t.Fatal("organization accepted an unsupported Skill publication mode")
+	}
 	unsupported := []string{"trusted-workspace"}
 	if _, err := store.SetRole("viewer", Patch{AllowedPermissionProfileIDs: &unsupported}); err == nil {
 		t.Fatal("policy accepted an unsupported permission profile")
@@ -86,5 +95,14 @@ func TestPolicyValidationAndFallback(t *testing.T) {
 	effective := store.Effective("usr-one", "viewer")
 	if effective.DefaultModel != "" || effective.Sources["defaultModel"] != "policy-fallback" {
 		t.Fatalf("invalid inherited default was not neutralized: %+v", effective)
+	}
+	allowedSkills := []string{"approved-skill"}
+	defaultSkills := []string{"approved-skill", "blocked-skill"}
+	if _, err := store.SetRole("viewer", Patch{AllowedSkillIDs: &allowedSkills, DefaultSkillIDs: &defaultSkills}); err != nil {
+		t.Fatal(err)
+	}
+	effective = store.Effective("usr-one", "viewer")
+	if !reflect.DeepEqual(effective.DefaultSkillIDs, []string{"approved-skill"}) || effective.Sources["defaultSkillIds"] != "policy-fallback" {
+		t.Fatalf("default Skills were not constrained by the allowlist: %+v", effective)
 	}
 }

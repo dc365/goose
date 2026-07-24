@@ -1,5 +1,7 @@
 const path = require('node:path');
 const BrowserConnector = require('./browser-connector.js');
+const ComputerConnector = require('./computer-connector.js');
+const OfficeConnector = require('./office-connector.js');
 
 const READ_ONLY_KINDS = new Set(['read', 'search', 'think', 'switch_mode']);
 const READ_ONLY_TOOLS = new Set([
@@ -102,8 +104,16 @@ function remoteToolAssessment(toolCall, toolName, context) {
   const browserRisk = connector.connectorType === 'browser'
     ? BrowserConnector.toolRisk(catalogToolName)
     : null;
+  const computerRisk = connector.connectorType === 'computer'
+    ? ComputerConnector.toolRisk(catalogToolName)
+    : null;
+  const officeRisk = connector.connectorType === 'office'
+    ? OfficeConnector.toolRisk(catalogToolName)
+    : null;
   const readOnly = Boolean(tool) && (
     browserRisk === 'observe'
+    || computerRisk === 'observe'
+    || officeRisk === 'observe'
     || (REMOTE_READ_PREFIX.test(toolName) && !REMOTE_MUTATION_PREFIX.test(toolName))
   );
   return {
@@ -112,9 +122,11 @@ function remoteToolAssessment(toolCall, toolName, context) {
     transport: connector.transport,
     verified: connector.verified === true,
     explicitlySelected: connector.explicitToolSelection === true && selectedTools.includes(catalogToolName),
-    acceptableRisk: !['high', 'critical'].includes(risk),
+    acceptableRisk: computerRisk === 'observe' || !['high', 'critical'].includes(risk),
     readOnly,
     browserRisk,
+    computerRisk,
+    officeRisk,
     toolDescription: String(tool?.description || ''),
   };
 }
@@ -127,8 +139,10 @@ function classifyPermissionRequest(request = {}, context = {}) {
   const remoteTool = remoteToolAssessment(toolCall, toolName, context);
   const kind = remoteTool?.readOnly
     ? 'read'
-    : remoteTool?.browserRisk === 'interaction'
+    : remoteTool?.browserRisk === 'interaction' || remoteTool?.computerRisk === 'interaction'
       ? 'execute'
+      : remoteTool?.officeRisk === 'mutation'
+        ? 'edit'
       : effectiveToolKind(toolCall, toolName, inputText);
   const locations = [
     ...(Array.isArray(toolCall.locations) ? toolCall.locations : []),
@@ -145,16 +159,23 @@ function classifyPermissionRequest(request = {}, context = {}) {
   const safeLocalRead = readOnly && !outsideWorkspace && !sensitiveTarget && !usesNetwork;
   const safeRemoteRead = Boolean(
     remoteTool
-    && (remoteTool.transport === 'streamable-http' || remoteTool.connectorType === 'browser')
+    && (
+      remoteTool.transport === 'streamable-http'
+      || remoteTool.connectorType === 'browser'
+      || remoteTool.connectorType === 'computer'
+      || remoteTool.connectorType === 'office'
+    )
     && remoteTool.verified
     && remoteTool.explicitlySelected
     && remoteTool.acceptableRisk
     && remoteTool.readOnly
-    && !locations.length
+    && (!locations.length || remoteTool.connectorType === 'office')
     && !sensitiveTarget
   );
 
-  let requiresSmartApproval = outsideWorkspace || sensitiveTarget;
+  let requiresSmartApproval = outsideWorkspace
+    || sensitiveTarget
+    || ['inspect', 'interaction', 'sensitive'].includes(remoteTool?.computerRisk);
   if (safeRemoteRead) requiresSmartApproval = false;
   if (!requiresSmartApproval) {
     if (safeRemoteRead) requiresSmartApproval = false;
@@ -172,6 +193,8 @@ function classifyPermissionRequest(request = {}, context = {}) {
     safeRemoteRead,
     remoteConnectorId: remoteTool?.connectorId || null,
     browserRisk: remoteTool?.browserRisk || null,
+    computerRisk: remoteTool?.computerRisk || null,
+    officeRisk: remoteTool?.officeRisk || null,
     outsideWorkspace,
     usesNetwork,
     sensitiveTarget,
@@ -180,8 +203,13 @@ function classifyPermissionRequest(request = {}, context = {}) {
 }
 
 function permissionHandling(permissionProfileId, assessment) {
-  if (assessment.browserRisk === 'blocked') return 'deny';
+  if (
+    assessment.browserRisk === 'blocked'
+    || assessment.computerRisk === 'blocked'
+    || assessment.officeRisk === 'blocked'
+  ) return 'deny';
   if (permissionProfileId === 'workspace-approval') return 'allow_always';
+  if (['inspect', 'interaction', 'sensitive'].includes(assessment.computerRisk)) return 'prompt';
   if (
     permissionProfileId === 'analysis-readonly'
     && (assessment.safeLocalRead || assessment.safeRemoteRead)

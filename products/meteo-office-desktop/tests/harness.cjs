@@ -65,6 +65,8 @@ const catalog = {
   connectors: [
     { id: 'weather-data', name: '气象数据中心', version: '1.0.0' },
     { id: 'artifact-docx', name: 'Word 成果物', version: '1.0.0' },
+    { id: 'cua-desktop', name: '桌面应用操作', version: '1.0.0', status: 'connected' },
+    { id: 'playwright-browser', name: '浏览器操作', version: '1.0.0', status: 'available' },
   ],
   permissionProfiles: {
     'artifact-approval': {
@@ -134,6 +136,42 @@ assert.deepEqual(capabilities.skills.map((item) => item.id), ['synoptic-analysis
 assert.deepEqual(capabilities.connectors.map((item) => item.id).sort(), ['artifact-docx', 'weather-data']);
 assert.deepEqual(capabilities.toolSelections, { 'artifact-docx': ['create_document'] });
 
+const missingRequiredCapability = CapabilityResolver.resolveCapabilities({
+  project: null,
+  expert: {
+    id: 'missing-capability-expert',
+    requiredSkills: ['missing-analysis-skill'],
+  },
+  task: { capabilityMode: 'inherit', skillIds: [], connectorIds: [] },
+  catalog,
+});
+assert.equal(missingRequiredCapability.ready, false);
+assert.throws(
+  () => CapabilityResolver.assertCapabilitiesReady(missingRequiredCapability),
+  (error) => error.code === 'CAPABILITY_NOT_READY'
+    && /技能“missing-analysis-skill”/.test(error.message)
+);
+const disconnectedRequiredConnector = CapabilityResolver.resolveCapabilities({
+  project: null,
+  expert: {
+    id: 'disconnected-tool-expert',
+    requiredConnectors: ['weather-data'],
+  },
+  task: { capabilityMode: 'inherit', skillIds: [], connectorIds: [] },
+  catalog: {
+    ...catalog,
+    connectors: catalog.connectors.map((item) => (
+      item.id === 'weather-data' ? { ...item, status: 'disabled' } : item
+    )),
+  },
+});
+assert.equal(disconnectedRequiredConnector.ready, false);
+assert.deepEqual(disconnectedRequiredConnector.connectors, []);
+assert.throws(
+  () => CapabilityResolver.assertCapabilitiesReady(disconnectedRequiredConnector),
+  /工具服务“weather-data”（未连接）/
+);
+
 const recommendedCapabilities = CapabilityResolver.resolveCapabilities({
   project: null,
   expert: {
@@ -146,6 +184,36 @@ const recommendedCapabilities = CapabilityResolver.resolveCapabilities({
 });
 assert.deepEqual(recommendedCapabilities.skills.map((item) => item.id), ['synoptic-analysis']);
 assert.deepEqual(recommendedCapabilities.connectors.map((item) => item.id), ['weather-data']);
+
+const explicitlyNamedConnector = CapabilityResolver.resolveCapabilities({
+  project: null,
+  expert: null,
+  task: { capabilityMode: 'inherit', connectorIds: [] },
+  catalog,
+  prompt: '使用“桌面应用操作”列出当前打开的窗口，只读取。',
+});
+assert.deepEqual(explicitlyNamedConnector.connectors.map((item) => item.id), ['cua-desktop']);
+assert.equal(explicitlyNamedConnector.connectorSources['cua-desktop'], 'prompt');
+assert.deepEqual(
+  CapabilityResolver.resolveCapabilities({
+    project: null,
+    expert: null,
+    task: { capabilityMode: 'inherit', connectorIds: [] },
+    catalog,
+    prompt: '不要使用桌面应用操作，只解释原理。',
+  }).connectors,
+  []
+);
+assert.deepEqual(
+  CapabilityResolver.resolveCapabilities({
+    project: null,
+    expert: null,
+    task: { capabilityMode: 'inherit', connectorIds: [] },
+    catalog,
+    prompt: '使用浏览器操作打开页面。',
+  }).connectors,
+  []
+);
 
 const snapshot = ContextCompiler.compileTaskContext({ task, project, expert, catalog });
 assert.equal(snapshot.kind, 'TaskContextSnapshot');
@@ -169,6 +237,14 @@ assert.equal(completionRecipe.settings.max_turns, 24);
 assert.ok(completionRecipe.response.json_schema.properties.status.enum.includes('partial'));
 assert.ok(!JSON.stringify(completionRecipe).includes('make_product'));
 assert.ok(!JSON.stringify(completionRecipe).includes('小福气'));
+const explicitConnectorSnapshot = ContextCompiler.compileTaskContext({
+  task: { ...task, capabilityMode: 'inherit', connectorIds: [], messages: [] },
+  project: Project.normalizeProject({ id: 'no-tools', name: '无默认工具' }),
+  expert: { id: 'general' },
+  catalog,
+  prompt: '调用 cua-desktop 读取窗口列表。',
+});
+assert.deepEqual(explicitConnectorSnapshot.capabilities.connectors.map((item) => item.id), ['cua-desktop']);
 
 const completedEnvelope = {
   status: 'completed',

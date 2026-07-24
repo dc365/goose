@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const BrowserConnector = require('../capabilities/browser-connector.js');
+const BrowserRuntime = require('../capabilities/browser-runtime.cjs');
 
 function textContent(result) {
   return (result?.content || []).map((item) => item.text || '').join('\n');
@@ -24,14 +25,14 @@ function closeServer(server) {
 }
 
 class StdioMcpClient {
-  constructor(command, args, cwd) {
+  constructor(command, args, cwd, env = {}) {
     this.nextId = 0;
     this.buffer = '';
     this.stderr = '';
     this.pending = new Map();
     this.child = spawn(command, args, {
       cwd,
-      env: process.env,
+      env: { ...process.env, ...env },
       shell: false,
       windowsHide: true,
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -107,9 +108,12 @@ async function main() {
       </body></html>`);
   });
   const port = await listen(server);
-  const command = process.env.METEOMATE_NPX_PATH || BrowserConnector.PRESET.command;
-  const args = [...BrowserConnector.PRESET.args, '--output-dir', temp];
-  const client = new StdioMcpClient(command, args, temp);
+  const runtime = BrowserRuntime.resolveBrowserRuntime({
+    productRoot: path.resolve(__dirname, '..'),
+    mcpPackage: BrowserConnector.MCP_PACKAGE,
+  });
+  const args = [...runtime.argsPrefix, ...BrowserConnector.PRESET.args, '--output-dir', temp];
+  const client = new StdioMcpClient(runtime.command, args, temp, runtime.env);
 
   try {
     await client.call('initialize', {

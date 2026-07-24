@@ -9,6 +9,7 @@ const EMPTY_REGISTRY = Object.freeze({
   version: 1,
   skills: [],
   connectors: [],
+  experts: [],
   updatedAt: null,
 });
 
@@ -31,6 +32,7 @@ class JsonRegistry {
         ...parsed,
         skills: Array.isArray(parsed.skills) ? parsed.skills : [],
         connectors: Array.isArray(parsed.connectors) ? parsed.connectors : [],
+        experts: Array.isArray(parsed.experts) ? parsed.experts : [],
       };
     } catch (error) {
       if (error.code !== 'ENOENT') {
@@ -103,6 +105,28 @@ class JsonRegistry {
   getConnector(id) {
     const item = this.load().connectors.find((candidate) => candidate.id === id);
     return item ? clone(item) : null;
+  }
+
+  upsertExpert(record) {
+    const state = this.load();
+    const index = state.experts.findIndex((item) => item.id === record.id);
+    if (index >= 0) state.experts[index] = { ...state.experts[index], ...clone(record) };
+    else state.experts.unshift(clone(record));
+    this.save();
+    return clone(index >= 0 ? state.experts[index] : state.experts[0]);
+  }
+
+  getExpert(id) {
+    const item = this.load().experts.find((candidate) => candidate.id === id);
+    return item ? clone(item) : null;
+  }
+
+  removeExpert(id) {
+    const state = this.load();
+    const before = state.experts.length;
+    state.experts = state.experts.filter((item) => item.id !== id);
+    if (state.experts.length !== before) this.save();
+    return state.experts.length !== before;
   }
 }
 

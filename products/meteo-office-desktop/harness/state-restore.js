@@ -25,7 +25,7 @@
   const originalSend = runtimeRouter.send.bind(runtimeRouter);
   runtimeRouter.send = async (task, request) => {
     const project = getConversationProject(task) || getActiveProject() || {};
-    const expert = getExpert(task.expertId) || getSelectedExpert() || primaryAssistant;
+    const expert = getTaskExpert(task) || getSelectedExpert() || primaryAssistant;
     const normalizedProject = harness.Project.normalizeProject(project);
     const snapshot = harness.ContextCompiler.compileTaskContext({
       task,
@@ -43,6 +43,10 @@
       task.sessionId = null;
       task.runtimeMode = null;
       task.capabilityLoad = null;
+    }
+    if (!snapshot.capabilities.ready) {
+      saveState();
+      harness.CapabilityResolver.assertCapabilitiesReady(snapshot.capabilities);
     }
     const attempt = harness.TaskStateMachine.beginRunAttempt(task, {
       runtime: task.runtimeMode || 'auto',
@@ -143,7 +147,7 @@
       return harness.ContextCompiler.compileTaskContext({
         task,
         project: getConversationProject(task) || {},
-        expert: getExpert(task.expertId) || primaryAssistant,
+        expert: getTaskExpert(task) || primaryAssistant,
         catalog,
       });
     },

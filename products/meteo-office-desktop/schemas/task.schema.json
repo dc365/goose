@@ -14,6 +14,7 @@
     "workMode": { "enum": ["ask", "plan", "execute"] },
     "projectId": { "type": ["string", "null"] },
     "expertId": { "type": ["string", "null"] },
+    "expertSnapshot": { "$ref": "expert.schema.json" },
     "capabilityMode": { "enum": ["inherit", "custom"] },
     "connectorIds": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
     "toolSelections": {

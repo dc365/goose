@@ -21,6 +21,8 @@ function extractNamedFunction(source, name) {
 
 for (const file of [
   'capabilities/browser-connector.js',
+  'capabilities/computer-connector.js',
+  'capabilities/office-connector.js',
   'manifests/brand.js',
   'manifests/experts.js',
   'manifests/capabilities.js',
@@ -56,6 +58,8 @@ for (const asset of [
   'styles-account.css',
   'styles-connectors.css',
   'capabilities/browser-connector.js',
+  'capabilities/computer-connector.js',
+  'capabilities/office-connector.js',
   'manifests/brand.js',
   'manifests/experts.js',
   'manifests/capabilities.js',
@@ -77,9 +81,26 @@ assert.equal(context.window.METEOMATE_BRAND.name, 'MeteoMate');
 assert.equal(context.window.METEOMATE_BRAND.chineseName, '气象智伴');
 assert.ok(context.window.METEOMATE_EXPERTS.length >= 8);
 assert.ok(context.window.METEOMATE_TEAMS.length >= 3);
-assert.ok(context.window.METEOMATE_SKILLS.length >= 8);
+assert.equal(context.window.METEOMATE_SKILLS.length, 0);
+assert.ok(context.window.METEOMATE_SKILL_ROADMAP.length >= 3);
+assert.ok(context.window.METEOMATE_EXPERTS.some((item) => item.id === 'operations-expert'));
+assert.ok(context.window.METEOMATE_TEAMS.some((item) => item.id === 'operations-team'));
+assert.ok(!context.window.METEOMATE_SKILL_ROADMAP.some((item) => item.id === 'operations-incident-response'));
+assert.ok(!context.window.METEOMATE_SKILL_ROADMAP.some((item) => item.id === 'nmc-upper-air-chart-analysis'));
+assert.ok(context.window.METEOMATE_CONNECTORS.some((item) => item.id === 'operations-observability'));
+assert.ok(context.window.METEOMATE_SCENES.some((item) => item.id === 'operations' && item.group === 'operations'));
 assert.ok(!context.window.METEOMATE_CONNECTORS.some((item) => item.id === 'goose-runtime'));
 assert.ok(context.window.METEOMATE_CONNECTORS.some((item) => item.id === 'playwright-browser'));
+assert.ok(context.window.METEOMATE_CONNECTORS.some((item) => item.id === 'cua-desktop'));
+assert.ok(context.window.METEOMATE_CONNECTORS.some((item) => item.id === 'office-artifacts'));
+assert.ok(!context.window.METEOMATE_SKILL_ROADMAP.some((item) => item.id === 'docx-template'));
+assert.ok(!context.window.METEOMATE_SKILL_ROADMAP.some((item) => item.id === 'pdf-research'));
+assert.ok(!context.window.METEOMATE_SKILL_ROADMAP.some((item) => item.id === 'spreadsheet-analysis'));
+assert.ok(!context.window.METEOMATE_SKILL_ROADMAP.some((item) => item.id === 'presentation-generation'));
+assert.ok(context.window.METEOMATE_SKILL_ROADMAP.some((item) => item.id === 'office-template-center'));
+const synopticExpert = context.window.METEOMATE_EXPERTS.find((item) => item.id === 'synoptic-expert');
+assert.ok(synopticExpert.recommendedSkills.includes('nmc-upper-air-chart-analysis'));
+assert.ok(synopticExpert.recommendedConnectors.includes('playwright-browser'));
 assert.ok(context.window.METEOMATE_SCENES.every((scene) =>
   context.window.METEOMATE_EXPERTS.some((expert) => expert.id === scene.expertId)
 ));
@@ -107,6 +128,26 @@ const preloadSource = fs.readFileSync(path.join(root, 'preload.cjs'), 'utf8');
 const rendererSource = fs.readFileSync(path.join(root, 'renderer-core.js'), 'utf8');
 const rendererActionsSource = fs.readFileSync(path.join(root, 'renderer-actions.js'), 'utf8');
 const responseStylesSource = fs.readFileSync(path.join(root, 'styles/app-4.css'), 'utf8');
+
+const acpImageContext = vm.createContext({});
+vm.runInContext(
+  `${extractNamedFunction(mainSource, 'collectAcpImages')}; this.collectAcpImages = collectAcpImages;`,
+  acpImageContext
+);
+assert.deepEqual(
+  JSON.parse(JSON.stringify(acpImageContext.collectAcpImages([
+    { type: 'content', content: { type: 'text', text: 'done' } },
+    { type: 'content', content: { type: 'image', data: 'cG5n', mimeType: 'image/png' } },
+  ]))),
+  [{ type: 'image', data: 'cG5n', mimeType: 'image/png' }]
+);
+assert.ok(mainSource.includes("type: 'artifact_created'"));
+assert.ok(mainSource.includes('sanitizeAcpPayload(update.content)'));
+assert.ok(rendererActionsSource.includes("case 'artifact_created'"));
+assert.ok(rendererActionsSource.includes('assistant.artifactIds ='));
+assert.ok(rendererSource.includes('function renderMessageArtifacts(message, task)'));
+assert.ok(rendererSource.includes('class="message-artifact-gallery"'));
+assert.ok(responseStylesSource.includes('.message-artifact-image img'));
 const capabilityRenderSource = fs.readFileSync(path.join(root, 'capability-center/render.js'), 'utf8');
 const stateStoreSource = fs.readFileSync(path.join(root, 'harness/state-store.js'), 'utf8');
 const stateRestoreSource = fs.readFileSync(path.join(root, 'harness/state-restore.js'), 'utf8');
@@ -320,7 +361,11 @@ assert.ok(!rendererSource.includes('class="inspector-panel"'));
 assert.ok(!rendererSource.includes('Goose ACP 已连接'));
 assert.ok(!rendererSource.includes('Headless 降级模式'));
 assert.ok(rendererActionsSource.includes("if (!resolved) throw new Error('审批请求已失效，请重新发起任务')"));
-assert.ok(packageJson.scripts['package:mac'].includes("--asar.unpack='**/node_modules/@aaif/goose-binary-*/bin/goose*'"));
+const packageMacScript = packageJson.scripts['package:mac'];
+assert.ok(packageMacScript.includes('**/node_modules/@aaif/goose-binary-*/bin/goose*'));
+assert.ok(packageMacScript.includes('**/node_modules/@trycua/**/*'));
+assert.ok(packageMacScript.includes('**/node_modules/@ubjs/**/*'));
+assert.ok(packageMacScript.includes("--asar.unpackDir='runtime'"));
 
 assert.ok(stateStoreSource.includes('function normalizeStoredTask'));
 assert.ok(stateStoreSource.includes('const storedPlan = Array.isArray(message.processPlan)'));

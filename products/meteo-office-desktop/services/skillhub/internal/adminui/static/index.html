@@ -16,8 +16,8 @@
       <section class="login-context" aria-labelledby="login-title">
         <div class="product-mark" aria-hidden="true">MM</div>
         <p class="eyebrow">气象智伴 · SkillHub</p>
-        <h1 id="login-title">内网能力与用户管理</h1>
-        <p class="login-context-copy">在一个后台中管理 MeteoMate 用户、桌面会话和审计记录。</p>
+        <h1 id="login-title">SkillHub 管理控制台</h1>
+        <p class="login-context-copy">集中管理组织专家、Skill、版本发布、用户策略和安全审计。</p>
         <div class="boundary-note">
           <span class="boundary-symbol" aria-hidden="true">内</span>
           <span><strong>仅连接当前内网服务</strong><small>管理员会话只保存在当前浏览器页面内，关闭页面后自动清除。</small></span>
@@ -49,7 +49,11 @@
       <aside class="admin-sidebar">
         <div class="brand-lockup"><span class="brand-mark" aria-hidden="true">MM</span><span><strong>MeteoMate</strong><small>SkillHub 管理</small></span></div>
         <nav aria-label="管理导航">
-          <button class="nav-button active" data-view="users"><span aria-hidden="true">人</span><span>用户管理</span></button>
+          <button class="nav-button active" data-view="skills"><span aria-hidden="true">技</span><span>Skill 管理</span></button>
+          <button class="nav-button" data-view="experts"><span aria-hidden="true">专</span><span>专家管理</span></button>
+          <button class="nav-button" data-view="operations"><span aria-hidden="true">荐</span><span>内容运营</span></button>
+          <button class="nav-button" data-view="governance"><span aria-hidden="true">治</span><span>安装治理</span></button>
+          <button class="nav-button" data-view="users"><span aria-hidden="true">人</span><span>用户管理</span></button>
           <button class="nav-button" data-view="policies"><span aria-hidden="true">策</span><span>策略下发</span></button>
           <button class="nav-button" data-view="audit"><span aria-hidden="true">录</span><span>审计记录</span></button>
         </nav>
@@ -58,11 +62,141 @@
 
       <main class="admin-main" id="main-content" tabindex="-1">
         <header class="topbar">
-          <div><p class="section-label" id="view-eyebrow">账户与权限</p><h1 id="view-title">用户管理</h1></div>
+          <div><p class="section-label" id="view-eyebrow">内容与版本</p><h1 id="view-title">Skill 管理</h1></div>
           <div class="admin-identity"><span class="identity-avatar" id="identity-avatar">管</span><span><strong id="identity-name">管理员</strong><small id="identity-username"></small></span><button class="icon-button" id="logout-button" aria-label="退出管理后台" title="退出管理后台">退出</button></div>
         </header>
 
-        <section class="view-panel" id="users-view">
+        <section class="view-panel" id="skills-view">
+          <div class="metric-strip" aria-label="Skill 概览">
+            <div><span>全部 Skill</span><strong id="skill-metric-total">0</strong></div>
+            <div><span>已发布</span><strong id="skill-metric-published">0</strong></div>
+            <div><span>草稿</span><strong id="skill-metric-draft">0</strong></div>
+            <div><span>已弃用</span><strong id="skill-metric-deprecated">0</strong></div>
+          </div>
+
+          <div class="content-heading"><div><h2>Skill 台账</h2><p>管理 Skill 资料、版本、风险检查和发布状态。</p></div><button class="button primary" id="upload-skill-button"><span aria-hidden="true">＋</span>上传 Skill</button></div>
+          <div class="toolbar">
+            <label class="search-field"><span class="visually-hidden">搜索 Skill</span><input id="skill-search" type="search" placeholder="搜索名称、ID、分类或标签" /></label>
+            <label class="select-field"><span class="visually-hidden">按状态筛选</span><select id="skill-status-filter"><option value="">全部状态</option><option value="published">已发布</option><option value="draft">草稿</option><option value="deprecated">已弃用</option></select></label>
+            <label class="select-field"><span class="visually-hidden">按可见范围筛选</span><select id="skill-visibility-filter"><option value="">全部范围</option><option value="public">公开</option><option value="organization">组织</option><option value="private">私有</option></select></label>
+            <button class="button quiet" id="refresh-skills-button">刷新</button>
+          </div>
+          <div class="table-surface">
+            <table class="data-table skill-table">
+              <thead><tr><th>Skill</th><th>状态</th><th>当前版本</th><th>负责人</th><th>更新时间</th><th><span class="visually-hidden">操作</span></th></tr></thead>
+              <tbody id="skills-body"></tbody>
+            </table>
+            <div class="empty-state" id="skills-empty" hidden><strong>没有符合条件的 Skill</strong><span>调整搜索或筛选条件，或上传一个新的 Skill 包。</span></div>
+          </div>
+        </section>
+
+        <section class="view-panel" id="experts-view" hidden>
+          <div class="metric-strip" aria-label="专家概览">
+            <div><span>全部专家</span><strong id="expert-metric-total">0</strong></div>
+            <div><span>已启用</span><strong id="expert-metric-enabled">0</strong></div>
+            <div><span>组织与系统</span><strong id="expert-metric-managed">0</strong></div>
+            <div><span>待审核</span><strong id="expert-metric-review">0</strong></div>
+          </div>
+
+          <div class="content-heading">
+            <div><h2>专家台账</h2><p>统一管理气象专家的职责、工作方法、能力依赖、工具范围和发布状态。</p></div>
+            <button class="button primary" id="create-expert-button"><span aria-hidden="true">＋</span>新建专家</button>
+          </div>
+          <div class="toolbar">
+            <label class="search-field"><span class="visually-hidden">搜索专家</span><input id="expert-search" type="search" placeholder="搜索名称、ID、分类、使命或标签" /></label>
+            <label class="select-field"><span class="visually-hidden">按状态筛选</span><select id="expert-status-filter"><option value="">全部状态</option><option value="enabled">已启用</option><option value="draft">草稿</option><option value="disabled">已停用</option><option value="archived">已归档</option></select></label>
+            <label class="select-field"><span class="visually-hidden">按审核状态筛选</span><select id="expert-review-filter"><option value="">全部审核</option><option value="pending">待审核</option><option value="approved">已通过</option><option value="rejected">已退回</option><option value="not_submitted">未提交</option><option value="not_required">无需审核</option></select></label>
+            <label class="select-field"><span class="visually-hidden">按可见范围筛选</span><select id="expert-visibility-filter"><option value="">全部范围</option><option value="public">系统</option><option value="organization">组织</option><option value="private">私有</option></select></label>
+            <button class="button quiet" id="refresh-experts-button">刷新</button>
+          </div>
+          <div class="table-surface">
+            <table class="data-table expert-table">
+              <thead><tr><th>专家</th><th>来源与范围</th><th>状态</th><th>版本</th><th>负责人</th><th>更新时间</th><th><span class="visually-hidden">操作</span></th></tr></thead>
+              <tbody id="experts-body"></tbody>
+            </table>
+            <div class="empty-state" id="experts-empty" hidden><strong>没有符合条件的专家</strong><span>调整搜索或筛选条件，或创建一个新的气象专家。</span></div>
+          </div>
+        </section>
+
+        <section class="view-panel" id="operations-view" hidden>
+          <div class="metric-strip" aria-label="内容运营概览">
+            <div><span>运营套件</span><strong id="operation-metric-collections">0</strong></div>
+            <div><span>推荐规则</span><strong id="operation-metric-rules">0</strong></div>
+            <div><span>精选 Skill</span><strong id="operation-metric-featured">0</strong></div>
+            <div><span>启用规则</span><strong id="operation-metric-enabled">0</strong></div>
+          </div>
+
+          <div class="content-heading operations-heading">
+            <div><h2>套件与推荐</h2><p>用可解释规则组织 Skill、控制精选顺序，并模拟不同任务上下文的推荐结果。</p></div>
+            <div class="content-actions"><button class="button quiet" id="create-rule-button"><span aria-hidden="true">＋</span>新建规则</button><button class="button primary" id="create-collection-button"><span aria-hidden="true">＋</span>新建套件</button></div>
+          </div>
+
+          <div class="operations-grid">
+            <section class="operation-panel" aria-labelledby="collection-heading">
+              <header><div><p class="section-label">Collections</p><h3 id="collection-heading">Skill 套件</h3></div><button class="icon-button" id="refresh-operations-button" aria-label="刷新内容运营" title="刷新内容运营">刷新</button></header>
+              <p class="operation-description">列表顺序即桌面端展示顺序，精选集合由 Skill 精选位自动生成。</p>
+              <div class="operation-list" id="collections-list"></div>
+              <div class="operation-empty" id="collections-empty" hidden>还没有自定义套件</div>
+            </section>
+            <section class="operation-panel" aria-labelledby="rule-heading">
+              <header><div><p class="section-label">Rules</p><h3 id="rule-heading">推荐规则</h3></div><span class="operation-count" id="rule-count">0 条</span></header>
+              <p class="operation-description">规则按优先级执行，可置顶、加减分或排除匹配的 Skill。</p>
+              <div class="operation-list" id="rules-list"></div>
+              <div class="operation-empty" id="rules-empty" hidden>还没有推荐规则</div>
+            </section>
+          </div>
+
+          <section class="simulator-panel" aria-labelledby="simulator-heading">
+            <header><div><p class="section-label">Preview</p><h3 id="simulator-heading">推荐结果模拟器</h3><p>输入任务场景和可用连接器，查看排序、分数与推荐原因。</p></div><span class="simulator-state" id="simulator-state">等待模拟</span></header>
+            <form class="simulator-form" id="recommendation-simulator-form">
+              <label class="field"><span>任务需求</span><input name="q" placeholder="例如：制作下周天气产品" /></label>
+              <label class="field"><span>场景分类</span><input name="categories" placeholder="天气分析, 内容创作" /></label>
+              <label class="field"><span>已连接工具</span><input name="connectorIds" placeholder="weather-data, office-artifacts" /></label>
+              <label class="field"><span>排除已安装 Skill</span><input name="installedSkillIds" placeholder="skill-a, skill-b" /></label>
+              <button class="button primary" type="submit">运行模拟</button>
+            </form>
+            <div class="recommendation-results" id="recommendation-results"><div class="simulator-placeholder"><strong>尚未运行模拟</strong><span>结果会按实际推荐接口的排序显示，并列出命中的运营规则。</span></div></div>
+          </section>
+        </section>
+
+        <section class="view-panel" id="governance-view" hidden>
+          <div class="metric-strip" aria-label="安装治理概览">
+            <div><span>安装记录</span><strong id="governance-metric-installations">0</strong></div>
+            <div><span>活跃客户端</span><strong id="governance-metric-clients">0</strong></div>
+            <div><span>待升级</span><strong id="governance-metric-upgrades">0</strong></div>
+            <div><span>待审核发布</span><strong id="governance-metric-reviews">0</strong></div>
+          </div>
+
+          <div class="content-heading"><div><h2>安装与发布治理</h2><p>追踪 Skill 在用户、项目和客户端上的版本分布，并处理需要管理员审核的发布申请。</p></div><button class="button quiet" id="refresh-governance-button">刷新治理数据</button></div>
+          <div class="governance-overview">
+            <section class="governance-panel" aria-labelledby="review-queue-heading">
+              <header><div><p class="section-label">Review queue</p><h3 id="review-queue-heading">待审核发布</h3></div><span class="operation-count" id="review-queue-count">0 项</span></header>
+              <div class="governance-list" id="review-queue-list"></div>
+              <div class="operation-empty" id="review-queue-empty" hidden>当前没有待审核版本</div>
+            </section>
+            <section class="governance-panel" aria-labelledby="version-distribution-heading">
+              <header><div><p class="section-label">Distribution</p><h3 id="version-distribution-heading">版本分布</h3></div><span class="operation-count" id="version-distribution-count">0 组</span></header>
+              <div class="governance-list" id="version-distribution-list"></div>
+              <div class="operation-empty" id="version-distribution-empty" hidden>还没有安装上报</div>
+            </section>
+          </div>
+
+          <div class="content-heading governance-table-heading"><div><h2>安装台账</h2><p>最近 30 天上报过的客户端计为活跃，低于最新已发布版本的安装标记为待升级。</p></div></div>
+          <div class="toolbar">
+            <label class="search-field"><span class="visually-hidden">搜索安装记录</span><input id="governance-search" type="search" placeholder="搜索 Skill、用户、项目或客户端" /></label>
+            <label class="select-field"><span class="visually-hidden">按安装范围筛选</span><select id="governance-scope-filter"><option value="">全部范围</option><option value="user">用户</option><option value="project">项目</option></select></label>
+            <label class="select-field"><span class="visually-hidden">按升级状态筛选</span><select id="governance-upgrade-filter"><option value="">全部版本</option><option value="upgrade">待升级</option><option value="current">已是最新</option></select></label>
+          </div>
+          <div class="table-surface">
+            <table class="data-table governance-table">
+              <thead><tr><th>Skill</th><th>安装版本</th><th>使用范围</th><th>用户 / 项目</th><th>客户端</th><th>最后活跃</th></tr></thead>
+              <tbody id="governance-body"></tbody>
+            </table>
+            <div class="empty-state" id="governance-empty" hidden><strong>没有符合条件的安装记录</strong><span>等待桌面端完成安装上报，或调整筛选条件。</span></div>
+          </div>
+        </section>
+
+        <section class="view-panel" id="users-view" hidden>
           <div class="metric-strip" aria-label="用户概览">
             <div><span>启用用户</span><strong id="metric-active">0</strong></div>
             <div><span>发布者</span><strong id="metric-publishers">0</strong></div>
@@ -102,7 +236,7 @@
           </div>
           <div class="table-surface policy-table-surface">
             <table class="data-table policy-table">
-              <thead><tr><th>适用范围</th><th>覆盖状态</th><th>默认模型</th><th>默认权限</th><th>自动压缩</th><th><span class="visually-hidden">操作</span></th></tr></thead>
+              <thead><tr><th>适用范围</th><th>覆盖状态</th><th>默认模型</th><th>默认权限</th><th>Skill 范围</th><th><span class="visually-hidden">操作</span></th></tr></thead>
               <tbody id="policies-body"></tbody>
             </table>
             <div class="empty-state" id="policies-empty" hidden><strong>没有符合条件的策略</strong><span>调整搜索或筛选条件后重试。</span></div>
@@ -113,7 +247,7 @@
           <div class="content-heading"><div><h2>安全与管理记录</h2><p>登录、用户修改、会话和 Skill 操作按时间倒序显示。</p></div><button class="button quiet" id="refresh-audit-button">刷新记录</button></div>
           <div class="toolbar">
             <label class="search-field audit-search"><span class="visually-hidden">搜索审计记录</span><input id="audit-search" type="search" placeholder="搜索操作、用户或目标" /></label>
-            <label class="select-field"><span class="visually-hidden">按操作筛选</span><select id="audit-action-filter"><option value="">全部操作</option><option value="auth.login">登录成功</option><option value="auth.login.failed">登录失败</option><option value="user.create">创建用户</option><option value="user.update">更新用户</option><option value="user.password.reset">重置密码</option><option value="user.sessions.revoke">撤销会话</option><option value="policy.organization.update">更新组织策略</option><option value="policy.role.update">更新角色策略</option><option value="policy.user.update">更新用户策略</option><option value="skill.update">更新 Skill 资料</option><option value="skill.owner.transfer">转交 Skill 负责人</option><option value="skill.version.publish">发布 Skill</option><option value="skill.version.deprecate">弃用 Skill 版本</option></select></label>
+            <label class="select-field"><span class="visually-hidden">按操作筛选</span><select id="audit-action-filter"><option value="">全部操作</option><option value="auth.login">登录成功</option><option value="auth.login.failed">登录失败</option><option value="user.create">创建用户</option><option value="user.update">更新用户</option><option value="user.password.reset">重置密码</option><option value="user.sessions.revoke">撤销会话</option><option value="policy.organization.update">更新组织策略</option><option value="policy.role.update">更新角色策略</option><option value="policy.user.update">更新用户策略</option><option value="expert.create">创建专家</option><option value="expert.update">更新专家</option><option value="expert.review.submit">提交专家审核</option><option value="expert.review.approve">通过专家审核</option><option value="expert.review.reject">退回专家审核</option><option value="expert.status.update">更新专家状态</option><option value="expert.distribution.update">更新专家分发</option><option value="expert.rollback">回滚专家</option><option value="skill.update">更新 Skill 资料</option><option value="skill.owner.transfer">转交 Skill 负责人</option><option value="skill.version.publish">发布 Skill</option><option value="skill.version.deprecate">弃用 Skill 版本</option><option value="collection.put">保存 Skill 套件</option><option value="collection.delete">删除 Skill 套件</option><option value="recommendation.rule.put">保存推荐规则</option><option value="recommendation.rule.delete">删除推荐规则</option><option value="featured.placements.put">更新精选位</option></select></label>
           </div>
           <div class="table-surface">
             <table class="data-table audit-table">

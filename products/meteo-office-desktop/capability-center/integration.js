@@ -42,14 +42,48 @@
     const original = runtimeRouter.send.bind(runtimeRouter);
     runtimeRouter.send = (task, request) => {
       const enabledSkills = new Set(api.enabledSkillCatalog(task.projectId || null).map((item) => item.id));
-      const skillIds = (task.skillIds || []).filter((id) => enabledSkills.has(id));
+      const project = getConversationProject(task) || getActiveProject() || {};
+      const expert = getTaskExpert(task) || getSelectedExpert() || primaryAssistant;
+      const resolvedSkills = root.MeteoMateHarness?.CapabilityResolver?.resolveCapabilities({
+        project,
+        expert,
+        task,
+        catalog: api.mergedCatalog(catalog, project?.id || task.projectId || null),
+      })?.skills || [];
+      const skillIds = [...new Set([
+        ...(request.skillIds || []),
+        ...resolvedSkills.map((skill) => skill.id),
+        ...(task.skillIds || []),
+      ])]
+        .filter((id) => enabledSkills.has(id));
       const connectorIds = task.connectorIds || [];
       request.skillIds = [...skillIds];
       request.connectorIds = [...connectorIds];
       request.toolSelections = normalizeToolSelections(task.toolSelections, connectorIds);
       request.projectId = task.projectId || null;
-      const skillNames = skillIds.map((id) => api.skillCatalog(task.projectId || null).find((item) => item.id === id)?.name || id);
-      if (skillNames.length) request.expertInstruction = `${request.expertInstruction}\n本次任务已显式选择以下 Skill：${skillNames.join('、')}。优先遵循这些 Skill 的说明与验证要求。`;
+      const availableSkills = api.skillCatalog(task.projectId || null);
+      const selectedSkills = skillIds
+        .map((id) => availableSkills.find((item) => item.id === id))
+        .filter(Boolean);
+      if (selectedSkills.length) {
+        const skillInstructions = selectedSkills
+          .map((skill) => {
+            const instruction = String(skill.installation?.runtimeInstruction || '').trim();
+            return instruction
+              ? `<selected-skill id="${skill.id}" name="${skill.name}">\n${instruction}\n</selected-skill>`
+              : `<selected-skill id="${skill.id}" name="${skill.name}">技能正文当前不可用。</selected-skill>`;
+          })
+          .join('\n\n');
+        const runtimeSkillContext = [
+          '以下 Skill 已由 MeteoMate 根据当前项目和任务选择直接加载。必须遵循其流程与验证要求；不要再调用 load_skill 查找这些 Skill。涉及网站时，从官方首页或已确认的父级入口开始，通过页面快照定位目标，不得凭名称猜测深层地址。',
+          skillInstructions,
+        ].join('\n\n');
+        if (request.sessionId) {
+          request.prompt = `${runtimeSkillContext}\n\n用户本轮任务：${request.prompt}`;
+        } else {
+          request.expertInstruction = [request.expertInstruction, runtimeSkillContext].filter(Boolean).join('\n\n');
+        }
+      }
       return original(task, request);
     };
     runtimeRouter.__capabilityCenterPatched = true;

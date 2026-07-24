@@ -266,7 +266,14 @@
 
   function compileTaskContext({ task = {}, project = {}, expert = {}, catalog = {}, prompt = '', clock = Date }) {
     const normalizedProject = Project.normalizeProject(project);
-    const capabilities = Resolver.resolveCapabilities({ project: normalizedProject, expert, task, catalog });
+    const currentPrompt = latestUserPrompt(task, prompt);
+    const capabilities = Resolver.resolveCapabilities({
+      project: normalizedProject,
+      expert,
+      task,
+      catalog,
+      prompt: currentPrompt,
+    });
     const policy = Policy.resolvePolicy({
       project: normalizedProject,
       expert,
@@ -282,7 +289,7 @@
         id: task.id || null,
         kind: task.kind || 'task',
         title: task.title || '',
-        prompt: latestUserPrompt(task, prompt),
+        prompt: currentPrompt,
         workMode: policy.workMode,
         expectedOutputs: Shared.deepClone(task.expectedOutputs || []),
       },
@@ -291,9 +298,20 @@
         id: expert.id || null,
         name: expert.name || '',
         version: expert.version || '1.0.0',
+        revision: Number(expert.revision || 1),
+        source: Shared.deepClone(expert.source || { type: 'system' }),
         instruction: expert.instruction || '',
         methodology: Shared.deepClone(expert.methodology || []),
+        workflow: Shared.deepClone(expert.workflow || []),
         limitations: Shared.deepClone(expert.limitations || []),
+        inputs: Shared.deepClone(expert.inputs || []),
+        outputs: Shared.deepClone(expert.outputs || []),
+        prompts: Shared.deepClone(expert.prompts || []),
+        requiredSkills: Shared.deepClone(expert.requiredSkills || []),
+        recommendedSkills: Shared.deepClone(expert.recommendedSkills || []),
+        requiredConnectors: Shared.deepClone(expert.requiredConnectors || []),
+        recommendedConnectors: Shared.deepClone(expert.recommendedConnectors || []),
+        toolSelections: Shared.deepClone(expert.toolSelections || {}),
         inputSchema: expert.inputSchema || null,
         outputSchema: expert.outputSchema || null,
       },

@@ -52,6 +52,10 @@ contextBridge.exposeInMainWorld('meteoDesktop', {
   setConnectorEnabled: (request) => ipcRenderer.invoke('capability:set-connector-enabled', request),
   deleteConnector: (id) => ipcRenderer.invoke('capability:delete-connector', id),
   updateConnectorProjects: (request) => ipcRenderer.invoke('capability:update-connector-projects', request),
+  saveExpert: (request) => ipcRenderer.invoke('capability:save-expert', request),
+  setExpertStatus: (request) => ipcRenderer.invoke('capability:set-expert-status', request),
+  migrateExperts: (items) => ipcRenderer.invoke('capability:migrate-experts', items),
+  resolveExpertConflict: (request) => ipcRenderer.invoke('capability:resolve-expert-conflict', request),
   openCapabilityPath: (targetPath) => ipcRenderer.invoke('capability:open-path', targetPath),
 
   listSkillDrafts: () => ipcRenderer.invoke('skill-creator:list-drafts'),
@@ -70,6 +74,8 @@ contextBridge.exposeInMainWorld('meteoDesktop', {
   testSkillHub: () => ipcRenderer.invoke('skillhub:test'),
   listSkillHubSkills: (request) => ipcRenderer.invoke('skillhub:list-skills', request),
   listManagedSkillHubSkills: (request) => ipcRenderer.invoke('skillhub:list-managed-skills', request),
+  listSkillHubExperts: (request) => ipcRenderer.invoke('skillhub:list-experts', request),
+  syncSkillHubExperts: () => ipcRenderer.invoke('skillhub:sync-experts'),
   listSkillHubPublishers: () => ipcRenderer.invoke('skillhub:list-publishers'),
   updateSkillHubSkill: (request) => ipcRenderer.invoke('skillhub:update-skill', request),
   publishSkillHubVersion: (request) => ipcRenderer.invoke('skillhub:publish-version', request),
@@ -79,6 +85,7 @@ contextBridge.exposeInMainWorld('meteoDesktop', {
   getSkillHubSkill: (id) => ipcRenderer.invoke('skillhub:get-skill', id),
   downloadSkillHubSkill: (request) => ipcRenderer.invoke('skillhub:download-inspect', request),
   reportSkillHubInstallation: (request) => ipcRenderer.invoke('skillhub:report-installation', request),
+  reportSkillHubUninstallation: (request) => ipcRenderer.invoke('skillhub:report-uninstallation', request),
   publishSkillDraftToHub: (request) => ipcRenderer.invoke('skillhub:publish-draft', request),
 
   onRuntimeEvent: (callback) => {

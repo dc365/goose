@@ -10,6 +10,11 @@
   const ID = 'playwright-browser';
   const MCP_VERSION = '0.0.78';
   const MCP_PACKAGE = `@playwright/mcp@${MCP_VERSION}`;
+  const MCP_ARGS = Object.freeze([
+    '--isolated',
+    '--viewport-size',
+    '1440x900',
+  ]);
 
   const OBSERVE_TOOLS = Object.freeze([
     'browser_close',
@@ -53,14 +58,8 @@
     description: '使用 Goose 官方推荐的 Playwright MCP 打开网页、读取内容、截图并完成点击和表单操作。',
     version: '1.0.0',
     transport: 'stdio',
-    command: 'npx',
-    args: Object.freeze([
-      '-y',
-      MCP_PACKAGE,
-      '--isolated',
-      '--viewport-size',
-      '1440x900',
-    ]),
+    command: 'MeteoMate Runtime',
+    args: MCP_ARGS,
     timeout: 300,
     riskClassification: 'medium',
     connectorType: 'browser',
@@ -85,8 +84,11 @@
     return 'blocked';
   }
 
-  function materialize(input = {}, { command = PRESET.command, outputDir = '' } = {}) {
-    const args = [...PRESET.args];
+  function materialize(input = {}, { runtime, outputDir = '' } = {}) {
+    if (!runtime?.command || !Array.isArray(runtime.argsPrefix)) {
+      throw new Error('浏览器运行时尚未准备完成');
+    }
+    const args = [...runtime.argsPrefix, ...PRESET.args];
     if (outputDir) args.push('--output-dir', outputDir);
     return {
       ...input,
@@ -95,8 +97,10 @@
       description: String(input.description || PRESET.description),
       version: PRESET.version,
       transport: PRESET.transport,
-      command,
+      command: runtime.command,
       args,
+      runtimeEnv: { ...runtime.env },
+      runtimeInfo: { ...runtime.info },
       cwd: outputDir || null,
       timeout: PRESET.timeout,
       riskClassification: PRESET.riskClassification,
@@ -110,6 +114,7 @@
     ID,
     MCP_VERSION,
     MCP_PACKAGE,
+    MCP_ARGS,
     PRESET,
     SAFE_TOOLS,
     BLOCKED_TOOLS,

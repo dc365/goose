@@ -1704,6 +1704,17 @@ async function ensureProjectPickerSkillAvailable(item) {
     capabilityApi.center.registry = enabled.registry;
     return;
   }
+  if (item.bundled) {
+    const inspection = await window.meteoDesktop.inspectBundledSkill(item.id);
+    const installed = await window.meteoDesktop.installSkill({
+      token: inspection.token,
+      reportHash: inspection.report.reportHash,
+      scope: 'user',
+      replace: false,
+    });
+    capabilityApi.center.registry = installed.registry;
+    return;
+  }
   const remote = item.remoteSkill;
   const version = remote?.latestVersion || item.latestVersion || item.version;
   if (!remote || !version) throw new Error(`“${item.name}”没有可安装的 SkillHub 版本`);
@@ -1719,6 +1730,8 @@ async function ensureProjectPickerSkillAvailable(item) {
   });
   capabilityApi.center.registry = installed.registry;
   void window.meteoDesktop.reportSkillHubInstallation({
+    localInstallationId: installed.installation.id,
+    remoteInstallationId: installed.installation.remote?.skillHubInstallationId,
     skillId: item.id,
     version,
     scope: 'user',
@@ -2711,6 +2724,7 @@ function createTask(expert, prompt, permissionProfileId, providerId, modelId) {
     title: assistantTask ? primaryAssistant.name : truncate(prompt, 34),
     expertId: expert.id,
     expertName: expert.name,
+    expertSnapshot: expertSnapshot(expert),
     sceneId: assistantTask ? null : state.draftSceneId || null,
     projectId: project?.id || null,
     workspace: project?.workspace || '',
@@ -2930,7 +2944,7 @@ async function sendTaskMessage() {
   }
 
   const existing = getActiveTask();
-  const expert = existing ? getExpert(existing.expertId) : getSelectedExpert();
+  const expert = existing ? getTaskExpert(existing) : getSelectedExpert();
   const requestedPermissionProfileId =
     document.getElementById('composer-permission')?.dataset.permissionProfileId ||
     existing?.permissionProfileId ||
@@ -3102,6 +3116,25 @@ function registerCompletionArtifacts(task, artifacts) {
   }
 }
 
+function registerRuntimeArtifact(task, event) {
+  const artifact = event.artifact || event.record || event.payload;
+  if (!artifact) return null;
+  const assistant = currentStreamingAssistant(task) || latestAssistantMessage(task);
+  const record = window.MeteoMateHarness.ArtifactRegistry.registerArtifact(task, {
+    ...artifact,
+    metadata: {
+      ...(artifact.metadata || {}),
+      responseId: assistant?.id || artifact.metadata?.responseId || null,
+    },
+  }, {
+    toolCallId: event.toolCallId || null,
+  });
+  if (assistant) {
+    assistant.artifactIds = [...new Set([...(assistant.artifactIds || []), record.id])];
+  }
+  return record;
+}
+
 function completionText(envelope) {
   const sections = [String(envelope?.answer || envelope?.summary || '').trim()];
   if (envelope?.status !== 'completed' && envelope?.blockers?.length) {
@@ -3119,6 +3152,75 @@ function runtimeCompletion(task, event, assistant) {
     return { required: false, valid: true, status: 'completed', envelope: null };
   }
   return window.MeteoMateHarness.ContextCompiler.evaluateCompletion(contract, assistant.text);
+}
+
+function settleResponseActivities(task, assistant, completed) {
+  task.activities.forEach((activity) => {
+    if (
+      activity.responseId !== assistant.id
+      || !['running', 'waiting', 'pending', 'in_progress'].includes(activity.status)
+    ) return;
+    if (completed || (activity.type === 'tool' && activity.rawOutput !== null)) {
+      activity.status = 'completed';
+    } else {
+      activity.status = 'interrupted';
+    }
+    activity.updatedAt = Date.now();
+  });
+}
+
+function retryIncompleteCompletion(task, assistant, completion) {
+  if (completion.valid || Number(assistant.completionRetryCount || 0) >= 1 || !task.sessionId) return false;
+  const expert = getTaskExpert(task) || primaryAssistant;
+  const permissionProfile = catalog.permissionProfiles[task.permissionProfileId]
+    || catalog.permissionProfiles['analysis-readonly'];
+  assistant.completionRetryCount = Number(assistant.completionRetryCount || 0) + 1;
+  task.status = 'running';
+  addActivity(task, {
+    type: 'info',
+    title: '继续完成任务',
+    detail: `${completion.reason || '尚未形成结构化完成结果'}；MeteoMate 正在沿用当前会话补全证据和最终答复。`,
+    status: 'running',
+  });
+  const prompt = [
+    '继续执行当前用户任务。不要重复已经成功的工具调用。',
+    '先检查本轮已有工具结果；如果证据不足，只补做缺少的步骤。',
+    '完成后必须按 MeteoMate 结构化完成协议输出最终结果；若确实无法完成，明确给出 blocker 和下一步。',
+  ].join('\n');
+  void runtimeRouter.send(task, {
+    taskId: task.id,
+    sessionId: task.sessionId,
+    expertName: expert.name,
+    expertInstruction: expert.instruction,
+    prompt,
+    workspace: task.workspace,
+    allowFileTools: Boolean(permissionProfile.fileTools),
+    permissionProfileId: permissionProfile.id,
+    permissionProfileName: permissionProfile.name,
+    permissionProfileDescription: permissionProfile.description,
+    providerId: task.providerId || '',
+    modelId: task.modelId || '',
+    submittedAt: Date.now(),
+    fileReferences: [...(task.fileReferences || [])],
+    transcript: transcriptForRuntime(task),
+  }).then((result) => {
+    task.runtimeMode = result.runtime;
+    if (result.sessionId) task.sessionId = result.sessionId;
+    task.sessionCapabilityHash = result.capabilityHash || task.capabilityResolution?.id || null;
+    task.capabilityLoad = result.capabilityLoad || task.capabilityLoad || null;
+    task.updatedAt = Date.now();
+    saveState();
+    render();
+  }).catch((error) => {
+    handleRuntimeEvent({
+      type: 'turn_failed',
+      taskId: task.id,
+      sessionId: task.sessionId,
+      runtime: task.runtimeMode || 'acp',
+      message: error?.message || String(error),
+    });
+  });
+  return true;
 }
 
 function handleRuntimeEvent(event) {
@@ -3289,12 +3391,17 @@ function handleRuntimeEvent(event) {
       registerArtifacts(task, event.content);
       break;
 
+    case 'artifact_created':
+      registerRuntimeArtifact(task, event);
+      break;
+
     case 'permission_requested':
       if (!advanceAssistantResponsePhase(task, 'responding')) break;
       task.pendingPermissions.push({
         id: event.permissionId,
         toolCall: event.toolCall,
         options: event.options,
+        allowAlways: event.allowAlways !== false,
         createdAt: Date.now(),
       });
       addActivity(task, {
@@ -3369,6 +3476,7 @@ function handleRuntimeEvent(event) {
       const completion = runtimeCompletion(task, event, assistant);
       const completed = !completion.required || (completion.valid && completion.status === 'completed');
       const failed = completion.required && completion.valid && completion.status === 'failed';
+      if (!completed && !failed && retryIncompleteCompletion(task, assistant, completion)) break;
       task.status = completed ? 'completed' : failed ? 'failed' : 'interrupted';
       if (completion.envelope) {
         assistant.completion = completion.envelope;
@@ -3386,20 +3494,13 @@ function handleRuntimeEvent(event) {
           type: failed ? 'error' : 'warning',
           title: failed ? '任务执行失败' : '任务尚未完整交付',
           detail: completion.reason || completion.envelope?.summary || '运行已停止，但完成条件尚未满足。',
-          status: 'failed',
+          status: failed ? 'failed' : 'interrupted',
         });
       }
-      task.activities.forEach((activity) => {
-        if (
-          activity.responseId === assistant.id &&
-          ['running', 'pending', 'in_progress'].includes(activity.status)
-        ) {
-          activity.status = completed ? 'completed' : 'failed';
-        }
-      });
+      settleResponseActivities(task, assistant, completed);
       markPlan(task, 'analyze', 'completed');
-      markPlan(task, 'deliver', completed ? 'completed' : 'failed');
-      finalizeAssistantResponse(task, completed ? 'completed' : 'failed');
+      markPlan(task, 'deliver', completed ? 'completed' : failed ? 'failed' : 'interrupted');
+      finalizeAssistantResponse(task, completed ? 'completed' : failed ? 'failed' : 'interrupted');
       break;
     }
 

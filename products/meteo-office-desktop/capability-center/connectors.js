@@ -9,6 +9,30 @@
     return new Date(value).toLocaleString('zh-CN', { hour12: false });
   }
 
+  function managedRuntimeSummary(lastTest) {
+    const runtime = lastTest?.result?.runtime;
+    if (!runtime) return '';
+    if (runtime.driverVersion) {
+      const source = {
+        'bundled-runtime': '产品内置运行时',
+        'developer-override': '开发者指定运行时',
+        'system-runtime': '系统运行时（开发模式）',
+      }[runtime.source] || '托管运行时';
+      return `${source} · Cua Driver ${runtime.driverVersion} · 内嵌守护进程 · 遥测与更新检查已关闭`;
+    }
+    const source = {
+      'bundled-node': '产品内置 Node',
+      'electron-node': 'MeteoMate 内置 Node',
+      'node-process': '开发环境 Node',
+      'developer-override': '开发者指定 Node',
+      'system-npx': '系统 npx（兼容模式）',
+    }[runtime.source] || '托管运行时';
+    const browser = runtime.browserRuntime === 'bundled-chromium' ? '内置 Chromium' : 'Playwright 浏览器缓存';
+    return `${source} ${runtime.nodeVersion || ''} · Playwright MCP ${runtime.mcpVersion || ''} · ${browser}`
+      .replace(/\s+·/g, ' ·')
+      .trim();
+  }
+
   function toolCatalogMarkup(lastTest, toolAllowlist = null) {
     if (!lastTest?.ok) return '';
     const discoveredTools = Array.isArray(lastTest.result?.tools) ? lastTest.result.tools : [];
@@ -80,17 +104,25 @@
     };
   }
 
+  async function persistManagedConnector(input, lastTest) {
+    const result = await root.meteoDesktop.saveConnector({ ...input, lastTest });
+    api.center.registry = result.registry;
+    api.syncProjectCapability('connectors', result.connector.id, result.connector.projectIds || []);
+    return result;
+  }
+
   function editor(item = null, requestedTransport = null) {
     const binding = item?.binding || null;
     const preset = item?.preset || null;
     const source = binding || preset || {};
     const managedPreset = Boolean(preset);
+    const computerPreset = preset?.connectorType === 'computer' || binding?.connectorType === 'computer';
     const toolAllowlist = binding?.toolAllowlist || preset?.toolAllowlist || null;
     const transport = requestedTransport || source.transport || 'stdio';
     let latestTest = binding?.lastTest || null;
-    modal(`<header class="capability-modal-header connector-modal-header"><div><span class="connector-modal-eyebrow">MCP TOOL SERVICE</span><h2>${binding ? '管理工具服务' : managedPreset ? '启用浏览器操作' : '添加工具服务'}</h2><p>连接配置与项目授权保存在当前用户空间，凭据仅保留在本机。</p></div><button data-modal-close aria-label="关闭工具服务配置">×</button></header>
+    modal(`<header class="capability-modal-header connector-modal-header"><div><span class="connector-modal-eyebrow">MCP TOOL SERVICE</span><h2>${binding ? '管理工具服务' : managedPreset ? `启用${computerPreset ? '桌面应用' : '浏览器'}操作` : '添加工具服务'}</h2><p>连接配置与项目授权保存在当前用户空间，凭据仅保留在本机。</p></div><button data-modal-close aria-label="关闭工具服务配置">×</button></header>
       <div class="capability-modal-body connector-editor">
-        ${managedPreset ? '<div class="connector-test-result full success">由 MeteoMate 托管 Playwright MCP 版本、隔离模式和安全工具范围；测试成功后即可绑定项目使用。</div>' : ''}
+        ${managedPreset ? `<div class="connector-test-result full success">由 MeteoMate 托管${computerPreset ? ' Cua Driver 内嵌进程、系统权限和安全工具范围；桌面交互仍经过 ACP 审批' : ' Playwright MCP 版本、隔离模式和安全工具范围'}；测试成功后会自动保存并启用，之后可调整项目范围。</div>` : ''}
         <section class="connector-editor-section">
           <div class="connector-section-heading"><div><span>01</span><h3>基本信息</h3></div><p>用于在任务和技能中识别这个工具服务。</p></div>
           <div class="connector-form-grid">
@@ -122,11 +154,11 @@
         <section class="connector-editor-section">
           <div class="connector-section-heading"><div><span>04</span><h3>使用范围</h3></div><p>决定保存后的启用状态，以及哪些项目可以调用这个服务。</p></div>
           <div class="connector-scope-grid">
-            <label class="connector-enable-option"><input id="connector-enabled" type="checkbox" ${source.enabled === false ? '' : 'checked'}/><span><strong>保存后启用</strong><small>启用后，已绑定项目可在任务和技能中调用此服务。</small></span></label>
-            <div class="connector-project-binding"><div class="connector-project-heading"><strong>绑定项目</strong><small>未选择时仅保存配置，不授权给项目。</small></div><div class="capability-project-list">${projectOptions(source.projectIds || [])}</div></div>
+            <label class="connector-enable-option"><input id="connector-enabled" type="checkbox" ${source.enabled === false ? '' : 'checked'}/><span><strong>保存后启用</strong><small>已绑定项目会自动获得；未绑定时也可在任务中明确点名调用。</small></span></label>
+            <div class="connector-project-binding"><div class="connector-project-heading"><strong>绑定项目</strong><small>未选择时不默认授权给项目，仍可在任务中明确点名调用。</small></div><div class="capability-project-list">${projectOptions(source.projectIds || [])}</div></div>
           </div>
         </section>
-        <div class="connector-test-result full ${binding?.lastTest?.ok ? 'success' : binding?.lastTest ? 'failed' : ''}" id="connector-test-result" role="status" aria-live="polite">${binding?.lastTest ? binding.lastTest.ok ? `最近测试成功${binding.lastTest.result?.tools?.length ? `，发现 ${binding.lastTest.result.tools.length} 个工具` : ''}` : `最近测试失败：${escapeHtml(binding.lastTest.error || '')}` : '尚未测试连接'}</div>
+        <div class="connector-test-result full ${binding?.lastTest?.ok ? 'success' : binding?.lastTest ? 'failed' : ''}" id="connector-test-result" role="status" aria-live="polite">${binding?.lastTest ? binding.lastTest.ok ? `最近测试成功${binding.lastTest.result?.tools?.length ? `，发现 ${binding.lastTest.result.tools.length} 个工具` : ''}${managedRuntimeSummary(binding.lastTest) ? `<small>${escapeHtml(managedRuntimeSummary(binding.lastTest))}</small>` : ''}` : `最近测试失败：${escapeHtml(binding.lastTest.error || '')}` : '尚未测试连接'}</div>
         <div id="connector-tool-catalog-root">${toolCatalogMarkup(binding?.lastTest, toolAllowlist)}</div>
       </div>
       <footer class="capability-modal-footer connector-modal-footer">${binding ? '<button class="danger-text-button" id="delete-connector">删除服务</button>' : ''}<span class="capability-modal-spacer"></span><button class="ghost-button" data-modal-close>取消</button><button class="ghost-button" id="test-connector">测试连接</button><button class="primary-button" id="save-connector">保存工具服务</button></footer>`, {
@@ -167,7 +199,18 @@
             const enabledCount = Array.isArray(toolAllowlist)
               ? result.result?.tools?.filter((tool) => toolAllowlist.includes(tool.name)).length || 0
               : discoveredCount;
-            resultBox.textContent = result.ok ? `连接成功，耗时 ${result.durationMs}ms${discoveredCount ? `，启用 ${enabledCount}/${discoveredCount} 个工具` : ''}` : `连接失败：${result.error}`;
+            const runtimeSummary = managedRuntimeSummary(result);
+            let savedManagedConnector = false;
+            if (result.ok && managedPreset) {
+              await persistManagedConnector(formValue(element), result);
+              savedManagedConnector = true;
+            }
+            resultBox.replaceChildren(document.createTextNode(result.ok ? `连接成功${savedManagedConnector ? '并已保存启用' : ''}，耗时 ${result.durationMs}ms${discoveredCount ? `，启用 ${enabledCount}/${discoveredCount} 个工具` : ''}` : `连接失败：${result.error}`));
+            if (result.ok && runtimeSummary) {
+              const runtimeLine = document.createElement('small');
+              runtimeLine.textContent = runtimeSummary;
+              resultBox.append(runtimeLine);
+            }
             catalogRoot.innerHTML = toolCatalogMarkup(result, toolAllowlist);
             attachToolSearch(catalogRoot);
           } catch (cause) {
@@ -215,5 +258,5 @@
     editor(item, item.binding?.transport || 'stdio');
   }
 
-  api.connectors = { editor, manage };
+  api.connectors = { editor, manage, persistManagedConnector };
 })(typeof globalThis !== 'undefined' ? globalThis : window);

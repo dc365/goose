@@ -55,4 +55,8 @@ skillCreatorService.registerIpc();
 skillHubClient.registerIpc();
 knowledgeService.registerIpc();
 
+electron.app.on('before-quit', () => {
+  void service.shutdown();
+});
+
 require('../main.cjs');

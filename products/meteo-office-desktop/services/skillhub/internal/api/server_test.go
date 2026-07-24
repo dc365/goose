@@ -22,6 +22,10 @@ import (
 )
 
 func newTestServer(t *testing.T) (*httptest.Server, *trust.Signer) {
+	return newTestServerWithPolicies(t, policy.NewMemory())
+}
+
+func newTestServerWithPolicies(t *testing.T, policies *policy.Store) (*httptest.Server, *trust.Signer) {
 	t.Helper()
 	root := t.TempDir()
 	dataStore, err := store.Open(filepath.Join(root, "data"))
@@ -46,11 +50,105 @@ func newTestServer(t *testing.T) (*httptest.Server, *trust.Signer) {
 		"admin-token":     {Subject: "admin", Name: "Admin", Role: "admin", OrgID: "org-1"},
 		"viewer-token":    {Subject: "viewer", Name: "Viewer", Role: "viewer", OrgID: "org-1"},
 	}, accounts, time.Hour)
-	server, err := New(Config{Store: dataStore, Signer: signer, Authenticator: authenticator})
+	server, err := New(Config{Store: dataStore, Signer: signer, Authenticator: authenticator, Policies: policies})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return httptest.NewServer(server.Handler()), signer
+}
+
+func TestPublicationApprovalAndInstallationGovernance(t *testing.T) {
+	policies := policy.NewMemory()
+	settings := policy.DefaultSettings()
+	settings.SkillPublishMode = "admin_approval"
+	settings.AllowedSkillIDs = []string{"governed-weather"}
+	settings.DefaultSkillIDs = []string{"governed-weather"}
+	if _, err := policies.SetOrganization(settings); err != nil {
+		t.Fatal(err)
+	}
+	server, _ := newTestServerWithPolicies(t, policies)
+	defer server.Close()
+
+	upload(t, server.URL, "publisher-token", "governed-weather", skillZIP(t, "governed-weather", "1.0.0"), "organization")
+	resp := post(t, http.MethodPost, server.URL+"/v1/skills/governed-weather/versions/1.0.0/publish", "publisher-token", nil)
+	var submitted store.SkillVersion
+	if err := json.NewDecoder(resp.Body).Decode(&submitted); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted || submitted.Status != "pending_review" {
+		t.Fatalf("publisher review submission: %d %+v", resp.StatusCode, submitted)
+	}
+
+	resp = post(t, http.MethodGet, server.URL+"/v1/admin/installations/summary", "admin-token", nil)
+	var before struct {
+		Metrics        map[string]int `json:"metrics"`
+		PendingReviews []any          `json:"pendingReviews"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&before); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || before.Metrics["pendingReviews"] != 1 || len(before.PendingReviews) != 1 {
+		t.Fatalf("review queue summary: %d %+v", resp.StatusCode, before)
+	}
+
+	resp = post(t, http.MethodPost, server.URL+"/v1/skills/governed-weather/versions/1.0.0/publish", "admin-token", nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("admin approval: %d", resp.StatusCode)
+	}
+	installation := `{"clientId":"desktop-governance","skillId":"governed-weather","version":"1.0.0","scope":"project","projectId":"project-fuzhou"}`
+	resp = post(t, http.MethodPost, server.URL+"/v1/installations", "viewer-token", strings.NewReader(installation))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("installation report: %d", resp.StatusCode)
+	}
+
+	upload(t, server.URL, "publisher-token", "governed-weather", skillZIP(t, "governed-weather", "1.1.0"), "organization")
+	resp = post(t, http.MethodPost, server.URL+"/v1/skills/governed-weather/versions/1.1.0/publish", "publisher-token", nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("upgrade review submission: %d", resp.StatusCode)
+	}
+	resp = post(t, http.MethodPost, server.URL+"/v1/skills/governed-weather/versions/1.1.0/publish", "admin-token", nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("upgrade approval: %d", resp.StatusCode)
+	}
+
+	resp = post(t, http.MethodGet, server.URL+"/v1/admin/installations/summary", "admin-token", nil)
+	var summary struct {
+		Metrics map[string]int `json:"metrics"`
+		Items   []struct {
+			LatestVersion string `json:"latestVersion"`
+			UpgradeReady  bool   `json:"upgradeReady"`
+			ProjectID     string `json:"projectId"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&summary); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || summary.Metrics["installations"] != 1 || summary.Metrics["upgrades"] != 1 || summary.Metrics["projects"] != 1 {
+		t.Fatalf("governance metrics: %d %+v", resp.StatusCode, summary)
+	}
+	if len(summary.Items) != 1 || !summary.Items[0].UpgradeReady || summary.Items[0].LatestVersion != "1.1.0" || summary.Items[0].ProjectID != "project-fuzhou" {
+		t.Fatalf("governance installation detail: %+v", summary.Items)
+	}
+
+	upload(t, server.URL, "publisher-token", "governed-weather", skillZIP(t, "governed-weather", "1.2.0"), "organization")
+	resp = post(t, http.MethodPost, server.URL+"/v1/skills/governed-weather/versions/1.2.0/publish", "publisher-token", nil)
+	resp.Body.Close()
+	resp = post(t, http.MethodPost, server.URL+"/v1/skills/governed-weather/versions/1.2.0/reject", "admin-token", strings.NewReader(`{"note":"补充变更说明"}`))
+	var rejected store.SkillVersion
+	if err := json.NewDecoder(resp.Body).Decode(&rejected); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || rejected.Status != "draft" || rejected.ReviewNote != "补充变更说明" {
+		t.Fatalf("review rejection: %d %+v", resp.StatusCode, rejected)
+	}
 }
 
 func TestMutationFailsClosedWhenAuditUnavailable(t *testing.T) {
@@ -290,7 +388,7 @@ func TestAdminConsoleSessionsAuditAndLoginRateLimit(t *testing.T) {
 	}
 	page, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK || !bytes.Contains(page, []byte("MeteoMate SkillHub")) || !bytes.Contains(page, []byte("策略下发")) {
+	if resp.StatusCode != http.StatusOK || !bytes.Contains(page, []byte("MeteoMate SkillHub")) || !bytes.Contains(page, []byte("Skill 管理")) || !bytes.Contains(page, []byte("上传 Skill")) || !bytes.Contains(page, []byte("内容运营")) || !bytes.Contains(page, []byte("推荐结果模拟器")) {
 		t.Fatalf("admin console unavailable: %d %s", resp.StatusCode, page)
 	}
 	if !strings.Contains(resp.Header.Get("Content-Security-Policy"), "frame-ancestors 'none'") {
@@ -300,9 +398,13 @@ func TestAdminConsoleSessionsAuditAndLoginRateLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	script, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/javascript") {
 		t.Fatalf("admin JavaScript unavailable: %d %s", resp.StatusCode, resp.Header.Get("Content-Type"))
+	}
+	if !bytes.Contains(script, []byte("/v1/packages/inspect")) || !bytes.Contains(script, []byte("includeDrafts=true")) || !bytes.Contains(script, []byte("changeSkillVersionStatus")) || !bytes.Contains(script, []byte("/v1/admin/recommendation-rules")) || !bytes.Contains(script, []byte("runRecommendationSimulation")) {
+		t.Fatalf("admin Skill lifecycle controls missing")
 	}
 	resp, err = http.Get(server.URL + "/favicon.ico")
 	if err != nil {
@@ -531,6 +633,101 @@ func TestPublishListDownloadAndVerify(t *testing.T) {
 	}
 }
 
+func TestContentOperationsCollectionsAndRecommendationRules(t *testing.T) {
+	server, _ := newTestServer(t)
+	defer server.Close()
+	for _, id := range []string{"forecast-brief", "operations-review"} {
+		upload(t, server.URL, "publisher-token", id, skillZIP(t, id, "1.0.0"), "public")
+		resp := post(t, http.MethodPost, server.URL+"/v1/skills/"+id+"/versions/1.0.0/publish", "publisher-token", nil)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("publish %s: %d", id, resp.StatusCode)
+		}
+	}
+
+	featuredBody := `{"items":[{"skillId":"operations-review","rank":1},{"skillId":"forecast-brief","rank":2}]}`
+	resp := post(t, http.MethodPut, server.URL+"/v1/admin/featured-placements", "admin-token", strings.NewReader(featuredBody))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("save featured placements: %d", resp.StatusCode)
+	}
+
+	resp, err := http.Get(server.URL + "/v1/collections")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var collections struct {
+		Items []store.Collection `json:"items"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&collections); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if len(collections.Items) != 1 || collections.Items[0].ID != "featured" || collections.Items[0].Skills[0].SkillID != "operations-review" {
+		t.Fatalf("unexpected featured collection: %+v", collections.Items)
+	}
+
+	collectionBody := `{"name":"值班气象套件","description":"值班分析和复盘","featured":true,"skills":[{"skillId":"forecast-brief"},{"skillId":"operations-review"}]}`
+	resp = post(t, http.MethodPut, server.URL+"/v1/collections/duty-weather", "admin-token", strings.NewReader(collectionBody))
+	var collection store.Collection
+	if err := json.NewDecoder(resp.Body).Decode(&collection); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || len(collection.Skills) != 2 || collection.Skills[0].Version != "1.0.0" {
+		t.Fatalf("save collection: %d %+v", resp.StatusCode, collection)
+	}
+
+	ruleBody := `{"name":"下周天气优先","description":"制作类任务优先展示预报简报","enabled":true,"priority":500,"match":{"skillIds":["forecast-brief"],"queryTerms":["下周天气"]},"action":{"scoreBoost":80,"pin":true,"reason":"匹配下周天气制作场景"}}`
+	resp = post(t, http.MethodPut, server.URL+"/v1/admin/recommendation-rules/weekly-forecast", "admin-token", strings.NewReader(ruleBody))
+	var rule store.RecommendationRule
+	if err := json.NewDecoder(resp.Body).Decode(&rule); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !rule.Enabled || !rule.Action.Pin {
+		t.Fatalf("save recommendation rule: %d %+v", resp.StatusCode, rule)
+	}
+
+	resp = post(t, http.MethodGet, server.URL+"/v1/admin/recommendation-rules", "publisher-token", nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("publisher listed recommendation rules: %d", resp.StatusCode)
+	}
+
+	recommendationURL := server.URL + "/v1/recommendations?" + url.Values{"q": {"制作下周天气产品"}}.Encode()
+	resp, err = http.Get(recommendationURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recommendations struct {
+		Items []struct {
+			Skill   store.Skill `json:"skill"`
+			Pinned  bool        `json:"pinned"`
+			RuleIDs []string    `json:"ruleIds"`
+			Reasons []string    `json:"reasons"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&recommendations); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if len(recommendations.Items) != 2 || recommendations.Items[0].Skill.ID != "forecast-brief" || !recommendations.Items[0].Pinned || len(recommendations.Items[0].RuleIDs) != 1 {
+		t.Fatalf("unexpected recommendation preview: %+v", recommendations.Items)
+	}
+
+	resp = post(t, http.MethodDelete, server.URL+"/v1/admin/recommendation-rules/weekly-forecast", "admin-token", nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("delete recommendation rule: %d", resp.StatusCode)
+	}
+	resp = post(t, http.MethodDelete, server.URL+"/v1/collections/duty-weather", "admin-token", nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("delete collection: %d", resp.StatusCode)
+	}
+}
+
 func TestSkillOwnershipAndLifecycleManagement(t *testing.T) {
 	server, _ := newTestServer(t)
 	defer server.Close()
@@ -563,6 +760,20 @@ func TestSkillOwnershipAndLifecycleManagement(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK || updated.Name != "值班天气复盘" || updated.Visibility != "organization" {
 		t.Fatalf("owner update: %d %+v", resp.StatusCode, updated)
+	}
+
+	resp = post(t, http.MethodPatch, server.URL+"/v1/skills/managed-weather", "publisher-token", strings.NewReader(`{"featured":true}`))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("publisher changed featured placement: %d", resp.StatusCode)
+	}
+	resp = post(t, http.MethodPatch, server.URL+"/v1/skills/managed-weather", "admin-token", strings.NewReader(`{"featured":true}`))
+	if err := json.NewDecoder(resp.Body).Decode(&updated); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !updated.Featured {
+		t.Fatalf("admin featured update: %d %+v", resp.StatusCode, updated)
 	}
 
 	createOwner := `{"username":"skill.owner","displayName":"技能负责人","password":"skill-owner-2026","role":"publisher","orgId":"org-1","mustChangePassword":false}`
@@ -665,5 +876,20 @@ func TestOrganizationVisibilityAndInstallation(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("installation: %d %s", resp.StatusCode, payload)
+	}
+	var created store.Installation
+	if err := json.Unmarshal(payload, &created); err != nil {
+		t.Fatal(err)
+	}
+	replayed := `{"id":"` + created.ID + `","clientId":"desktop-test","skillId":"org-skill","version":"1.0.0","scope":"user"}`
+	resp = post(t, http.MethodPost, server.URL+"/v1/installations", "viewer-token", strings.NewReader(replayed))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("installation update: %d", resp.StatusCode)
+	}
+	resp = post(t, http.MethodPost, server.URL+"/v1/installations", "publisher-token", strings.NewReader(replayed))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("installation ownership bypass: %d", resp.StatusCode)
 	}
 }

@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: MeteoMate SkillHub API
-  version: 1.3.0
-  description: Self-hosted registry for MeteoMate and Agent Skills packages.
+  version: 1.5.0
+  description: Self-hosted registry for MeteoMate Experts and Agent Skills packages.
 servers:
   - url: http://127.0.0.1:8088
 paths:
@@ -241,6 +241,23 @@ paths:
         - {name: version, in: path, required: true, schema: {type: string}}
       responses:
         '200': {description: Version published and signed}
+        '202': {description: Version submitted for administrator review}
+  /v1/skills/{id}/versions/{version}/reject:
+    post:
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+        - {name: version, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                note: {type: string}
+      responses:
+        '200': {description: Pending version returned to draft}
   /v1/skills/{id}/versions/{version}/deprecate:
     post:
       security: [{bearerAuth: []}]
@@ -259,6 +276,190 @@ paths:
           description: ZIP package
           content:
             application/zip: {schema: {type: string, format: binary}}
+  /v1/experts:
+    get:
+      parameters:
+        - {name: q, in: query, schema: {type: string}}
+        - {name: includeInactive, in: query, description: Include the current user's drafts, disabled, and archived Experts, schema: {type: boolean}}
+        - {name: limit, in: query, schema: {type: integer, maximum: 300}}
+        - {name: offset, in: query, schema: {type: integer, minimum: 0}}
+      responses:
+        '200':
+          description: Experts visible to the current actor
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/Expert'}}
+                  total: {type: integer}
+    post:
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ExpertMutation'}
+      responses:
+        '201':
+          description: Expert created with revision 1
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Expert'}
+        '409': {description: Expert ID already exists}
+  /v1/experts/{id}:
+    parameters:
+      - {name: id, in: path, required: true, schema: {type: string}}
+    get:
+      responses:
+        '200':
+          description: Visible Expert
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Expert'}
+        '404': {description: Expert not found or not visible}
+    put:
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ExpertMutation'}
+      responses:
+        '200':
+          description: Expert updated and a new immutable revision created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Expert'}
+        '409': {description: baseRevision does not match the current revision}
+  /v1/experts/{id}/submit-review:
+    post:
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '202':
+          description: Expert submitted for administrator review
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Expert'}
+        '409': {description: Archived Expert cannot be submitted}
+  /v1/experts/{id}/review:
+    post:
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision, baseRevision]
+              properties:
+                decision: {type: string, enum: [approve, reject]}
+                note: {type: string, maxLength: 500}
+                baseRevision: {type: integer, minimum: 1}
+      responses:
+        '200':
+          description: Expert review completed and a new revision created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Expert'}
+        '409': {description: Expert is not pending review or baseRevision is stale}
+  /v1/experts/{id}/status:
+    post:
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status, baseRevision]
+              properties:
+                status: {type: string, enum: [enabled, disabled, archived]}
+                baseRevision: {type: integer, minimum: 1}
+      responses:
+        '200':
+          description: Expert lifecycle status updated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Expert'}
+        '409': {description: Expert is not approved for enablement or baseRevision is stale}
+  /v1/experts/{id}/distribution:
+    put:
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - {$ref: '#/components/schemas/ExpertDistribution'}
+                - type: object
+                  required: [baseRevision]
+                  properties:
+                    baseRevision: {type: integer, minimum: 1}
+      responses:
+        '200':
+          description: Expert staged distribution updated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Expert'}
+        '409': {description: baseRevision is stale}
+  /v1/experts/{id}/rollback/{revision}:
+    post:
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+        - {name: revision, in: path, required: true, schema: {type: integer, minimum: 1}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [baseRevision]
+              properties:
+                baseRevision: {type: integer, minimum: 1}
+      responses:
+        '200':
+          description: Historical Expert snapshot restored as a new revision
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Expert'}
+        '409': {description: Rollback target is not older or baseRevision is stale}
+  /v1/experts/{id}/revisions:
+    get:
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: Immutable Expert revision history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/ExpertRevision'}}
+                  total: {type: integer}
+  /v1/experts/{id}/revisions/{revision}:
+    get:
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+        - {name: revision, in: path, required: true, schema: {type: integer, minimum: 1}}
+      responses:
+        '200':
+          description: Immutable Expert revision
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ExpertRevision'}
+        '404': {description: Expert revision not found or not visible}
   /v1/recommendations:
     get:
       parameters:
@@ -268,6 +469,27 @@ paths:
         - {name: connectorIds, in: query, schema: {type: string}}
       responses:
         '200': {description: Ranked recommendations}
+  /v1/installations:
+    get:
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: Installations visible to the current actor}
+    post:
+      security: [{bearerAuth: []}]
+      responses:
+        '201': {description: Installation reported or refreshed}
+  /v1/installations/{id}:
+    delete:
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {description: Installation record removed}
+  /v1/admin/installations/summary:
+    get:
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: Installation metrics, version distribution, upgrade readiness, and pending publication reviews}
 components:
   schemas:
     LoginRequest:
@@ -298,6 +520,94 @@ components:
         icon: {type: string, maxLength: 16}
         visibility: {type: string, enum: [private, organization, public]}
         ownerId: {type: string, description: Administrator-only transfer to an active publisher or administrator}
+    ExpertSource:
+      type: object
+      required: [type]
+      properties:
+        type: {type: string, enum: [user, organization, system]}
+        remoteId: {type: string}
+    ExpertReview:
+      type: object
+      required: [status]
+      properties:
+        status: {type: string, enum: [not_required, not_submitted, pending, approved, rejected]}
+        note: {type: string}
+        submittedBy: {type: string}
+        submittedAt: {type: string, format: date-time}
+        reviewedBy: {type: string}
+        reviewedAt: {type: string, format: date-time}
+    ExpertDistribution:
+      type: object
+      required: [mode]
+      properties:
+        mode: {type: string, enum: [all, percentage, allowlist]}
+        percentage: {type: integer, minimum: 1, maximum: 100}
+        userIds:
+          type: array
+          uniqueItems: true
+          items: {type: string, minLength: 1}
+    Expert:
+      type: object
+      required: [apiVersion, kind, id, name, version, revision, source, status, visibility, instruction, review, distribution, createdAt, updatedAt]
+      properties:
+        apiVersion: {type: string, const: meteomate.ai/v1}
+        kind: {type: string, const: Expert}
+        id: {type: string, pattern: '^[a-z0-9][a-z0-9._-]{2,127}$'}
+        name: {type: string, minLength: 1, maxLength: 120}
+        version: {type: string, minLength: 1, maxLength: 64}
+        revision: {type: integer, minimum: 1}
+        source: {$ref: '#/components/schemas/ExpertSource'}
+        status: {type: string, enum: [draft, enabled, disabled, archived]}
+        visibility: {type: string, enum: [private, organization, public]}
+        owner: {type: string}
+        ownerId: {type: string}
+        orgId: {type: string}
+        category: {type: string}
+        avatar: {type: string}
+        description: {type: string}
+        mission: {type: string}
+        tags: {type: array, items: {type: string}}
+        instruction: {type: string, minLength: 1, maxLength: 64000}
+        methodology: {type: array, items: {type: string}}
+        workflow: {type: array, items: {type: string}}
+        limitations: {type: array, items: {type: string}}
+        inputs: {type: array, items: {type: string}}
+        outputs: {type: array, items: {type: string}}
+        prompts: {type: array, items: {type: string}}
+        requiredSkills: {type: array, items: {type: string}}
+        recommendedSkills: {type: array, items: {type: string}}
+        requiredConnectors: {type: array, items: {type: string}}
+        recommendedConnectors: {type: array, items: {type: string}}
+        toolSelections:
+          type: object
+          additionalProperties:
+            type: array
+            items: {type: string}
+        permissionProfile: {type: string}
+        defaultWorkMode: {type: string, enum: [ask, plan, execute]}
+        modelPolicy: {type: string}
+        review: {$ref: '#/components/schemas/ExpertReview'}
+        distribution: {$ref: '#/components/schemas/ExpertDistribution'}
+        inputSchema: {type: object, additionalProperties: true}
+        outputSchema: {type: object, additionalProperties: true}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    ExpertMutation:
+      allOf:
+        - {$ref: '#/components/schemas/Expert'}
+        - type: object
+          properties:
+            baseRevision: {type: integer, minimum: 0, description: Required for updates and used for optimistic concurrency control}
+    ExpertRevision:
+      type: object
+      required: [expertId, revision, version, snapshot, createdBy, createdAt]
+      properties:
+        expertId: {type: string}
+        revision: {type: integer, minimum: 1}
+        version: {type: string}
+        snapshot: {$ref: '#/components/schemas/Expert'}
+        createdBy: {type: string}
+        createdAt: {type: string, format: date-time}
     Session:
       type: object
       required: [id, userId, clientId, createdAt, lastSeenAt, expiresAt]
@@ -326,18 +636,20 @@ components:
         detail: {type: object, additionalProperties: true}
     PolicySettings:
       type: object
-      required: [defaultModel, allowedModels, defaultSkillIds, allowedConnectorIds, defaultPermissionProfileId, allowedPermissionProfileIds, autoCompactThreshold]
+      required: [defaultModel, allowedModels, defaultSkillIds, allowedSkillIds, allowedConnectorIds, defaultPermissionProfileId, allowedPermissionProfileIds, autoCompactThreshold, skillPublishMode]
       properties:
         defaultModel: {type: string, description: Provider and model ID separated by a slash}
         allowedModels: {type: array, maxItems: 128, items: {type: string}}
         autoCompactThreshold: {type: number, minimum: 0.5, maximum: 0.95, default: 0.8}
         defaultSkillIds: {type: array, maxItems: 128, items: {type: string}}
+        allowedSkillIds: {type: array, maxItems: 128, items: {type: string}}
         allowedConnectorIds: {type: array, maxItems: 128, items: {type: string}}
         defaultPermissionProfileId: {type: string, enum: ['', analysis-readonly, artifact-approval, workspace-approval]}
         allowedPermissionProfileIds:
           type: array
           maxItems: 3
           items: {type: string, enum: [analysis-readonly, artifact-approval, workspace-approval]}
+        skillPublishMode: {type: string, enum: [publisher_direct, admin_approval]}
     PolicyPatch:
       type: object
       description: Omitted fields inherit from the lower-precedence scope.
@@ -346,6 +658,7 @@ components:
         allowedModels: {type: array, maxItems: 128, items: {type: string}}
         autoCompactThreshold: {type: number, minimum: 0.5, maximum: 0.95}
         defaultSkillIds: {type: array, maxItems: 128, items: {type: string}}
+        allowedSkillIds: {type: array, maxItems: 128, items: {type: string}}
         allowedConnectorIds: {type: array, maxItems: 128, items: {type: string}}
         defaultPermissionProfileId: {type: string, enum: ['', analysis-readonly, artifact-approval, workspace-approval]}
         allowedPermissionProfileIds:

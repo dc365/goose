@@ -3,6 +3,7 @@ const catalog = Object.freeze({
   experts: window.METEOMATE_EXPERTS,
   teams: window.METEOMATE_TEAMS,
   skills: window.METEOMATE_SKILLS,
+  skillRoadmap: window.METEOMATE_SKILL_ROADMAP,
   connectors: window.METEOMATE_CONNECTORS,
   scenes: window.METEOMATE_SCENES,
   permissionProfiles: window.METEOMATE_PERMISSION_PROFILES,
@@ -132,8 +133,8 @@ const projectTemplates = Object.freeze([
     description: '从会商材料、结论确认到预报产品发布',
     instruction: '围绕预报会商组织材料、结论、稿件和复核意见，确保最终产品与会商依据保持一致。',
     expertIds: ['writing-expert'],
-    skillIds: ['forecast-writing', 'docx-template'],
-    connectorIds: ['local-workspace', 'weather-data', 'artifact-docx'],
+    skillIds: ['forecast-writing', 'documents'],
+    connectorIds: ['local-workspace', 'weather-data', 'office-artifacts'],
   },
   {
     id: 'data-algorithm',
@@ -150,8 +151,8 @@ const projectTemplates = Object.freeze([
     description: '汇总过程资料、服务记录、偏差分析和改进项',
     instruction: '对一次灾害天气过程进行系统复盘，汇总资料与服务记录，识别预报偏差、关键决策和可执行改进项。',
     expertIds: ['data-expert'],
-    skillIds: ['spreadsheet-analysis', 'pdf-research'],
-    connectorIds: ['local-workspace', 'knowledge-base'],
+    skillIds: ['spreadsheets', 'pdf'],
+    connectorIds: ['local-workspace', 'knowledge-base', 'office-artifacts'],
   },
 ]);
 
@@ -211,8 +212,8 @@ const automationTemplates = Object.freeze([
     description: '按业务时次汇总确认结论，生成待人工复核的预报初稿。',
     prompt: '根据项目中最新的已确认气象结论和业务模板，生成日常预报产品初稿。标注资料时次、适用区域、风险用语和所有需要人工复核的位置。',
     expertId: 'writing-expert',
-    skillIds: ['forecast-writing', 'docx-template'],
-    connectorIds: ['local-workspace', 'weather-data', 'artifact-docx'],
+    skillIds: ['forecast-writing', 'documents'],
+    connectorIds: ['local-workspace', 'weather-data', 'office-artifacts'],
     permissionProfileId: 'artifact-approval',
     trigger: { mode: 'recurring', cadence: 'daily', time: '16:00' },
   },
@@ -223,8 +224,8 @@ const automationTemplates = Object.freeze([
     description: '每周汇总主要天气过程、服务产品、偏差和改进事项。',
     prompt: '汇总本周项目中的主要天气过程、任务结论、成果物和服务记录，分析预报偏差与关键决策，输出可执行的下周改进事项。',
     expertId: 'data-expert',
-    skillIds: ['spreadsheet-analysis', 'pdf-research'],
-    connectorIds: ['local-workspace', 'knowledge-base'],
+    skillIds: ['spreadsheets', 'pdf'],
+    connectorIds: ['local-workspace', 'knowledge-base', 'office-artifacts'],
     permissionProfileId: 'analysis-readonly',
     trigger: { mode: 'recurring', cadence: 'weekly', weekdays: [5], time: '16:30' },
   },
@@ -554,8 +555,61 @@ function cryptoRandomId() {
   return `id-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+function normalizeExpertForRuntime(item, sourceType = 'system') {
+  if (!item) return null;
+  const strings = (value) => [...new Set((Array.isArray(value) ? value : []).map(String).filter(Boolean))];
+  const requiredConnectors = strings(item.requiredConnectors);
+  const recommendedConnectors = strings(item.recommendedConnectors)
+    .filter((id) => !requiredConnectors.includes(id));
+  return {
+    ...item,
+    apiVersion: item.apiVersion || 'meteomate.ai/v1',
+    kind: item.kind === 'team' ? 'team' : item.kind === 'assistant' ? 'assistant' : 'Expert',
+    version: item.version || '1.0.0',
+    revision: Number(item.revision || 1),
+    source: item.source || { type: sourceType },
+    status: item.status || 'enabled',
+    visibility: item.visibility || (sourceType === 'user' ? 'private' : 'public'),
+    methodology: strings(item.methodology || item.workflow),
+    workflow: strings(item.workflow || item.methodology),
+    limitations: strings(item.limitations),
+    inputs: strings(item.inputs),
+    outputs: strings(item.outputs),
+    prompts: strings(item.prompts),
+    tags: strings(item.tags),
+    requiredSkills: strings(item.requiredSkills),
+    recommendedSkills: strings(item.recommendedSkills || item.skills),
+    requiredConnectors,
+    recommendedConnectors,
+    toolSelections: normalizeToolSelections(item.toolSelections, [
+      ...requiredConnectors,
+      ...recommendedConnectors,
+    ]),
+    defaultWorkMode: ['ask', 'plan', 'execute'].includes(item.defaultWorkMode)
+      ? item.defaultWorkMode
+      : 'execute',
+    modelPolicy: item.modelPolicy || 'inherit',
+    permissionProfile: item.permissionProfile || 'artifact-approval',
+  };
+}
+
+function userManagedExperts({ includeInactive = false } = {}) {
+  const items = window.MeteoMateCapabilityCenter?.expertCatalog?.({ includeInactive });
+  return Array.isArray(items)
+    ? items.map((item) => normalizeExpertForRuntime(item, item.source?.type || 'user'))
+    : [];
+}
+
 function allExperts() {
-  return [...catalog.experts, ...catalog.teams, ...state.customExperts];
+  const system = [...catalog.experts, ...catalog.teams].map((item) => normalizeExpertForRuntime(item));
+  const managed = userManagedExperts();
+  const merged = new Map(system.map((item) => [item.id, item]));
+  for (const item of managed) merged.set(item.id, item);
+  const managedIds = new Set(merged.keys());
+  const legacy = (state.customExperts || [])
+    .filter((item) => !managedIds.has(item.id))
+    .map((item) => normalizeExpertForRuntime(item, 'user'));
+  return [...merged.values(), ...legacy];
 }
 
 function getExpert(expertId) {
@@ -566,6 +620,15 @@ function getExpert(expertId) {
 function getSelectedExpert() {
   if (state.view === 'assistants') return primaryAssistant;
   return getExpert(state.selectedExpertId || catalog.experts[0].id);
+}
+
+function expertSnapshot(expert) {
+  return structuredClone(normalizeExpertForRuntime(expert, expert?.source?.type || 'system'));
+}
+
+function getTaskExpert(task) {
+  if (task?.expertSnapshot) return normalizeExpertForRuntime(task.expertSnapshot, task.expertSnapshot.source?.type || 'system');
+  return getExpert(task?.expertId);
 }
 
 function getActiveTask() {
@@ -1154,19 +1217,17 @@ function renderCatalogView() {
   const allItems =
     tab === 'experts'
       ? state.teamMode
-        ? catalog.teams
-        : [...catalog.experts, ...state.customExperts]
+        ? allExperts().filter((item) => item.kind === 'team')
+        : allExperts().filter((item) => item.kind !== 'team')
       : tab === 'skills'
-        ? catalog.skills
+        ? userFacingSkillCatalog()
         : userFacingToolCatalog();
 
   const query = state.search.trim().toLowerCase();
   const filtered = allItems.filter((item) => {
     const categoryMatch = state.category === '全部' || item.category === state.category;
-    const favoriteMatch =
-      tab !== 'experts' || !state.favoritesOnly || state.favoriteExpertIds.includes(item.id);
     const haystack = `${item.name} ${item.description} ${(item.tags || []).join(' ')}`.toLowerCase();
-    return categoryMatch && favoriteMatch && (!query || haystack.includes(query));
+    return categoryMatch && (!query || haystack.includes(query));
   });
   const categories = ['全部', ...new Set(allItems.map((item) => item.category))];
 
@@ -1247,13 +1308,15 @@ function renderScenes() {
 
 function expertSkillEntries(item) {
   const ids = item.recommendedSkills || item.requiredSkills || item.skills || [];
-  return ids.map((id) => catalog.skills.find((skill) => skill.id === String(id).split('@')[0])).filter(Boolean);
+  const skills = userFacingSkillCatalog();
+  return ids.map((id) => skills.find((skill) => skill.id === String(id).split('@')[0])).filter(Boolean);
 }
 
 function expertConnectorEntries(item) {
   const ids = [...(item.requiredConnectors || []), ...(item.recommendedConnectors || [])];
+  const connectors = userFacingToolCatalog();
   return [...new Set(ids)]
-    .map((id) => catalog.connectors.find((connector) => connector.id === String(id).split('@')[0]))
+    .map((id) => connectors.find((connector) => connector.id === String(id).split('@')[0]))
     .filter(Boolean);
 }
 
@@ -1343,6 +1406,7 @@ function renderExpertDetail(expertId) {
         </div>
         <footer class="expert-detail-footer">
           <span>${escapeHtml(item.permissionProfile === 'workspace-approval' ? '需要工作区权限' : item.permissionProfile === 'artifact-approval' ? '成果操作按风险审批' : '只读查询自动允许')}</span>
+          ${window.MeteoMateExpertCenter?.detailActions?.(item) || ''}
           <button class="primary-button" data-expert-id="${escapeHtml(item.id)}">使用此${item.kind === 'team' ? '专家团' : '专家'}</button>
         </footer>
       </section>
@@ -1379,7 +1443,7 @@ function renderCapabilityCard(item, tab) {
 function renderTaskView({ assistantMode = false } = {}) {
   const task = getActiveTask();
   const isNewTask = !assistantMode && !task;
-  const expert = assistantMode ? primaryAssistant : task ? getExpert(task.expertId) : getSelectedExpert();
+  const expert = assistantMode ? primaryAssistant : task ? getTaskExpert(task) : getSelectedExpert();
   const project = assistantMode
     ? getAssistantProject(task)
     : task
@@ -1441,7 +1505,11 @@ function renderTaskView({ assistantMode = false } = {}) {
   ].join('');
   const modelUnavailable =
     modelSettings.status === 'loading' || modelSettings.status === 'idle' || !availableModels.length;
-  const modelPlaceholder = modelSettings.status === 'error' ? '模型不可用' : '读取模型中';
+  const modelPlaceholder = modelSettings.status === 'error'
+    ? '模型不可用'
+    : ['loading', 'idle'].includes(modelSettings.status)
+      ? '读取模型中'
+      : '尚未配置模型';
   const promptPlaceholder = task?.sessionId
     ? '继续追问或补充资料，@ 引用文件，/ 调用技能与指令'
     : assistantMode
@@ -1553,6 +1621,7 @@ function renderNewTaskWelcome(expert) {
     { id: 'forecast', label: '预报研判' },
     { id: 'data', label: '数据科研' },
     { id: 'products', label: '产品制作' },
+    { id: 'operations', label: '运维保障' },
   ];
   const mode = taskModes.some((entry) => entry.id === state.draftTaskMode)
     ? state.draftTaskMode
@@ -1679,7 +1748,7 @@ function renderMessage(message, task) {
                   pending
                     ? '<i></i><i></i><i></i>'
                     : message.role === 'assistant'
-                      ? `<div class="markdown-body">${renderMarkdown(message.text || '')}</div>`
+                      ? `<div class="markdown-body">${renderMarkdown(message.text || '')}</div>${renderMessageArtifacts(message, task)}`
                       : `<pre>${escapeHtml(message.text || '')}</pre>`
                 }
               </div>`
@@ -1688,6 +1757,67 @@ function renderMessage(message, task) {
         ${usage}
       </div>
     </article>
+  `;
+}
+
+function renderMessageArtifacts(message, task) {
+  const artifactIds = new Set(message.artifactIds || []);
+  const related = (task?.artifacts || []).filter((artifact) =>
+    artifactIds.has(artifact.id) || artifact.metadata?.responseId === message.id
+  );
+  const images = related.filter((artifact) => {
+    const mediaType = String(artifact.mediaType || '').toLowerCase();
+    const extension = String(artifact.path || artifact.name || '').split('.').pop()?.toLowerCase();
+    return (mediaType.startsWith('image/') || ['png', 'jpg', 'jpeg', 'webp', 'gif'].includes(extension))
+      && artifact.metadata?.previewUri;
+  });
+  const files = related.filter((artifact) => artifact.metadata?.source === 'office-artifacts');
+  if (!images.length && !files.length) return '';
+  return `<div class="message-artifact-gallery" aria-label="本次回答生成的成果物">
+    ${images.map((artifact, index) => `
+      <button type="button" class="message-artifact-image" data-open-artifact="${escapeHtml(artifact.path || '')}" aria-label="打开${escapeHtml(artifact.name || `图件 ${index + 1}`)}">
+        <img src="${escapeHtml(artifact.metadata.previewUri)}" alt="${escapeHtml(artifact.name || `图件 ${index + 1}`)}" loading="lazy" />
+        <span><strong>图 ${index + 1}</strong><small>${escapeHtml(artifact.name || '浏览器截图')}</small></span>
+      </button>
+    `).join('')}
+    ${files.map(renderOfficeArtifactCard).join('')}
+  </div>`;
+}
+
+function artifactStatusLabel(status) {
+  return {
+    draft: '草稿',
+    validated: '已校验',
+    ready: '可交付',
+    failed: '校验失败',
+    published: '已发布',
+  }[status] || '草稿';
+}
+
+function artifactSizeLabel(sizeBytes) {
+  const size = Number(sizeBytes);
+  if (!Number.isFinite(size) || size < 0) return '';
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function renderOfficeArtifactCard(artifact) {
+  const extension = String(artifact.name || '').split('.').pop()?.toUpperCase() || 'FILE';
+  const render = artifact.metadata?.render || {};
+  const detail = [
+    render.pageCount ? `${render.pageCount} 页` : '',
+    artifactSizeLabel(artifact.sizeBytes),
+  ].filter(Boolean).join(' · ');
+  return `
+    <button type="button" class="message-office-artifact" data-open-artifact="${escapeHtml(artifact.path || '')}" aria-label="打开${escapeHtml(artifact.name || 'Office 成果物')}">
+      ${render.thumbnailUri ? `<img src="${escapeHtml(render.thumbnailUri)}" alt="" loading="lazy" />` : `<span class="message-office-artifact-icon">${escapeHtml(extension)}</span>`}
+      <span class="message-office-artifact-copy">
+        <strong>${escapeHtml(artifact.name || 'Office 成果物')}</strong>
+        <small>${escapeHtml(detail || extension)}</small>
+      </span>
+      <em class="${escapeHtml(artifact.status || 'draft')}">${escapeHtml(artifactStatusLabel(artifact.status))}</em>
+    </button>
   `;
 }
 
@@ -1836,7 +1966,7 @@ function renderResponseActivity(activity) {
         <strong>${escapeHtml(activity.type === 'thought' ? '分析任务与上下文' : activity.title || '运行活动')}</strong>
         ${detail ? `<p>${escapeHtml(detail)}</p>` : ''}
       </div>
-      <small>${escapeHtml(activity.status === 'failed' || activity.status === 'cancelled' ? '失败' : activity.status === 'waiting' || activity.status === 'pending' ? '等待' : activity.status === 'running' || activity.status === 'in_progress' ? '进行中' : '完成')}</small>
+      <small>${escapeHtml(activity.status === 'failed' ? '失败' : activity.status === 'cancelled' || activity.status === 'interrupted' ? '已停止' : activity.status === 'waiting' || activity.status === 'pending' ? '等待' : activity.status === 'running' || activity.status === 'in_progress' ? '进行中' : '完成')}</small>
     </article>
   `;
 }
@@ -1903,7 +2033,7 @@ function renderPermissionCard(permission) {
       <pre>${escapeHtml(truncate(detail, 240))}</pre>
       <div class="permission-actions">
         <button data-permission-id="${escapeHtml(permission.id)}" data-permission-action="allow_once" class="primary-button compact">允许一次</button>
-        <button data-permission-id="${escapeHtml(permission.id)}" data-permission-action="always_allow" class="ghost-button compact">本会话允许</button>
+        ${permission.allowAlways === false ? '' : `<button data-permission-id="${escapeHtml(permission.id)}" data-permission-action="always_allow" class="ghost-button compact">本会话允许</button>`}
         <button data-permission-id="${escapeHtml(permission.id)}" data-permission-action="deny_once" class="danger-text-button">拒绝</button>
       </div>
     </article>
@@ -1911,10 +2041,14 @@ function renderPermissionCard(permission) {
 }
 
 function renderArtifact(artifact) {
+  const status = artifactStatusLabel(artifact.status);
+  const detail = artifact.metadata?.source === 'office-artifacts'
+    ? [artifact.type || '文件', status, artifactSizeLabel(artifact.sizeBytes)].filter(Boolean).join(' · ')
+    : artifact.type || '文件';
   return `
     <button class="artifact-item" ${artifact.path ? `data-open-artifact="${escapeHtml(artifact.path)}"` : 'disabled'}>
       <span>${icon('file')}</span>
-      <span><strong>${escapeHtml(artifact.name)}</strong><small>${escapeHtml(artifact.type || '文件')}</small></span>
+      <span><strong>${escapeHtml(artifact.name)}</strong><small>${escapeHtml(detail)}</small></span>
     </button>
   `;
 }
@@ -2615,7 +2749,7 @@ function renderPermissionSettings() {
         <div class="settings-fact-list">
           <div>${icon('check')}<span><strong>本会话允许</strong><small>同一任务、同一工具和相同操作范围不再重复询问。</small></span></div>
           <div>${icon('tool')}<span><strong>可信 HTTP 工具</strong><small>已明确选择的只读远程工具可自动允许，写入和敏感操作仍按风险判断。</small></span></div>
-          <div>${icon('warning')}<span><strong>完全访问</strong><small>可访问互联网和本机文件，仅建议在边界明确的任务中使用。</small></span></div>
+          <div>${icon('warning')}<span><strong>完全访问</strong><small>可访问互联网、本机文件并自动执行已允许的桌面操作，仅建议在边界明确的任务中使用。</small></span></div>
         </div>
       </section>
     </div>`;

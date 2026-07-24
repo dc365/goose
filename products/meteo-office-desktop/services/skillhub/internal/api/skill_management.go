@@ -11,14 +11,16 @@ import (
 )
 
 type updateSkillInput struct {
-	Name        *string   `json:"name"`
-	Summary     *string   `json:"summary"`
-	Description *string   `json:"description"`
-	Categories  *[]string `json:"categories"`
-	Tags        *[]string `json:"tags"`
-	Icon        *string   `json:"icon"`
-	Visibility  *string   `json:"visibility"`
-	OwnerID     *string   `json:"ownerId"`
+	Name         *string   `json:"name"`
+	Summary      *string   `json:"summary"`
+	Description  *string   `json:"description"`
+	Categories   *[]string `json:"categories"`
+	Tags         *[]string `json:"tags"`
+	Icon         *string   `json:"icon"`
+	Visibility   *string   `json:"visibility"`
+	OwnerID      *string   `json:"ownerId"`
+	Featured     *bool     `json:"featured"`
+	FeaturedRank *int      `json:"featuredRank"`
 }
 
 func (s *Server) updateSkill(w http.ResponseWriter, r *http.Request) {
@@ -34,6 +36,10 @@ func (s *Server) updateSkill(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := validateSkillUpdate(input); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_skill_update", err.Error())
+		return
+	}
+	if (input.Featured != nil || input.FeaturedRank != nil) && !actor.IsAdmin() {
+		writeError(w, http.StatusForbidden, "administrator_required", "Only an administrator can change featured placement")
 		return
 	}
 
@@ -89,6 +95,15 @@ func (s *Server) updateSkill(w http.ResponseWriter, r *http.Request) {
 		if input.Visibility != nil {
 			skill.Visibility = *input.Visibility
 		}
+		if input.Featured != nil {
+			skill.Featured = *input.Featured
+		}
+		if input.FeaturedRank != nil {
+			skill.FeaturedRank = *input.FeaturedRank
+		}
+		if !skill.Featured {
+			skill.FeaturedRank = 0
+		}
 		if nextOwner != nil {
 			skill.OwnerID = nextOwner.ID
 			skill.OrgID = nextOwner.OrgID
@@ -105,7 +120,7 @@ func (s *Server) updateSkill(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreError(w, err)
 		return
 	}
-	detail := map[string]any{"visibility": updated.Visibility}
+	detail := map[string]any{"visibility": updated.Visibility, "featured": updated.Featured, "featuredRank": updated.FeaturedRank}
 	if previousOwner != updated.OwnerID {
 		detail["previousOwnerId"] = previousOwner
 		detail["ownerId"] = updated.OwnerID
@@ -138,6 +153,9 @@ func validateSkillUpdate(input updateSkillInput) error {
 		default:
 			return errors.New("visibility must be private, organization, or public")
 		}
+	}
+	if input.FeaturedRank != nil && (*input.FeaturedRank < 0 || *input.FeaturedRank > 999) {
+		return errors.New("featuredRank must be between 0 and 999")
 	}
 	if input.Categories != nil && len(unique(*input.Categories)) > 12 {
 		return errors.New("categories must contain at most 12 values")

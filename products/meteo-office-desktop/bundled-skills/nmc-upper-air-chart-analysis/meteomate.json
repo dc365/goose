@@ -1,0 +1,13 @@
+{
+  "displayName": "中央气象台高空实况图分析",
+  "version": "1.0.1",
+  "icon": "探",
+  "categories": ["天气分析", "网页取证"],
+  "tags": ["探空", "高空图", "中央气象台"],
+  "requires": {"connectors": ["playwright-browser"]},
+  "permissions": {
+    "filesystem": {"read": [], "write": []},
+    "shell": false,
+    "network": ["https://www.nmc.cn", "https://image.nmc.cn"]
+  }
+}

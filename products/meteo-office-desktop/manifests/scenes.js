@@ -2,7 +2,7 @@ window.METEOMATE_SCENES = Object.freeze([
   {
     id: 'synoptic',
     title: '天气形势分析',
-    subtitle: '高低压、槽线、切变线与锋面综合研判',
+    subtitle: '中央台实况图、高低压、槽线与切变线综合研判',
     group: 'forecast',
     icon: '◒',
     gradient: 'scene-blue',
@@ -34,5 +34,14 @@ window.METEOMATE_SCENES = Object.freeze([
     icon: '⌁',
     gradient: 'scene-cyan',
     expertId: 'data-expert',
+  },
+  {
+    id: 'operations',
+    title: '运维保障',
+    subtitle: '系统巡检、告警研判、故障定位与恢复验证',
+    group: 'operations',
+    icon: '◇',
+    gradient: 'scene-purple',
+    expertId: 'operations-expert',
   },
 ]);

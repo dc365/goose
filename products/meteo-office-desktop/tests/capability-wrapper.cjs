@@ -17,7 +17,7 @@ const runtimeServices = require('../capabilities/runtime-services.cjs');
 assert.equal(packageJson.main, 'capabilities/main-wrapper.cjs');
 const macPackageScript = packageJson.scripts['package:mac'];
 for (const excludedPath of [
-  "^/services($|/)",
+  "^/services/skillhub($|/)",
   "^/tests($|/)",
   "^/docs($|/)",
   "^/README\\.md$",
@@ -25,6 +25,8 @@ for (const excludedPath of [
 ]) {
   assert.ok(macPackageScript.includes(excludedPath), `${excludedPath} must not enter the desktop bundle`);
 }
+assert.ok(!macPackageScript.includes("^/services($|/)"), 'Office MCP service must enter the desktop bundle');
+assert.ok(fs.existsSync(path.join(root, 'services', 'office-mcp', 'src', 'server.mjs')));
 assert.ok(macPackageScript.includes('cmp assets/icons/MeteoMate.icns'), 'packaging must verify the installed app icon bytes');
 assert.ok(!wrapperSource.includes('electron.safeStorage'), 'production startup must not access macOS Keychain');
 assert.ok(!knowledgeSource.includes('safeStorage'), 'knowledge sources must not access macOS Keychain');
@@ -67,7 +69,7 @@ assert.equal(runtimeServices.runtimeServices(), registered);
 assert.equal(registered.profileContext.id, 'profile-context');
 assert.equal(registered.capabilityService.id, 'capability-service');
 
-for (const skillId of ['synoptic-analysis', 'heavy-rain-score', 'forecast-writing', 'skill-creator']) {
+for (const skillId of ['synoptic-analysis', 'nmc-upper-air-chart-analysis', 'heavy-rain-score', 'forecast-writing', 'documents', 'pdf', 'skill-creator', 'operations-incident-response']) {
   const skillFile = path.join(root, 'bundled-skills', skillId, 'SKILL.md');
   assert.ok(fs.existsSync(skillFile), `missing bundled skill: ${skillId}`);
   const source = fs.readFileSync(skillFile, 'utf8');

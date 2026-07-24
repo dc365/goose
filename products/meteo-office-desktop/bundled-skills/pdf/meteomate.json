@@ -1,0 +1,18 @@
+{
+  "displayName": "PDF",
+  "version": "1.0.0",
+  "icon": "PDF",
+  "categories": ["办公成果物"],
+  "tags": ["PDF", "合并", "拆分", "预览"],
+  "requires": {
+    "connectors": ["office-artifacts"]
+  },
+  "permissions": {
+    "filesystem": {
+      "read": ["project"],
+      "write": ["artifacts"]
+    },
+    "shell": false,
+    "network": []
+  }
+}

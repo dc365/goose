@@ -4,6 +4,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const ZipWriter = require('./zip-writer.cjs');
+const { compareSkillVersions } = require('./skill-version.cjs');
 
 const DEFAULT_BASE_URL = 'http://127.0.0.1:8088';
 const JSON_LIMIT = 4 * 1024 * 1024;
@@ -27,6 +28,7 @@ function normalizeBaseURL(value) {
 function createSkillHubClient({ app, ipcMain, capabilityService, skillCreatorService, profileContext }) {
   let settingsCache = null;
   let policySync = Promise.resolve({ installed: [], skipped: [], errors: [] });
+  let expertSync = Promise.resolve(null);
 
   function currentProfileKey() {
     return profileContext?.publicState?.().profileKey || null;
@@ -111,7 +113,13 @@ function createSkillHubClient({ app, ipcMain, capabilityService, skillCreatorSer
         throw new Error(`SkillHub 返回了无效 JSON（${response.status}）`);
       }
     }
-    if (!response.ok) throw new Error(payload?.error?.message || `SkillHub 请求失败：${response.status} ${target}`);
+    if (!response.ok) {
+      const error = new Error(payload?.error?.message || `SkillHub 请求失败：${response.status} ${target}`);
+      error.status = response.status;
+      error.code = payload?.error?.code || '';
+      error.target = target;
+      throw error;
+    }
     return payload;
   }
 
@@ -140,6 +148,115 @@ function createSkillHubClient({ app, ipcMain, capabilityService, skillCreatorSer
 
   async function listManagedSkills(input = {}) {
     return listSkills({ ...input, includeDrafts: true });
+  }
+
+  async function listExperts(input = {}) {
+    const query = new URLSearchParams();
+    if (input.q) query.set('q', input.q);
+    if (input.includeInactive && profileContext?.isAuthenticated()) query.set('includeInactive', 'true');
+    query.set('limit', String(Math.min(300, Math.max(1, Number(input.limit || 100)))));
+    query.set('offset', String(Math.max(0, Number(input.offset || 0))));
+    return jsonRequest(`/v1/experts?${query}`);
+  }
+
+  function remoteExpertPayload(record, baseRevision = 0) {
+    const payload = {
+      ...record,
+      baseRevision,
+      visibility: record.visibility || 'private',
+    };
+    delete payload.remote;
+    delete payload.syncStatus;
+    delete payload.syncError;
+    delete payload.remoteShadow;
+    delete payload.userManaged;
+    delete payload.capabilityType;
+    return payload;
+  }
+
+  async function saveRemoteExpert(record) {
+    const remoteID = String(record?.remote?.id || '').trim();
+    const baseRevision = Number(record?.remote?.revision || 0);
+    if (remoteID) {
+      return jsonRequest(`/v1/experts/${encodeURIComponent(remoteID)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(remoteExpertPayload(record, baseRevision)),
+      });
+    }
+    return jsonRequest('/v1/experts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(remoteExpertPayload(record)),
+    });
+  }
+
+  async function performExpertSync() {
+    if (!profileContext?.isAuthenticated()) {
+      return {
+        skipped: true,
+        reason: 'offline',
+        registry: capabilityService.registrySnapshot(),
+        uploaded: [],
+        conflicts: [],
+        errors: [],
+      };
+    }
+    const expectedProfileKey = currentProfileKey();
+    const profile = profileContext.publicState();
+    const currentUserId = String(profile?.user?.id || '');
+    const baseUrl = profileContext.baseUrl() || DEFAULT_BASE_URL;
+    const uploaded = [];
+    const conflicts = [];
+    const errors = [];
+    const pending = capabilityService.registrySnapshot().experts.filter(
+      (item) => item.source?.type === 'user'
+        && ['local_only', 'pending_upload', 'sync_error'].includes(item.syncStatus || 'local_only')
+    );
+    for (const record of pending) {
+      assertActiveProfile(expectedProfileKey);
+      try {
+        const remote = await saveRemoteExpert(record);
+        assertActiveProfile(expectedProfileKey);
+        capabilityService.acceptRemoteExpert(remote, { currentUserId, baseUrl });
+        uploaded.push(remote);
+      } catch (error) {
+        const conflict = error?.status === 409;
+        capabilityService.markExpertSyncError(record.id, error?.message || String(error), conflict);
+        const issue = { id: record.id, message: error?.message || String(error), conflict };
+        if (conflict) conflicts.push(issue);
+        else errors.push(issue);
+      }
+    }
+    assertActiveProfile(expectedProfileKey);
+    let pulled = [];
+    try {
+      const response = await listExperts({ includeInactive: true, limit: 300 });
+      assertActiveProfile(expectedProfileKey);
+      pulled = response?.items || [];
+      const applied = capabilityService.syncRemoteExperts(pulled, { currentUserId, baseUrl });
+      for (const item of applied.conflicts || []) {
+        if (!conflicts.some((conflict) => conflict.id === item.id)) {
+          conflicts.push({ id: item.id, message: item.syncError || '专家版本冲突', conflict: true });
+        }
+      }
+    } catch (error) {
+      errors.push({ id: '', message: error?.message || String(error), conflict: false });
+    }
+    return {
+      skipped: false,
+      uploaded,
+      pulled: pulled.length,
+      conflicts,
+      errors,
+      registry: capabilityService.registrySnapshot(),
+    };
+  }
+
+  function syncExperts() {
+    const run = expertSync.catch(() => null).then(() => performExpertSync());
+    expertSync = run;
+    return run;
   }
 
   async function listPublishers() {
@@ -265,17 +382,34 @@ function createSkillHubClient({ app, ipcMain, capabilityService, skillCreatorSer
 
   async function reportInstallation(input = {}) {
     if (!profileContext?.isAuthenticated()) return { skipped: true, reason: 'anonymous' };
-    return jsonRequest('/v1/installations', {
+    const body = {
+      id: input.remoteInstallationId || undefined,
+      clientId: input.clientId || `meteomate-desktop-${process.platform}`,
+      skillId: input.skillId,
+      version: input.version,
+      scope: input.scope || 'user',
+      projectId: input.projectId || '',
+    };
+    const result = await jsonRequest('/v1/installations', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        clientId: input.clientId || `meteomate-desktop-${process.platform}`,
+      body: JSON.stringify(body),
+    });
+    if (input.localInstallationId && result?.id && capabilityService.updateSkillHubState) {
+      capabilityService.updateSkillHubState(input.localInstallationId, {
+        skillHubInstallationId: result.id,
         skillId: input.skillId,
         version: input.version,
-        scope: input.scope || 'user',
-        projectId: input.projectId || '',
-      }),
-    });
+        baseUrl: profileContext?.baseUrl() || DEFAULT_BASE_URL,
+      });
+    }
+    return result;
+  }
+
+  async function reportUninstallation(input = {}) {
+    const id = String(input.remoteInstallationId || '').trim();
+    if (!id || !profileContext?.isAuthenticated()) return { skipped: true, reason: id ? 'anonymous' : 'not-reported' };
+    return jsonRequest(`/v1/installations/${encodeURIComponent(id)}`, { method: 'DELETE' });
   }
 
   async function applyManagedPolicy(snapshot = null) {
@@ -290,28 +424,29 @@ function createSkillHubClient({ app, ipcMain, capabilityService, skillCreatorSer
     const result = { installed: [], skipped: [], errors: [] };
     for (const skillId of defaultSkillIds) {
       assertActiveProfile(expectedProfileKey);
-      const current = capabilityService.registrySnapshot().skills.find(
+      let current = capabilityService.registrySnapshot().skills.find(
         (item) => item.scope === 'user' && item.skillId === skillId && item.enabled
       );
-      if (current) {
-        result.skipped.push({ skillId, reason: 'installed' });
-        continue;
-      }
+      let remoteError = null;
       try {
-        const bundled = capabilityService.installBundledDefault(skillId, revision);
-        if (bundled) {
-          result.installed.push({ skillId, source: 'bundled', version: bundled.installation.version });
-          continue;
-        }
-        if (!profileContext.isAuthenticated()) {
-          result.skipped.push({ skillId, reason: 'offline' });
-          continue;
-        }
+        if (!profileContext.isAuthenticated()) throw new Error('offline');
         const detail = await skillDetail(skillId);
         assertActiveProfile(expectedProfileKey);
         const version = detail?.skill?.latestVersion;
         const published = (detail?.versions || []).some((item) => item.version === version && item.status === 'published');
         if (!version || !published) throw new Error('组织默认 Skill 没有可安装的已发布版本');
+        if (current && compareSkillVersions(current.version, version) >= 0) {
+          if (!current.remote?.skillHubInstallationId) {
+            await reportInstallation({
+              localInstallationId: current.id,
+              skillId,
+              version: current.version,
+              scope: 'user',
+            });
+          }
+          result.skipped.push({ skillId, reason: 'up-to-date', version: current.version });
+          continue;
+        }
         const inspection = await downloadAndInspect({ skillId, version, expectedProfileKey });
         if (!inspection.report.autoInstallEligible) throw new Error('组织默认 Skill 风险较高，需要管理员改为低风险包后再下发');
         assertActiveProfile(expectedProfileKey);
@@ -319,12 +454,49 @@ function createSkillHubClient({ app, ipcMain, capabilityService, skillCreatorSer
           token: inspection.token,
           reportHash: inspection.report.reportHash,
           scope: 'user',
+          replace: Boolean(current),
           managedByPolicy: true,
           managedPolicyRevision: revision,
         });
         assertActiveProfile(expectedProfileKey);
-        await reportInstallation({ skillId, version, scope: 'user' });
-        result.installed.push({ skillId, source: 'skillhub', version: installed.installation.version });
+        await reportInstallation({
+          localInstallationId: installed.installation.id,
+          remoteInstallationId: current?.remote?.skillHubInstallationId,
+          skillId,
+          version,
+          scope: 'user',
+        });
+        result.installed.push({
+          skillId,
+          source: 'skillhub',
+          version: installed.installation.version,
+          upgraded: Boolean(current),
+        });
+        continue;
+      } catch (error) {
+        remoteError = error;
+      }
+      try {
+        assertActiveProfile(expectedProfileKey);
+        const bundled = capabilityService.installBundledDefault(skillId, revision);
+        if (bundled) {
+          current = bundled.installation;
+          if (bundled.installed) {
+            result.installed.push({ skillId, source: 'bundled', version: current.version, upgraded: Boolean(bundled.upgraded) });
+          } else {
+            result.skipped.push({ skillId, reason: 'bundled-up-to-date', version: current.version });
+          }
+          continue;
+        }
+        if (current) {
+          result.skipped.push({ skillId, reason: 'installed-offline', version: current.version });
+          continue;
+        }
+        if (!profileContext.isAuthenticated()) {
+          result.skipped.push({ skillId, reason: 'offline' });
+          continue;
+        }
+        throw remoteError;
       } catch (error) {
         result.errors.push({ skillId, message: error?.message || String(error) });
       }
@@ -366,6 +538,8 @@ function createSkillHubClient({ app, ipcMain, capabilityService, skillCreatorSer
     ipcMain.handle('skillhub:test', async () => testConnection());
     ipcMain.handle('skillhub:list-skills', async (_event, request) => listSkills(request || {}));
     ipcMain.handle('skillhub:list-managed-skills', async (_event, request) => listManagedSkills(request || {}));
+    ipcMain.handle('skillhub:list-experts', async (_event, request) => listExperts(request || {}));
+    ipcMain.handle('skillhub:sync-experts', async () => syncExperts());
     ipcMain.handle('skillhub:list-publishers', async () => listPublishers());
     ipcMain.handle('skillhub:update-skill', async (_event, request) => updateSkill(request || {}));
     ipcMain.handle('skillhub:publish-version', async (_event, request) => publishVersion(request || {}));
@@ -375,12 +549,14 @@ function createSkillHubClient({ app, ipcMain, capabilityService, skillCreatorSer
     ipcMain.handle('skillhub:get-skill', async (_event, id) => skillDetail(id));
     ipcMain.handle('skillhub:download-inspect', async (_event, request) => downloadAndInspect(request || {}));
     ipcMain.handle('skillhub:report-installation', async (_event, request) => reportInstallation(request || {}));
+    ipcMain.handle('skillhub:report-uninstallation', async (_event, request) => reportUninstallation(request || {}));
     ipcMain.handle('skillhub:publish-draft', async (_event, request) => publishDraft(request || {}));
   }
 
   profileContext?.onChange((snapshot) => {
     settingsCache = null;
     policySync = policySync.then(() => applyManagedPolicy(snapshot)).catch(() => ({ installed: [], skipped: [], errors: [] }));
+    void syncExperts().catch(() => null);
   });
 
   return {
@@ -390,6 +566,8 @@ function createSkillHubClient({ app, ipcMain, capabilityService, skillCreatorSer
     testConnection,
     listSkills,
     listManagedSkills,
+    listExperts,
+    syncExperts,
     listPublishers,
     updateSkill,
     publishVersion,
@@ -399,6 +577,7 @@ function createSkillHubClient({ app, ipcMain, capabilityService, skillCreatorSer
     skillDetail,
     downloadAndInspect,
     reportInstallation,
+    reportUninstallation,
     applyManagedPolicy,
     publishDraft,
   };

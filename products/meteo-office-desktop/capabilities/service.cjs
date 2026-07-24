@@ -8,15 +8,52 @@ const { JsonRegistry } = require('./registry.cjs');
 const SkillPackage = require('./skill-package.cjs');
 const ConnectorClient = require('./connector-client.cjs');
 const BrowserConnector = require('./browser-connector.js');
+const BrowserRuntime = require('./browser-runtime.cjs');
+const ComputerConnector = require('./computer-connector.js');
+const ComputerRuntime = require('./computer-runtime.cjs');
+const OfficeConnector = require('./office-connector.js');
+const OfficeRuntime = require('./office-runtime.cjs');
+const { compareSkillVersions } = require('./skill-version.cjs');
 
 const INSPECTION_TTL_MS = 20 * 60 * 1000;
+const MAX_RUNTIME_SKILL_CHARS = 32_000;
+const MAX_RUNTIME_SKILL_RESOURCE_CHARS = 12_000;
+const RUNTIME_SKILL_RESOURCE_EXTENSIONS = new Set([
+  '.csv',
+  '.json',
+  '.md',
+  '.txt',
+  '.tsv',
+  '.yaml',
+  '.yml',
+]);
+const EXPERT_STATUSES = new Set(['draft', 'enabled', 'disabled', 'archived']);
+const EXPERT_WORK_MODES = new Set(['ask', 'plan', 'execute']);
 
 function sanitizePathSegment(value) {
   return String(value || '').replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'item';
 }
 
-function createCapabilityService({ app, dialog, ipcMain, shell, productRoot, profileContext, homeDir = os.homedir() }) {
+function createCapabilityService({
+  app,
+  dialog,
+  ipcMain,
+  shell,
+  productRoot,
+  profileContext,
+  computerRuntime,
+  homeDir = os.homedir(),
+}) {
   const pendingInspections = new Map();
+  const computerRuntimeManager = computerRuntime || ComputerRuntime.createComputerRuntimeManager({
+    app,
+    productRoot,
+    openAccessibilitySettings: typeof shell?.openExternal === 'function'
+      ? () => shell.openExternal(
+        'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility',
+      )
+      : null,
+  });
   let registry = null;
 
   function paths() {
@@ -39,39 +76,137 @@ function createCapabilityService({ app, dialog, ipcMain, shell, productRoot, pro
     return !profileContext?.connectorAllowed || profileContext.connectorAllowed(id);
   }
 
-  function browserCommand() {
-    const executableName = process.platform === 'win32' ? 'npx.cmd' : 'npx';
-    const candidates = [
-      process.env.METEOMATE_NPX_PATH,
-      path.join(productRoot, 'runtime', 'node', process.platform === 'win32' ? '' : 'bin', executableName),
-      ...(process.platform === 'darwin' ? ['/opt/homebrew/bin/npx', '/usr/local/bin/npx'] : []),
-    ].filter(Boolean);
-    for (const candidate of candidates) {
-      try {
-        fs.accessSync(candidate, fs.constants.X_OK);
-        return candidate;
-      } catch {
-        // Try the next product or system runtime location.
-      }
-    }
-    return ConnectorClient.executableExists(executableName) ? executableName : 'npx';
+  function browserRuntime() {
+    return BrowserRuntime.resolveBrowserRuntime({
+      productRoot,
+      allowSystemFallback: app.isPackaged !== true || process.env.METEOMATE_ALLOW_SYSTEM_BROWSER_RUNTIME === '1',
+      mcpPackage: BrowserConnector.MCP_PACKAGE,
+    });
   }
 
-  function materializeConnectorInput(input = {}) {
-    if (!BrowserConnector.isBrowserConnector(input)) return input;
-    const outputDir = path.join(paths().root, 'browser', 'artifacts');
-    fs.mkdirSync(outputDir, { recursive: true, mode: 0o700 });
-    return BrowserConnector.materialize(input, {
-      command: browserCommand(),
-      outputDir,
+  function officeRuntime() {
+    return OfficeRuntime.resolveOfficeRuntime({
+      productRoot,
+      allowSystemFallback: app.isPackaged !== true || process.env.METEOMATE_ALLOW_SYSTEM_OFFICE_RUNTIME === '1',
     });
+  }
+
+  function officeWorkspace(request = {}) {
+    if (request.workspace && path.isAbsolute(request.workspace)) {
+      const workspace = path.resolve(request.workspace);
+      if (fs.existsSync(workspace) && fs.statSync(workspace).isDirectory()) return workspace;
+    }
+    const workspace = path.join(paths().root, 'office', 'test-workspace');
+    fs.mkdirSync(workspace, { recursive: true, mode: 0o700 });
+    return workspace;
+  }
+
+  function materializeConnectorInput(input = {}, request = {}) {
+    if (BrowserConnector.isBrowserConnector(input)) {
+      const outputDir = path.join(paths().root, 'browser', 'artifacts');
+      fs.mkdirSync(outputDir, { recursive: true, mode: 0o700 });
+      return BrowserConnector.materialize(input, {
+        runtime: browserRuntime(),
+        outputDir,
+      });
+    }
+    if (ComputerConnector.isComputerConnector(input)) {
+      return ComputerConnector.materialize(input, {
+        connection: computerRuntimeManager.connection(),
+        runtimeInfo: computerRuntimeManager.runtimeInfo(),
+      });
+    }
+    if (OfficeConnector.isOfficeConnector(input)) {
+      return OfficeConnector.materialize(input, {
+        runtime: officeRuntime(),
+        workspace: officeWorkspace(request),
+      });
+    }
+    return input;
   }
 
   function connectorToolCeiling(connector) {
     if (BrowserConnector.isBrowserConnector(connector)) return [...BrowserConnector.SAFE_TOOLS];
+    if (ComputerConnector.isComputerConnector(connector)) return [...ComputerConnector.SAFE_TOOLS];
+    if (OfficeConnector.isOfficeConnector(connector)) return [...OfficeConnector.SAFE_TOOLS];
     return Array.isArray(connector.toolAllowlist)
       ? [...new Set(connector.toolAllowlist.map(String).filter(Boolean))]
       : null;
+  }
+
+  function connectorSelectedForRequest(connector, request = {}) {
+    const selected = new Set((request.connectorIds || []).map(String));
+    const hasExplicitConnectorSelection = Array.isArray(request.connectorIds);
+    const projectId = request.projectId ? String(request.projectId) : null;
+    const selectedForTask = selected.has(connector.id);
+    const boundToProject = projectId
+      && Array.isArray(connector.projectIds)
+      && connector.projectIds.includes(projectId);
+    return hasExplicitConnectorSelection
+      ? selectedForTask
+      : selectedForTask || boundToProject;
+  }
+
+  function assertSelectedToolsReady(request = {}) {
+    const toolSelections = request.toolSelections && typeof request.toolSelections === 'object'
+      ? request.toolSelections
+      : {};
+    const connectors = getRegistry().load().connectors;
+    const issues = [];
+    const unavailableConnectorIds = new Set();
+    for (const connectorId of uniqueStrings(request.connectorIds)) {
+      if (connectorId === 'local-workspace') continue;
+      const connector = connectors.find((item) => item.id === connectorId);
+      if (!connector?.enabled || !connectorAllowed(connectorId)) {
+        issues.push(`工具服务“${connector?.name || connectorId}”未连接或已被禁用`);
+        unavailableConnectorIds.add(connectorId);
+        continue;
+      }
+      if (connector.lastTest?.ok !== true || !Array.isArray(connector.lastTest?.result?.tools)) {
+        issues.push(`工具服务“${connector.name || connectorId}”需要重新测试连接`);
+        unavailableConnectorIds.add(connectorId);
+      }
+    }
+    for (const [connectorId, values] of Object.entries(toolSelections)) {
+      const requestedTools = uniqueStrings(values);
+      if (!requestedTools.length || unavailableConnectorIds.has(connectorId)) continue;
+      const connector = connectors.find((item) => item.id === connectorId);
+      if (!connector?.enabled || !connectorAllowed(connectorId)) {
+        issues.push(`工具服务“${connector?.name || connectorId}”未连接或已被禁用`);
+        continue;
+      }
+      if (connector.lastTest?.ok !== true || !Array.isArray(connector.lastTest?.result?.tools)) {
+        issues.push(`工具服务“${connector.name || connectorId}”需要重新测试连接`);
+        continue;
+      }
+      const ceiling = connectorToolCeiling(connector);
+      const discovered = connector.lastTest.result.tools
+        .map((tool) => String(tool?.name || '').trim())
+        .filter(Boolean);
+      const available = new Set(
+        ceiling ? discovered.filter((tool) => ceiling.includes(tool)) : discovered
+      );
+      const missing = requestedTools.filter((tool) => !available.has(tool));
+      if (missing.length) {
+        issues.push(`工具服务“${connector.name || connectorId}”中已不存在：${missing.join('、')}`);
+      }
+    }
+    if (!issues.length) return;
+    const error = new Error(`工具配置未就绪：${issues.join('；')}。请重新测试连接并选择可用工具。`);
+    error.code = 'CAPABILITY_TOOLS_NOT_READY';
+    error.issues = issues;
+    throw error;
+  }
+
+  async function prepareForRequest(request = {}) {
+    assertSelectedToolsReady(request);
+    const requiresComputerRuntime = getRegistry().load().connectors.some(
+      (connector) => connector.enabled
+        && connectorAllowed(connector.id)
+        && ComputerConnector.isComputerConnector(connector)
+        && connectorSelectedForRequest(connector, request)
+    );
+    if (requiresComputerRuntime) await computerRuntimeManager.start();
   }
 
   function cleanupPending() {
@@ -138,6 +273,10 @@ function createCapabilityService({ app, dialog, ipcMain, shell, productRoot, pro
           bundled: true,
           integrity: report.integrity,
           requires: report.sidecar?.data?.requires || {},
+          category: report.sidecar?.data?.categories?.[0] || '本地技能',
+          categories: Array.isArray(report.sidecar?.data?.categories) ? report.sidecar.data.categories : [],
+          icon: report.sidecar?.data?.icon || report.skill.displayName.slice(0, 1).toUpperCase(),
+          tags: Array.isArray(report.sidecar?.data?.tags) ? report.sidecar.data.tags : [],
           sidecar: report.sidecar?.data || null,
         });
       } catch (error) {
@@ -155,15 +294,379 @@ function createCapabilityService({ app, dialog, ipcMain, shell, productRoot, pro
     return result.sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'));
   }
 
+  function runtimeSkillInstruction(record) {
+    if (!record?.enabled || !record.installPath) return '';
+    const skillFile = path.join(record.installPath, 'SKILL.md');
+    try {
+      const installRoot = path.resolve(record.installPath);
+      const resourceBlocks = [];
+      let resourceChars = 0;
+      const resourceFiles = Array.isArray(record.files)
+        ? record.files
+          .map((file) => String(file?.path || '').trim())
+          .filter((relativePath) => relativePath.startsWith('references/'))
+          .filter((relativePath) => RUNTIME_SKILL_RESOURCE_EXTENSIONS.has(path.extname(relativePath).toLowerCase()))
+          .sort((left, right) => left.localeCompare(right, 'en'))
+        : [];
+      for (const relativePath of resourceFiles) {
+        const resourcePath = path.resolve(installRoot, ...relativePath.split('/'));
+        if (!resourcePath.startsWith(`${installRoot}${path.sep}`)) continue;
+        let content;
+        try {
+          content = fs.readFileSync(resourcePath, 'utf8').trim();
+        } catch {
+          continue;
+        }
+        if (!content) continue;
+        const opening = `<skill-resource path=${JSON.stringify(relativePath)}>\n`;
+        const closing = '\n</skill-resource>';
+        const separatorChars = resourceBlocks.length ? 2 : 0;
+        const remaining = MAX_RUNTIME_SKILL_RESOURCE_CHARS
+          - resourceChars
+          - separatorChars
+          - opening.length
+          - closing.length;
+        if (remaining <= 0) break;
+        const excerpt = content.slice(0, remaining);
+        const block = `${opening}${excerpt}${closing}`;
+        resourceBlocks.push(block);
+        resourceChars += block.length + separatorChars;
+      }
+      const resources = resourceBlocks.join('\n\n');
+      const separator = resources ? '\n\n' : '';
+      const skillBudget = Math.max(0, MAX_RUNTIME_SKILL_CHARS - resources.length - separator.length);
+      const instruction = fs.readFileSync(skillFile, 'utf8').slice(0, skillBudget).trim();
+      return `${instruction}${separator}${resources}`.trim();
+    } catch {
+      return '';
+    }
+  }
+
+  function uniqueStrings(value) {
+    return [...new Set((Array.isArray(value) ? value : []).map(String).map((item) => item.trim()).filter(Boolean))];
+  }
+
+  function normalizeExpertId(value, name) {
+    const explicit = String(value || '').trim();
+    if (explicit) return sanitizePathSegment(explicit);
+    const base = sanitizePathSegment(name).toLowerCase();
+    return `${base === 'item' ? 'expert' : base}-${crypto.randomUUID().slice(0, 8)}`;
+  }
+
+  function normalizeExpertToolSelections(value, connectorIds) {
+    const allowed = new Set(connectorIds);
+    const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+    return Object.fromEntries(
+      Object.entries(source)
+        .filter(([connectorId, toolNames]) => allowed.has(connectorId) && Array.isArray(toolNames))
+        .map(([connectorId, toolNames]) => [connectorId, uniqueStrings(toolNames)])
+    );
+  }
+
+  function expertPreflight(record) {
+    const skills = getRegistry().load().skills;
+    const connectors = getRegistry().load().connectors;
+    const issues = [];
+    for (const skillId of record.requiredSkills || []) {
+      const installed = skills.find((item) => item.skillId === skillId || item.id === skillId);
+      if (!installed?.enabled) {
+        issues.push({ type: 'skill', id: skillId, message: `必需技能未安装或未启用：${skillId}` });
+      }
+    }
+    for (const connectorId of record.requiredConnectors || []) {
+      const connector = connectors.find((item) => item.id === connectorId);
+      if (!connector?.enabled || !connectorAllowed(connectorId)) {
+        issues.push({ type: 'connector', id: connectorId, message: `必需工具未连接或被策略禁用：${connectorId}` });
+        continue;
+      }
+      const selected = record.toolSelections?.[connectorId];
+      const available = Array.isArray(connector.lastTest?.result?.tools)
+        ? new Set(connector.lastTest.result.tools.map((tool) => String(tool.name || '')).filter(Boolean))
+        : null;
+      if (available && Array.isArray(selected)) {
+        for (const toolName of selected) {
+          if (!available.has(toolName)) {
+            issues.push({
+              type: 'tool',
+              id: `${connectorId}/${toolName}`,
+              message: `工具服务 ${connector.name || connectorId} 中不存在：${toolName}`,
+            });
+          }
+        }
+      }
+    }
+    return { ready: issues.length === 0, issues };
+  }
+
+  function normalizeExpert(input = {}, existing = null) {
+    const now = new Date().toISOString();
+    const name = String(input.name || existing?.name || '').trim();
+    const instruction = String(input.instruction || existing?.instruction || '').trim();
+    if (!name) throw new Error('请输入专家名称');
+    if (!instruction) throw new Error('请输入专家工作指令');
+    const requiredConnectors = uniqueStrings(input.requiredConnectors ?? existing?.requiredConnectors);
+    const recommendedConnectors = uniqueStrings(input.recommendedConnectors ?? existing?.recommendedConnectors)
+      .filter((id) => !requiredConnectors.includes(id));
+    const connectorIds = [...requiredConnectors, ...recommendedConnectors];
+    const status = EXPERT_STATUSES.has(input.status) ? input.status : existing?.status || 'draft';
+    const remote = existing?.remote || null;
+    return {
+      apiVersion: 'meteomate.ai/v1',
+      kind: 'Expert',
+      id: normalizeExpertId(input.id || existing?.id, name),
+      name,
+      version: String(input.version || existing?.version || '0.1.0').trim() || '0.1.0',
+      revision: Number(existing?.revision || 0) + 1,
+      source: existing?.source || { type: 'user' },
+      status,
+      visibility: 'private',
+      owner: String(input.owner || existing?.owner || '我').trim() || '我',
+      category: String(input.category || existing?.category || '自定义专家').trim() || '自定义专家',
+      avatar: String(input.avatar || existing?.avatar || name.slice(0, 1)).trim().slice(0, 2) || '专',
+      description: String(input.description || existing?.description || '').trim(),
+      mission: String(input.mission || existing?.mission || '').trim(),
+      tags: uniqueStrings(input.tags ?? existing?.tags),
+      instruction,
+      methodology: uniqueStrings(input.methodology ?? input.workflow ?? existing?.methodology ?? existing?.workflow),
+      workflow: uniqueStrings(input.workflow ?? input.methodology ?? existing?.workflow ?? existing?.methodology),
+      limitations: uniqueStrings(input.limitations ?? existing?.limitations),
+      inputs: uniqueStrings(input.inputs ?? existing?.inputs),
+      outputs: uniqueStrings(input.outputs ?? existing?.outputs),
+      prompts: uniqueStrings(input.prompts ?? existing?.prompts),
+      requiredSkills: uniqueStrings(input.requiredSkills ?? existing?.requiredSkills),
+      recommendedSkills: uniqueStrings(input.recommendedSkills ?? input.optionalSkills ?? existing?.recommendedSkills),
+      requiredConnectors,
+      recommendedConnectors,
+      toolSelections: normalizeExpertToolSelections(input.toolSelections ?? existing?.toolSelections, connectorIds),
+      permissionProfile: String(input.permissionProfile || existing?.permissionProfile || 'artifact-approval'),
+      defaultWorkMode: EXPERT_WORK_MODES.has(input.defaultWorkMode)
+        ? input.defaultWorkMode
+        : existing?.defaultWorkMode || 'execute',
+      modelPolicy: String(input.modelPolicy || existing?.modelPolicy || 'inherit'),
+      inputSchema: input.inputSchema ?? existing?.inputSchema ?? null,
+      outputSchema: input.outputSchema ?? existing?.outputSchema ?? null,
+      remote,
+      syncStatus: remote ? 'pending_upload' : existing?.syncStatus || 'local_only',
+      syncError: null,
+      remoteShadow: null,
+      createdAt: existing?.createdAt || now,
+      updatedAt: now,
+    };
+  }
+
+  function remoteExpertRecord(input = {}, context = {}) {
+    const requiredConnectors = uniqueStrings(input.requiredConnectors);
+    const recommendedConnectors = uniqueStrings(input.recommendedConnectors)
+      .filter((id) => !requiredConnectors.includes(id));
+    const connectorIds = [...requiredConnectors, ...recommendedConnectors];
+    const source = input.source && typeof input.source === 'object'
+      ? input.source
+      : { type: input.visibility === 'organization' ? 'organization' : input.visibility === 'public' ? 'system' : 'user' };
+    return {
+      apiVersion: 'meteomate.ai/v1',
+      kind: 'Expert',
+      id: String(input.id || '').trim(),
+      name: String(input.name || '').trim(),
+      version: String(input.version || '0.1.0').trim() || '0.1.0',
+      revision: Math.max(1, Number(input.revision || 1)),
+      source: {
+        type: ['user', 'organization', 'system'].includes(source.type) ? source.type : 'user',
+        remoteId: String(source.remoteId || input.id || '').trim(),
+      },
+      status: EXPERT_STATUSES.has(input.status) ? input.status : 'draft',
+      visibility: ['private', 'organization', 'public'].includes(input.visibility) ? input.visibility : 'private',
+      owner: String(input.owner || '').trim(),
+      ownerId: String(input.ownerId || '').trim(),
+      orgId: String(input.orgId || '').trim(),
+      category: String(input.category || '自定义专家').trim() || '自定义专家',
+      avatar: String(input.avatar || input.name || '专').trim().slice(0, 2) || '专',
+      description: String(input.description || '').trim(),
+      mission: String(input.mission || '').trim(),
+      tags: uniqueStrings(input.tags),
+      instruction: String(input.instruction || '').trim(),
+      methodology: uniqueStrings(input.methodology),
+      workflow: uniqueStrings(input.workflow ?? input.methodology),
+      limitations: uniqueStrings(input.limitations),
+      inputs: uniqueStrings(input.inputs),
+      outputs: uniqueStrings(input.outputs),
+      prompts: uniqueStrings(input.prompts),
+      requiredSkills: uniqueStrings(input.requiredSkills),
+      recommendedSkills: uniqueStrings(input.recommendedSkills),
+      requiredConnectors,
+      recommendedConnectors,
+      toolSelections: normalizeExpertToolSelections(input.toolSelections, connectorIds),
+      permissionProfile: String(input.permissionProfile || 'artifact-approval'),
+      defaultWorkMode: EXPERT_WORK_MODES.has(input.defaultWorkMode) ? input.defaultWorkMode : 'execute',
+      modelPolicy: String(input.modelPolicy || 'inherit'),
+      review: {
+        status: String(input.review?.status || (input.visibility === 'private' ? 'not_required' : 'not_submitted')),
+        note: String(input.review?.note || ''),
+        submittedAt: input.review?.submittedAt || null,
+        reviewedAt: input.review?.reviewedAt || null,
+      },
+      distribution: {
+        mode: String(input.distribution?.mode || 'all'),
+        percentage: Math.max(0, Number(input.distribution?.percentage || 0)),
+        userIds: uniqueStrings(input.distribution?.userIds),
+      },
+      inputSchema: input.inputSchema ?? null,
+      outputSchema: input.outputSchema ?? null,
+      remote: {
+        id: String(input.id || '').trim(),
+        revision: Math.max(1, Number(input.revision || 1)),
+        updatedAt: input.updatedAt || null,
+        baseUrl: String(context.baseUrl || '').trim(),
+      },
+      syncStatus: 'synced',
+      syncError: null,
+      remoteShadow: null,
+      createdAt: input.createdAt || new Date().toISOString(),
+      updatedAt: input.updatedAt || new Date().toISOString(),
+    };
+  }
+
+  function acceptRemoteExpert(input = {}, context = {}) {
+    const record = remoteExpertRecord(input, context);
+    if (!record.id || !record.name || !record.instruction) {
+      throw new Error('SkillHub 返回的专家记录不完整');
+    }
+    return {
+      expert: getRegistry().upsertExpert(record),
+      registry: registrySnapshot(),
+    };
+  }
+
+  function markExpertSyncError(id, message, conflict = false, remoteShadow = null) {
+    const existing = getRegistry().getExpert(id);
+    if (!existing) return { expert: null, registry: registrySnapshot() };
+    const expert = getRegistry().upsertExpert({
+      ...existing,
+      syncStatus: conflict ? 'conflict' : 'sync_error',
+      syncError: String(message || '专家同步失败'),
+      remoteShadow: remoteShadow || existing.remoteShadow || null,
+    });
+    return { expert, registry: registrySnapshot() };
+  }
+
+  function syncRemoteExperts(items = [], context = {}) {
+    const currentUserId = String(context.currentUserId || '').trim();
+    const baseUrl = String(context.baseUrl || '').trim();
+    const remoteItems = Array.isArray(items) ? items : [];
+    const remoteIds = new Set();
+    const conflicts = [];
+    const synced = [];
+    for (const item of remoteItems) {
+      if (!item?.id) continue;
+      remoteIds.add(item.id);
+      const incoming = remoteExpertRecord(item, { baseUrl });
+      const existing = getRegistry().getExpert(item.id);
+      const ownPersonal = incoming.source.type === 'user' && incoming.ownerId === currentUserId;
+      const locallyChanged = ownPersonal && existing
+        && ['local_only', 'pending_upload', 'conflict'].includes(existing.syncStatus);
+      const sourceCollision = existing?.source?.type === 'user' && incoming.source.type !== 'user';
+      if (locallyChanged || sourceCollision) {
+        const expert = getRegistry().upsertExpert({
+          ...existing,
+          syncStatus: 'conflict',
+          syncError: existing.syncError || (
+            sourceCollision
+              ? '个人专家 ID 与远程组织或系统专家冲突'
+              : '远程版本已变化，请选择保留本地版本或采用远程版本'
+          ),
+          remoteShadow: incoming,
+        });
+        conflicts.push(expert);
+        continue;
+      }
+      synced.push(getRegistry().upsertExpert(incoming));
+    }
+    for (const existing of getRegistry().snapshot().experts) {
+      if (!existing.remote || existing.remote.baseUrl !== baseUrl || remoteIds.has(existing.id)) continue;
+      if (existing.source?.type === 'user' && existing.ownerId === currentUserId) continue;
+      getRegistry().removeExpert(existing.id);
+    }
+    return { synced, conflicts, registry: registrySnapshot() };
+  }
+
+  function saveExpert(input = {}) {
+    const existing = input.id ? getRegistry().getExpert(input.id) : null;
+    if (existing && existing.source?.type !== 'user') {
+      throw new Error('组织或系统专家为只读，请复制后再编辑');
+    }
+    const record = normalizeExpert(input, existing);
+    const preflight = expertPreflight(record);
+    if (record.status === 'enabled' && !preflight.ready) {
+      throw new Error(preflight.issues.map((issue) => issue.message).join('；'));
+    }
+    return { expert: getRegistry().upsertExpert(record), preflight, registry: registrySnapshot() };
+  }
+
+  function setExpertStatus(id, status) {
+    if (!EXPERT_STATUSES.has(status)) throw new Error('不支持的专家状态');
+    const existing = getRegistry().getExpert(id);
+    if (!existing) throw new Error('专家不存在');
+    if (existing.source?.type !== 'user') throw new Error('组织或系统专家的状态由远程管理员维护');
+    const record = normalizeExpert({ ...existing, status }, existing);
+    const preflight = expertPreflight(record);
+    if (status === 'enabled' && !preflight.ready) {
+      throw new Error(preflight.issues.map((issue) => issue.message).join('；'));
+    }
+    return { expert: getRegistry().upsertExpert(record), preflight, registry: registrySnapshot() };
+  }
+
+  function migrateExperts(items = []) {
+    const migrated = [];
+    for (const item of Array.isArray(items) ? items : []) {
+      if (!item || typeof item !== 'object') continue;
+      const id = normalizeExpertId(item.id, item.name);
+      if (getRegistry().getExpert(id)) continue;
+      const record = normalizeExpert({ ...item, id, status: 'enabled' });
+      migrated.push(getRegistry().upsertExpert(record));
+    }
+    return { migrated, registry: registrySnapshot() };
+  }
+
+  function resolveExpertConflict(id, resolution) {
+    const existing = getRegistry().getExpert(id);
+    if (!existing || existing.syncStatus !== 'conflict' || !existing.remoteShadow) {
+      throw new Error('专家没有待处理的版本冲突');
+    }
+    if (resolution === 'remote') {
+      return acceptRemoteExpert(existing.remoteShadow, {
+        baseUrl: existing.remoteShadow.remote?.baseUrl || existing.remote?.baseUrl || '',
+      });
+    }
+    if (resolution !== 'local') throw new Error('不支持的冲突处理方式');
+    const remote = existing.remoteShadow.remote || {
+      id: existing.remoteShadow.id,
+      revision: existing.remoteShadow.revision,
+      updatedAt: existing.remoteShadow.updatedAt || null,
+      baseUrl: existing.remote?.baseUrl || '',
+    };
+    const expert = getRegistry().upsertExpert({
+      ...existing,
+      remote,
+      syncStatus: 'pending_upload',
+      syncError: null,
+      remoteShadow: null,
+    });
+    return { expert, registry: registrySnapshot() };
+  }
+
   function registrySnapshot() {
     const snapshot = getRegistry().snapshot();
     return {
       ...snapshot,
+      skills: snapshot.skills.map((record) => ({
+        ...record,
+        runtimeInstruction: runtimeSkillInstruction(record),
+      })),
       bundledSkills: listBundledSkills(),
       connectors: snapshot.connectors.map((record) => ({
         ...redactConnector(record),
         policyBlocked: !connectorAllowed(record.id),
       })),
+      experts: snapshot.experts,
       organizationPolicy: profileContext?.policyContext() || null,
       encryptionAvailable: false,
     };
@@ -264,10 +767,10 @@ function createCapabilityService({ app, dialog, ipcMain, shell, productRoot, pro
       installedAt: now,
       updatedAt: now,
     };
-    getRegistry().upsertSkill(record);
+    const persisted = getRegistry().upsertSkill(record);
     if (prepared.tempDir) fs.rmSync(prepared.tempDir, { recursive: true, force: true });
     pendingInspections.delete(request.token);
-    return { installation: record, registry: registrySnapshot() };
+    return { installation: persisted, registry: registrySnapshot() };
   }
 
   function resolveSkillPath(record, enabled) {
@@ -319,6 +822,19 @@ function createCapabilityService({ app, dialog, ipcMain, shell, productRoot, pro
     return { installation: record, registry: registrySnapshot() };
   }
 
+  function updateSkillHubState(id, remote = {}) {
+    const record = getRegistry().getSkill(id);
+    if (!record) throw new Error('Skill 安装记录不存在');
+    record.remote = {
+      ...(record.remote || {}),
+      ...remote,
+      syncedAt: new Date().toISOString(),
+    };
+    record.updatedAt = Date.now();
+    const installation = getRegistry().upsertSkill(record);
+    return { installation, registry: registrySnapshot() };
+  }
+
   function saveConnector(input) {
     if (!connectorAllowed(input.id)) throw new Error('管理员策略不允许使用该工具');
     const existing = input.id ? getRegistry().getConnector(input.id) : null;
@@ -326,8 +842,16 @@ function createCapabilityService({ app, dialog, ipcMain, shell, productRoot, pro
     const effectiveLastTest = Object.prototype.hasOwnProperty.call(input, 'lastTest')
       ? input.lastTest
       : existing?.lastTest;
-    if (BrowserConnector.isBrowserConnector(preparedInput) && preparedInput.enabled !== false && effectiveLastTest?.ok !== true) {
-      throw new Error('启用浏览器操作前，请先完成连接测试');
+    const managedDesktopConnector = BrowserConnector.isBrowserConnector(preparedInput)
+      || ComputerConnector.isComputerConnector(preparedInput)
+      || OfficeConnector.isOfficeConnector(preparedInput);
+    if (managedDesktopConnector && preparedInput.enabled !== false && effectiveLastTest?.ok !== true) {
+      const name = ComputerConnector.isComputerConnector(preparedInput)
+        ? '桌面应用操作'
+        : OfficeConnector.isOfficeConnector(preparedInput)
+          ? 'Office 成果物'
+          : '浏览器操作';
+      throw new Error(`启用${name}前，请先完成连接测试`);
     }
     const { record, secrets } = ConnectorClient.normalizeConnector(preparedInput);
     const existingSecrets = existing ? decodeSecrets(existing.secrets) : { env: {}, headers: {} };
@@ -341,24 +865,34 @@ function createCapabilityService({ app, dialog, ipcMain, shell, productRoot, pro
       : existing?.lastTest || null;
     record.secrets = encodeSecrets(mergedSecrets);
     getRegistry().upsertConnector(record);
+    if (ComputerConnector.isComputerConnector(record) && record.enabled === false) {
+      void computerRuntimeManager.stop();
+    }
     return { connector: redactConnector(record), registry: registrySnapshot() };
   }
 
   async function testConnector(input) {
     if (!connectorAllowed(input?.id)) throw new Error('管理员策略不允许使用该工具');
+    if (ComputerConnector.isComputerConnector(input)) {
+      await computerRuntimeManager.start({ requestPermissions: true });
+    }
     let record;
     let secrets;
     if (input?.id && !input.transport && getRegistry().getConnector(input.id)) {
       record = materializeConnectorInput(getRegistry().getConnector(input.id));
       secrets = decodeSecrets(record.secrets);
     } else {
-      const normalized = ConnectorClient.normalizeConnector(materializeConnectorInput(input || {}));
+      const materialized = materializeConnectorInput(input || {});
+      const normalized = ConnectorClient.normalizeConnector(materialized);
       record = normalized.record;
+      record.runtimeEnv = materialized.runtimeEnv;
+      record.runtimeInfo = materialized.runtimeInfo;
       secrets = normalized.secrets;
     }
     const startedAt = Date.now();
     try {
       const result = await ConnectorClient.testConnector(record, secrets);
+      if (record.runtimeInfo) result.runtime = { ...record.runtimeInfo };
       const lastTest = { ok: true, checkedAt: Date.now(), durationMs: Date.now() - startedAt, result };
       if (getRegistry().getConnector(record.id)) {
         const stored = getRegistry().getConnector(record.id);
@@ -386,14 +920,27 @@ function createCapabilityService({ app, dialog, ipcMain, shell, productRoot, pro
     if (enabled && BrowserConnector.isBrowserConnector(record) && record.lastTest?.ok !== true) {
       throw new Error('启用浏览器操作前，请先完成连接测试');
     }
+    if (enabled && ComputerConnector.isComputerConnector(record) && record.lastTest?.ok !== true) {
+      throw new Error('启用桌面应用操作前，请先完成连接测试');
+    }
+    if (enabled && OfficeConnector.isOfficeConnector(record) && record.lastTest?.ok !== true) {
+      throw new Error('启用 Office 成果物前，请先完成连接测试');
+    }
     record.enabled = Boolean(enabled);
     record.updatedAt = Date.now();
     getRegistry().upsertConnector(record);
+    if (!record.enabled && ComputerConnector.isComputerConnector(record)) {
+      void computerRuntimeManager.stop();
+    }
     return { connector: redactConnector(record), registry: registrySnapshot() };
   }
 
   function deleteConnector(id) {
+    const record = getRegistry().getConnector(id);
     const removed = getRegistry().removeConnector(id);
+    if (removed && ComputerConnector.isComputerConnector(record)) {
+      void computerRuntimeManager.stop();
+    }
     return { removed, registry: registrySnapshot() };
   }
 
@@ -407,20 +954,15 @@ function createCapabilityService({ app, dialog, ipcMain, shell, productRoot, pro
   }
 
   function selectedConnectorConfigs(request = {}, toExtension) {
-    const selected = new Set((request.connectorIds || []).map(String));
-    const hasExplicitConnectorSelection = Array.isArray(request.connectorIds);
     const toolSelections = request.toolSelections && typeof request.toolSelections === 'object'
       ? request.toolSelections
       : {};
-    const projectId = request.projectId ? String(request.projectId) : null;
     const result = [];
     for (const connector of getRegistry().load().connectors) {
       if (!connector.enabled) continue;
       if (!connectorAllowed(connector.id)) continue;
-      const selectedForTask = selected.has(connector.id);
-      const boundToProject = projectId && Array.isArray(connector.projectIds) && connector.projectIds.includes(projectId);
-      if (hasExplicitConnectorSelection ? !selectedForTask : !selectedForTask && !boundToProject) continue;
-      const runtimeConnector = materializeConnectorInput(connector);
+      if (!connectorSelectedForRequest(connector, request)) continue;
+      const runtimeConnector = materializeConnectorInput(connector, request);
       const toolCeiling = connectorToolCeiling(runtimeConnector);
       const hasToolSelection = Object.prototype.hasOwnProperty.call(toolSelections, connector.id);
       const requestedTools = hasToolSelection
@@ -505,6 +1047,7 @@ function createCapabilityService({ app, dialog, ipcMain, shell, productRoot, pro
 
   function installBundledDefault(skillId, revision = 0) {
     const existing = getRegistry().load().skills.find((item) => item.scope === 'user' && item.skillId === skillId);
+    const bundled = listBundledSkills().find((item) => item.id === skillId && !item.broken);
     if (existing) {
       existing.managedByPolicy = true;
       existing.managedPolicyRevision = Number(revision || 0);
@@ -517,9 +1060,24 @@ function createCapabilityService({ app, dialog, ipcMain, shell, productRoot, pro
       }
       existing.updatedAt = Date.now();
       getRegistry().upsertSkill(existing);
+      if (bundled && compareSkillVersions(bundled.version, existing.version) > 0) {
+        const inspection = inspectBundledSkill(skillId);
+        return {
+          ...installSkill({
+            token: inspection.token,
+            reportHash: inspection.report.reportHash,
+            scope: 'user',
+            replace: true,
+            managedByPolicy: true,
+            managedPolicyRevision: revision,
+          }),
+          installed: true,
+          upgraded: true,
+        };
+      }
       return { installation: existing, registry: registrySnapshot(), installed: false };
     }
-    if (!listBundledSkills().some((item) => item.id === skillId && !item.broken)) return null;
+    if (!bundled) return null;
     const inspection = inspectBundledSkill(skillId);
     return {
       ...installSkill({
@@ -548,6 +1106,12 @@ function createCapabilityService({ app, dialog, ipcMain, shell, productRoot, pro
     ipcMain.handle('capability:set-connector-enabled', async (_event, request) => setConnectorEnabled(request?.id, request?.enabled));
     ipcMain.handle('capability:delete-connector', async (_event, id) => deleteConnector(id));
     ipcMain.handle('capability:update-connector-projects', async (_event, request) => updateConnectorProjects(request?.id, request?.projectIds));
+    ipcMain.handle('capability:save-expert', async (_event, request) => saveExpert(request || {}));
+    ipcMain.handle('capability:set-expert-status', async (_event, request) => setExpertStatus(request?.id, request?.status));
+    ipcMain.handle('capability:migrate-experts', async (_event, items) => migrateExperts(items));
+    ipcMain.handle('capability:resolve-expert-conflict', async (_event, request) => (
+      resolveExpertConflict(request?.id, request?.resolution)
+    ));
     ipcMain.handle('capability:open-path', async (_event, targetPath) => {
       if (!targetPath || typeof targetPath !== 'string') return false;
       const error = await shell.openPath(targetPath);
@@ -556,6 +1120,7 @@ function createCapabilityService({ app, dialog, ipcMain, shell, productRoot, pro
   }
 
   profileContext?.onChange(() => {
+    void computerRuntimeManager.stop();
     registry = null;
     for (const prepared of pendingInspections.values()) {
       if (prepared.tempDir) fs.rmSync(prepared.tempDir, { recursive: true, force: true });
@@ -566,6 +1131,7 @@ function createCapabilityService({ app, dialog, ipcMain, shell, productRoot, pro
   return {
     registerIpc,
     registrySnapshot,
+    prepareForRequest,
     extensionsForRequest,
     sessionExtensionsForRequest,
     permissionContextForRequest,
@@ -573,10 +1139,19 @@ function createCapabilityService({ app, dialog, ipcMain, shell, productRoot, pro
     installSkill,
     setSkillEnabled,
     uninstallSkill,
+    updateSkillHubState,
+    saveExpert,
+    setExpertStatus,
+    migrateExperts,
+    resolveExpertConflict,
+    acceptRemoteExpert,
+    markExpertSyncError,
+    syncRemoteExperts,
     saveConnector,
     testConnector,
     syncManagedSkills,
     installBundledDefault,
+    shutdown: () => computerRuntimeManager.stop(),
     paths,
   };
 }

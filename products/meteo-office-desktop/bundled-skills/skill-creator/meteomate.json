@@ -1,7 +1,9 @@
 {
   "displayName": "技能创建助手",
-  "version": "1.1.0",
+  "version": "1.1.1",
+  "icon": "技",
   "categories": ["效率工具"],
+  "tags": ["Skill", "创建", "校验"],
   "requires": {"connectors": []},
   "permissions": {"filesystem": {"read": ["skill-drafts"], "write": ["skill-drafts"]}, "shell": false, "network": []},
   "outputs": {"files": ["SKILL.md", "meteomate.json", "tests/*.json"]}

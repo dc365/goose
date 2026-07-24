@@ -1,0 +1,14 @@
+{
+  "displayName": "业务系统巡检与故障诊断",
+  "version": "1.0.0",
+  "icon": "维",
+  "categories": ["运维保障"],
+  "tags": ["系统巡检", "故障诊断", "事件复盘"],
+  "requires": {"connectors": []},
+  "permissions": {
+    "filesystem": {"read": ["project"], "write": ["artifacts"]},
+    "shell": false,
+    "network": []
+  },
+  "outputs": {"files": ["artifacts/incident-report.md"]}
+}

@@ -101,8 +101,33 @@ func ensureMaps(state *State) {
 	if state.SkillVersions == nil {
 		state.SkillVersions = map[string]*SkillVersion{}
 	}
+	if state.Experts == nil {
+		state.Experts = map[string]*Expert{}
+	}
+	if state.ExpertRevisions == nil {
+		state.ExpertRevisions = map[string]*ExpertRevision{}
+	}
+	for _, expert := range state.Experts {
+		if expert.Review.Status == "" {
+			switch {
+			case expert.Visibility == "private":
+				expert.Review.Status = "not_required"
+			case expert.Status == "enabled":
+				expert.Review.Status = "approved"
+			default:
+				expert.Review.Status = "not_submitted"
+			}
+		}
+		if expert.Distribution.Mode == "" {
+			expert.Distribution.Mode = "all"
+			expert.Distribution.Percentage = 100
+		}
+	}
 	if state.Collections == nil {
 		state.Collections = map[string]*Collection{}
+	}
+	if state.RecommendationRules == nil {
+		state.RecommendationRules = map[string]*RecommendationRule{}
 	}
 	if state.Installations == nil {
 		state.Installations = map[string]*Installation{}
@@ -113,8 +138,8 @@ func ensureMaps(state *State) {
 	if state.Kind == "" {
 		state.Kind = "SkillHubState"
 	}
-	if state.Version == 0 {
-		state.Version = 1
+	if state.Version < 2 {
+		state.Version = 2
 	}
 }
 

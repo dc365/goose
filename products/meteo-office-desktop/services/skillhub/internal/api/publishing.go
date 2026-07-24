@@ -169,6 +169,8 @@ func (s *Server) publishVersion(w http.ResponseWriter, r *http.Request) {
 	}
 	skillID, versionID := r.PathValue("id"), r.PathValue("version")
 	var published *store.SkillVersion
+	status := http.StatusOK
+	action := "skill.version.publish"
 	err := s.store.Update(func(state *store.State) error {
 		skill := state.Skills[skillID]
 		version := state.SkillVersions[store.VersionKey(skillID, versionID)]
@@ -182,21 +184,24 @@ func (s *Server) publishVersion(w http.ResponseWriter, r *http.Request) {
 			published = version
 			return nil
 		}
-		if version.Risk.Level == "high" && !actor.IsAdmin() {
-			return errForbidden("High-risk Skills require admin review before publication")
+		publishMode := s.policies.Effective(actor.Subject, actor.Role).SkillPublishMode
+		if !actor.IsAdmin() && (publishMode == "admin_approval" || version.Risk.Level == "high") {
+			now := time.Now().UTC()
+			version.Status = "pending_review"
+			version.SubmittedAt = &now
+			version.ReviewedAt = nil
+			version.ReviewedBy = ""
+			version.ReviewNote = ""
+			if skill.LatestVersion == "" {
+				skill.Status = "pending_review"
+			}
+			skill.UpdatedAt = now
+			published = version
+			status = http.StatusAccepted
+			action = "skill.version.submit_review"
+			return nil
 		}
-		now := time.Now().UTC()
-		version.Status = "published"
-		version.PublishedAt = &now
-		version.Signature = &store.Signature{
-			Algorithm: "ed25519", KeyID: s.signer.KeyID(),
-			Value: s.signer.Sign(trust.Message(skillID, versionID, version.PackageDigest)),
-		}
-		skill.Status = "published"
-		if skill.LatestVersion == "" || semverCompare(versionID, skill.LatestVersion) >= 0 {
-			skill.LatestVersion = versionID
-		}
-		skill.UpdatedAt = now
+		finalizePublishedVersion(skill, version, actor.Subject, s.signer)
 		published = version
 		return nil
 	})
@@ -204,8 +209,74 @@ func (s *Server) publishVersion(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreError(w, err)
 		return
 	}
-	s.audit(r, "skill.version.publish", skillID+"@"+versionID, nil)
-	writeJSON(w, http.StatusOK, published)
+	s.audit(r, action, skillID+"@"+versionID, nil)
+	writeJSON(w, status, published)
+}
+
+func finalizePublishedVersion(skill *store.Skill, version *store.SkillVersion, reviewer string, signer *trust.Signer) {
+	now := time.Now().UTC()
+	version.Status = "published"
+	version.PublishedAt = &now
+	version.ReviewedAt = &now
+	version.ReviewedBy = reviewer
+	version.ReviewNote = ""
+	version.Signature = &store.Signature{
+		Algorithm: "ed25519", KeyID: signer.KeyID(),
+		Value: signer.Sign(trust.Message(skill.ID, version.Version, version.PackageDigest)),
+	}
+	skill.Status = "published"
+	if skill.LatestVersion == "" || semverCompare(version.Version, skill.LatestVersion) >= 0 {
+		skill.LatestVersion = version.Version
+	}
+	skill.UpdatedAt = now
+}
+
+func (s *Server) rejectVersionReview(w http.ResponseWriter, r *http.Request) {
+	if !requireAdmin(w, r) {
+		return
+	}
+	var input struct {
+		Note string `json:"note"`
+	}
+	if err := decodeJSON(w, r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+	input.Note = strings.TrimSpace(input.Note)
+	if len([]rune(input.Note)) > 500 {
+		writeError(w, http.StatusBadRequest, "review_note_too_long", "Review note cannot exceed 500 characters")
+		return
+	}
+	skillID, versionID := r.PathValue("id"), r.PathValue("version")
+	actor := auth.FromContext(r.Context())
+	var rejected *store.SkillVersion
+	err := s.store.Update(func(state *store.State) error {
+		skill := state.Skills[skillID]
+		version := state.SkillVersions[store.VersionKey(skillID, versionID)]
+		if skill == nil || version == nil {
+			return errNotFound("Skill version not found")
+		}
+		if version.Status != "pending_review" {
+			return errConflict("Only pending reviews can be rejected")
+		}
+		now := time.Now().UTC()
+		version.Status = "draft"
+		version.ReviewedAt = &now
+		version.ReviewedBy = actor.Subject
+		version.ReviewNote = input.Note
+		if skill.LatestVersion == "" {
+			skill.Status = "draft"
+		}
+		skill.UpdatedAt = now
+		rejected = version
+		return nil
+	})
+	if err != nil {
+		s.writeStoreError(w, err)
+		return
+	}
+	s.audit(r, "skill.version.reject", skillID+"@"+versionID, map[string]any{"note": rejected.ReviewNote})
+	writeJSON(w, http.StatusOK, rejected)
 }
 func (s *Server) deprecateVersion(w http.ResponseWriter, r *http.Request) {
 	actor := auth.FromContext(r.Context())

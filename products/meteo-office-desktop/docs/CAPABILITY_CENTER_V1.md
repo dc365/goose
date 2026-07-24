@@ -129,6 +129,33 @@ Goose ACP enabledExtensions
 
 当前随产品捆绑的 Goose 1.37.0 会忽略较新的 ACP recipe metadata。MeteoMate 会检测 ACP 响应中的 `recipe` / `hasRecipe`：支持原生 recipe 的新版 Goose 继续使用 `final_output`；旧版仅在提示层追加等价的结构化完成块，使浏览器任务能正确收口，不修改 Goose Core。
 
+### 5.2 桌面应用操作预设
+
+桌面应用操作使用 `@trycua/cua-driver@0.12.2` 的 Electron 嵌入模式：
+
+```text
+MeteoMate（macOS TCC 权限主体）
+        ↓
+EmbeddedCuaDriverHost
+        ↓
+私有 Cua Driver daemon + STDIO MCP proxy
+        ↓
+Goose ACP enabledExtensions
+```
+
+Driver 只在连接测试或任务实际选择 `cua-desktop` 时启动，退出 MeteoMate 或切换 Profile 时停止。打包流程从固定 GitHub Release 下载可执行文件并校验发布方 SHA-256；原生 Node 模块、动态库和 Driver 可执行文件均位于 ASAR 外，由最终应用签名覆盖。
+
+产品开放 20 个窗口观察与基础交互工具。网页工具、`page` JavaScript、应用启动/强杀、强制前置、配置、更新、轨迹录制和会话提权等 29 个工具不进入 Goose allowlist，并由 Cua managed policy 默认拒绝。`type_text` 和 `set_value` 还受单次 2,000 字符上限约束；未知的新工具因未出现在 allowlist 中自动拒绝。
+
+权限分为四级：
+
+- 窗口列表和窗口状态等观察操作，在连接已验证并由任务明确选择时可按只读规则处理；
+- 全桌面截图和完整 Accessibility Tree 属于敏感检查；
+- 点击、滚动、拖拽和普通按键属于交互操作；
+- 文本输入、快捷键和直接设置控件值属于敏感操作。
+
+“请求批准”和“智能审批”仍按上述风险级别决定是否弹出确认；选择“完全访问”后，已进入产品 allowlist 的 Cua 操作由 MeteoMate 自动批准，不再逐次弹窗。未进入 allowlist 的启动应用、强杀、配置、更新、轨迹录制和会话提权等工具仍然拒绝，不能通过“完全访问”绕过。Cua bounded mode 和 managed policy 是下层安全上限。Cua 遥测与独立更新检查由宿主环境强制关闭；网页任务继续使用隔离的 Playwright MCP。
+
 ## 6. 与 Harness 的关系
 
 任务会保存：

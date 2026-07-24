@@ -13,16 +13,32 @@ The service is intentionally independent of Goose Core. It stores metadata in an
 - Ed25519 signatures for published packages;
 - featured collections and rule-based recommendations;
 - installation telemetry scoped to the authenticated user;
+- administrator installation governance with version distribution, active-client, project, and pending-upgrade statistics;
 - managed intranet users with `viewer`, `publisher`, and `admin` roles;
 - Argon2id password hashing and revocable in-memory desktop sessions;
-- embedded `/admin/` console for users, roles, sessions, and audit records;
+- embedded `/admin/` console for Experts, Skills, content operations, governance, users, policies, and audit records;
 - organization, role, and user policy delivery for desktop model, Skill, Connector, and permission controls;
+- organization Skill allowlists and optional administrator approval before publication;
 - owner-scoped Skill management with administrator ownership transfer;
+- owner-scoped Expert registry with immutable revisions and optimistic concurrency;
+- private, organization, and public Expert visibility with desktop offline synchronization;
+- administrator review, stable percentage or allowlist distribution, lifecycle control, and revision rollback for managed Experts;
 - failed-login throttling and last-active-administrator protection;
 - append-only JSONL audit log;
 - optional seeding from MeteoMate bundled Skills.
 
+Bundled seeding is idempotent only when the package digest is unchanged. A changed package with the same `skillId@version` is rejected; update `meteomate.json` to a newer version before seeding again. The seed reads display name, icon, categories, and tags from that sidecar so the desktop fallback catalog and SkillHub catalog share one metadata source.
+
 ## Run locally
+
+从 MeteoMate 产品目录可直接启动：
+
+```bash
+cd products/meteo-office-desktop
+npm run skillhub:start
+```
+
+首次创建管理员时，先按下方方式配置启动环境变量。
 
 ```bash
 cd products/meteo-office-desktop/services/skillhub
@@ -93,6 +109,8 @@ curl 'http://127.0.0.1:8088/v1/skills?q=weather'
 - Audit records include login results, user changes, session revocation, and Skill lifecycle operations.
 - User content, desktop conversations, local projects, and Connector secrets are not uploaded to the administration service.
 - Publishers manage only their own Skill records; administrators can manage all records and transfer ownership to another active publisher or administrator.
+- Organization policy can keep publisher-direct releases or route publisher submissions into the administrator review queue. High-risk packages always enter review.
+- Default Skills are constrained by the effective Skill allowlist before policy delivery to the desktop.
 
 For access from other computers, put SkillHub behind an internal HTTPS reverse proxy. Plain HTTP is suitable only for loopback development because login passwords otherwise travel unencrypted on the network.
 
@@ -121,6 +139,16 @@ Publish:
 curl -X POST \
   -H 'Authorization: Bearer dev-publisher' \
   http://127.0.0.1:8088/v1/skills/weather-report-writing/versions/1.0.0/publish
+```
+
+When `skillPublishMode` is `admin_approval`, a publisher receives `202 Accepted` and the version enters `pending_review`. An administrator approves it with the same publish endpoint or returns it to draft with:
+
+```bash
+curl -X POST \
+  -H 'Authorization: Bearer <admin-session-token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"note":"补充兼容性说明后重新提交"}' \
+  http://127.0.0.1:8088/v1/skills/weather-report-writing/versions/1.0.0/reject
 ```
 
 Download:
@@ -195,6 +223,17 @@ PUT    /v1/admin/policies/users/{id}
 DELETE /v1/admin/policies/users/{id}
 GET    /v1/admin/policies/effective/users/{id}
 GET    /v1/trust/keys
+GET    /v1/experts
+POST   /v1/experts
+GET    /v1/experts/{id}
+PUT    /v1/experts/{id}
+POST   /v1/experts/{id}/submit-review
+POST   /v1/experts/{id}/review
+POST   /v1/experts/{id}/status
+PUT    /v1/experts/{id}/distribution
+GET    /v1/experts/{id}/revisions
+GET    /v1/experts/{id}/revisions/{revision}
+POST   /v1/experts/{id}/rollback/{revision}
 GET    /v1/skills
 GET    /v1/skills/{id}
 PATCH  /v1/skills/{id}
@@ -203,13 +242,20 @@ GET    /v1/skills/{id}/versions/{version}/download
 POST   /v1/packages/inspect
 POST   /v1/skills/{id}/versions
 POST   /v1/skills/{id}/versions/{version}/publish
+POST   /v1/skills/{id}/versions/{version}/reject
 POST   /v1/skills/{id}/versions/{version}/deprecate
 GET    /v1/collections
 PUT    /v1/collections/{id}
+DELETE /v1/collections/{id}
+GET    /v1/admin/recommendation-rules
+PUT    /v1/admin/recommendation-rules/{id}
+DELETE /v1/admin/recommendation-rules/{id}
+PUT    /v1/admin/featured-placements
 GET    /v1/recommendations
 GET    /v1/installations
 POST   /v1/installations
 DELETE /v1/installations/{id}
+GET    /v1/admin/installations/summary
 ```
 
 ## Production evolution
@@ -219,6 +265,6 @@ The current file store is suitable for an internal pilot and small team. The `st
 - PostgreSQL metadata and transactions;
 - MinIO / S3 package storage;
 - organization SSO and OAuth/OIDC;
-- asynchronous malware scanning and human review;
+- asynchronous malware scanning and multi-stage review;
 - publisher key management and package transparency logs;
 - ratings, comments, usage analytics, and moderation queues.

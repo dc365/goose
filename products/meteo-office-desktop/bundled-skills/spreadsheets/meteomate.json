@@ -1,0 +1,18 @@
+{
+  "displayName": "Spreadsheets",
+  "version": "1.0.0",
+  "icon": "X",
+  "categories": ["办公成果物"],
+  "tags": ["XLSX", "Excel", "公式", "统计", "图表"],
+  "requires": {
+    "connectors": ["office-artifacts"]
+  },
+  "permissions": {
+    "filesystem": {
+      "read": ["project"],
+      "write": ["artifacts"]
+    },
+    "shell": false,
+    "network": []
+  }
+}

@@ -14,7 +14,7 @@
 
   function card(item) {
     const action = item.capabilityType === 'skill'
-      ? item.installation?.managedByPolicy ? '组织默认' : item.installation ? '管理技能' : item.bundled ? '安装技能' : item.status === 'planned' ? '查看规划' : '查看技能'
+      ? item.installation?.managedByPolicy ? '组织默认' : item.updateAvailable ? '发现更新' : item.installation ? '管理技能' : item.bundled ? '安装技能' : item.status === 'planned' ? '查看规划' : '查看技能'
       : item.status === 'policy-blocked' ? '查看限制' : item.binding ? '管理工具服务' : '配置工具服务';
     return `<article class="capability-card capability-center-card">
       <div class="capability-icon">${escapeHtml(item.icon)}</div>

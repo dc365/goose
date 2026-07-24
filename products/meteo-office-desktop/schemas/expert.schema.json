@@ -3,21 +3,83 @@
   "$id": "https://meteomate.local/schemas/expert.schema.json",
   "title": "MeteoMate Expert",
   "type": "object",
-  "required": ["id", "name", "version", "instruction"],
+  "required": ["apiVersion", "kind", "id", "name", "version", "instruction"],
   "properties": {
-    "id": { "type": "string" },
-    "name": { "type": "string" },
+    "apiVersion": { "const": "meteomate.ai/v1" },
+    "kind": { "enum": ["Expert", "expert", "assistant", "team"] },
+    "id": { "type": "string", "minLength": 1 },
+    "name": { "type": "string", "minLength": 1 },
     "version": { "type": "string" },
-    "instruction": { "type": "string" },
+    "revision": { "type": "integer", "minimum": 1 },
+    "source": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "enum": ["system", "user", "organization"] },
+        "remoteId": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "status": { "enum": ["draft", "enabled", "disabled", "archived"] },
+    "visibility": { "enum": ["private", "organization", "public"] },
+    "owner": { "type": "string" },
+    "category": { "type": "string" },
+    "avatar": { "type": "string" },
+    "description": { "type": "string" },
+    "instruction": { "type": "string", "minLength": 1 },
     "mission": { "type": "string" },
     "methodology": { "type": "array", "items": { "type": "string" } },
+    "workflow": { "type": "array", "items": { "type": "string" } },
     "limitations": { "type": "array", "items": { "type": "string" } },
+    "inputs": { "type": "array", "items": { "type": "string" } },
+    "outputs": { "type": "array", "items": { "type": "string" } },
+    "prompts": { "type": "array", "items": { "type": "string" } },
+    "tags": { "type": "array", "items": { "type": "string" } },
     "requiredSkills": { "type": "array", "items": { "type": "string" } },
-    "optionalSkills": { "type": "array", "items": { "type": "string" } },
+    "recommendedSkills": { "type": "array", "items": { "type": "string" } },
     "requiredConnectors": { "type": "array", "items": { "type": "string" } },
+    "recommendedConnectors": { "type": "array", "items": { "type": "string" } },
+    "toolSelections": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": { "type": "string" },
+        "uniqueItems": true
+      }
+    },
+    "permissionProfile": { "type": "string" },
     "defaultWorkMode": { "enum": ["ask", "plan", "execute"] },
     "modelPolicy": { "type": "string" },
+    "review": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": { "enum": ["not_required", "not_submitted", "pending", "approved", "rejected"] },
+        "note": { "type": "string" },
+        "submittedBy": { "type": "string" },
+        "submittedAt": { "type": ["string", "null"], "format": "date-time" },
+        "reviewedBy": { "type": "string" },
+        "reviewedAt": { "type": ["string", "null"], "format": "date-time" }
+      },
+      "additionalProperties": false
+    },
+    "distribution": {
+      "type": "object",
+      "required": ["mode"],
+      "properties": {
+        "mode": { "enum": ["all", "percentage", "allowlist"] },
+        "percentage": { "type": "integer", "minimum": 1, "maximum": 100 },
+        "userIds": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
     "inputSchema": { "type": ["object", "null"] },
-    "outputSchema": { "type": ["object", "null"] }
+    "outputSchema": { "type": ["object", "null"] },
+    "createdAt": { "type": "string" },
+    "updatedAt": { "type": "string" }
   }
 }

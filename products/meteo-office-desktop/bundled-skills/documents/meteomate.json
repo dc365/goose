@@ -1,0 +1,18 @@
+{
+  "displayName": "Documents",
+  "version": "1.0.0",
+  "icon": "文",
+  "categories": ["办公成果物"],
+  "tags": ["DOCX", "Word", "模板", "报告"],
+  "requires": {
+    "connectors": ["office-artifacts"]
+  },
+  "permissions": {
+    "filesystem": {
+      "read": ["project"],
+      "write": ["artifacts"]
+    },
+    "shell": false,
+    "network": []
+  }
+}

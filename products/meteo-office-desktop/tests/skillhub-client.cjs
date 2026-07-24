@@ -41,6 +41,7 @@ assert.ok(wrapperSource.includes('skillHubClient.registerIpc()'));
 assert.ok(preloadSource.includes('getSkillHubSettings'));
 assert.ok(preloadSource.includes('publishSkillDraftToHub'));
 assert.ok(preloadSource.includes('listManagedSkillHubSkills'));
+assert.ok(preloadSource.includes('syncSkillHubExperts'));
 assert.ok(preloadSource.includes('updateSkillHubSkill'));
 
 assert.equal(normalizeBaseURL('http://127.0.0.1:8088/'), 'http://127.0.0.1:8088');
@@ -99,6 +100,7 @@ const server = http.createServer((request, response) => {
     return response.end(packageBytes);
   }
   if (request.url === '/v1/installations' && request.method === 'POST') return send(201, { id: 'inst-1' });
+  if (request.url === '/v1/installations/inst-1' && request.method === 'DELETE') return send(200, { deleted: true });
   return send(404, { error: { message: 'not found' } });
 });
 
@@ -108,6 +110,15 @@ server.listen(0, '127.0.0.1', async () => {
     const ipcHandlers = new Map();
     let activeProfileKey = 'profile-a';
     const installedSkills = [];
+    const remoteStates = [];
+    let registrySkills = [{
+      id: 'user:user:weather-review',
+      scope: 'user',
+      skillId: 'weather-review',
+      version: '0.9.0',
+      enabled: true,
+      remote: { skillHubInstallationId: 'inst-1' },
+    }];
     const capabilityService = {
       paths: () => ({ temp }),
       inspectSkill: (filePath) => {
@@ -122,12 +133,13 @@ server.listen(0, '127.0.0.1', async () => {
         };
       },
       syncManagedSkills: () => {},
-      registrySnapshot: () => ({ skills: [] }),
+      registrySnapshot: () => ({ skills: registrySkills }),
       installBundledDefault: () => null,
       installSkill: (request) => {
         installedSkills.push({ profileKey: activeProfileKey, request });
-        return { installation: { version: '1.0.0' } };
+        return { installation: { id: 'user:user:weather-review', version: '1.0.0' } };
       },
+      updateSkillHubState: (id, remote) => remoteStates.push({ id, remote }),
     };
     const profileRoot = path.join(temp, 'profiles', 'publisher');
     const profileContext = {
@@ -162,7 +174,19 @@ server.listen(0, '127.0.0.1', async () => {
     const inspection = await client.downloadAndInspect({ skillId: 'weather-review', version: '1.0.0' });
     assert.equal(inspection.remote.signatureVerified, true);
     assert.equal(inspection.remote.digest, digest);
-    assert.equal((await client.reportInstallation({ skillId: 'weather-review', version: '1.0.0' })).id, 'inst-1');
+    assert.equal((await client.reportInstallation({ localInstallationId: 'user:user:weather-review', skillId: 'weather-review', version: '1.0.0' })).id, 'inst-1');
+    assert.equal(remoteStates[0].remote.skillHubInstallationId, 'inst-1');
+    assert.equal((await client.reportUninstallation({ remoteInstallationId: 'inst-1' })).deleted, true);
+
+    const firstManaged = await client.applyManagedPolicy({
+      profileKey: 'profile-a',
+      policyContext: { policy: { revision: 2, defaultSkillIds: ['weather-review'] } },
+    });
+    assert.equal(firstManaged.installed[0].source, 'skillhub');
+    assert.equal(firstManaged.installed[0].upgraded, true);
+    assert.equal(installedSkills[0].request.replace, true);
+    installedSkills.length = 0;
+    registrySkills = [];
 
     const managedSync = client.applyManagedPolicy({
       profileKey: 'profile-a',
@@ -174,7 +198,7 @@ server.listen(0, '127.0.0.1', async () => {
     assert.match(managedResult.errors[0].message, /用户已切换/);
 
     client.registerIpc();
-    for (const name of ['skillhub:get-settings', 'skillhub:test', 'skillhub:list-skills', 'skillhub:list-managed-skills', 'skillhub:list-publishers', 'skillhub:update-skill', 'skillhub:publish-version', 'skillhub:deprecate-version', 'skillhub:download-inspect', 'skillhub:publish-draft']) {
+    for (const name of ['skillhub:get-settings', 'skillhub:test', 'skillhub:list-skills', 'skillhub:list-managed-skills', 'skillhub:list-experts', 'skillhub:sync-experts', 'skillhub:list-publishers', 'skillhub:update-skill', 'skillhub:publish-version', 'skillhub:deprecate-version', 'skillhub:download-inspect', 'skillhub:report-uninstallation', 'skillhub:publish-draft']) {
       assert.ok(ipcHandlers.has(name), `missing IPC handler ${name}`);
     }
     console.log('MeteoMate SkillHub client checks passed.');
