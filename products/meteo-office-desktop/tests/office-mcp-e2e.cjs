@@ -45,6 +45,7 @@ async function main() {
         'artifact_render',
         'artifact_validate',
         'docx_create',
+        'docx_create_from_markdown',
         'docx_edit',
         'docx_inspect',
         'pdf_create',
@@ -58,6 +59,36 @@ async function main() {
         'xlsx_inspect',
       ],
     );
+    const docxCreate = tools.tools.find((tool) => tool.name === 'docx_create');
+    assert.equal(docxCreate.inputSchema.properties.spec.properties.title.type, 'string');
+    assert.equal(docxCreate.inputSchema.properties.spec.properties.blocks.type, 'array');
+    assert.equal(docxCreate.inputSchema.properties.spec.additionalProperties, false);
+    const markdownCreated = await client.callTool({
+      name: 'docx_create_from_markdown',
+      arguments: {
+        schemaVersion: 'meteomate.office/v1',
+        workspaceId: 'project-current',
+        outputPath: 'artifacts/mcp-forecast.docx',
+        title: '未来三天天气预报',
+        contentLines: [
+          '发布时间：2026年7月25日20时',
+          '',
+          '## 一、天气概况',
+          '',
+          '未来三天以多云天气为主。',
+          '',
+          '| 日期 | 天气 |',
+          '| --- | --- |',
+          '| 7月26日 | 多云 |',
+        ],
+        footer: '测试数据，不代表官方预报结论。',
+      },
+    });
+    assert.equal(markdownCreated.isError, undefined);
+    assert.ok(fs.existsSync(path.join(
+      workspace,
+      markdownCreated.structuredContent.artifact.path
+    )));
     const created = await client.callTool({
       name: 'pdf_create',
       arguments: {

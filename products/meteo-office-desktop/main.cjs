@@ -12,6 +12,7 @@ const GooseRuntimeEnvironment = require('./capabilities/goose-runtime-environmen
 const PermissionPolicy = require('./capabilities/permission-policy.cjs');
 const OfficeArtifactCollector = require('./capabilities/office-artifact-collector.cjs');
 const ProjectWorkspace = require('./capabilities/project-workspace.cjs');
+const SessionPlatformExtensions = require('./capabilities/session-platform-extensions.cjs');
 const ContextWindow = require('./harness/context-window');
 const CompletionCompat = require('./harness/completion-compat.cjs');
 
@@ -910,6 +911,11 @@ class GooseAcpRuntime {
           );
         }
         if (!canReuseLoadedSession) {
+          await SessionPlatformExtensions.pruneSession({
+            client: this.client,
+            sessionId: request.sessionId,
+            request,
+          });
           await this.verifySessionCapabilities(
             request,
             request.sessionId,
@@ -917,6 +923,12 @@ class GooseAcpRuntime {
             sessionExtensionConfigs,
             loadResponse
           );
+        } else {
+          await SessionPlatformExtensions.pruneSession({
+            client: this.client,
+            sessionId: request.sessionId,
+            request,
+          });
         }
         return request.sessionId;
       }
@@ -937,6 +949,11 @@ class GooseAcpRuntime {
       sessionId,
       CompletionCompat.needsPromptFallback(request.completionContract, response)
     );
+    await SessionPlatformExtensions.pruneSession({
+      client: this.client,
+      sessionId,
+      request,
+    });
     await this.verifySessionCapabilities(
       request,
       sessionId,

@@ -66,7 +66,7 @@ assert.ok(ComputerConnector.SAFE_TOOLS.includes('get_window_state'));
 assert.ok(ComputerConnector.SAFE_TOOLS.includes('click'));
 assert.ok(!ComputerConnector.SAFE_TOOLS.includes('browser_navigate'));
 assert.ok(!ComputerConnector.SAFE_TOOLS.includes('kill_app'));
-assert.equal(OfficeConnector.SAFE_TOOLS.length, 14);
+assert.equal(OfficeConnector.SAFE_TOOLS.length, 15);
 assert.ok(OfficeConnector.SAFE_TOOLS.includes('docx_create'));
 assert.ok(OfficeConnector.SAFE_TOOLS.includes('pptx_create'));
 assert.ok(OfficeConnector.SAFE_TOOLS.includes('xlsx_create'));

@@ -47,6 +47,43 @@ try {
   assert.equal(fs.readlinkSync(senddoc), path.join('..', 'Resources', 'senddoc'));
   assert.equal(fs.readFileSync(senddoc, 'utf8'), 'senddoc');
 
+  const fontSource = path.join(temp, 'NotoSansCJKsc-Regular.otf');
+  const licenseSource = path.join(temp, 'LICENSE.Noto-CJK.txt');
+  fs.writeFileSync(fontSource, 'test-font');
+  fs.writeFileSync(licenseSource, 'test-license');
+  const fontAssets = [
+    {
+      name: path.basename(fontSource),
+      relativeUrl: 'font',
+      sha256: 'bc780f3356dbb3028ea785853c2045969316fe4aa0e437bf6ac50255a59f1748',
+      envPath: 'TEST_FONT_PATH',
+      destination: 'font',
+    },
+    {
+      name: path.basename(licenseSource),
+      relativeUrl: 'license',
+      sha256: '9c0701efe6e3318eb8a98c634e0098bbe980e7a140e91c7f87c82a66112a0e18',
+      envPath: 'TEST_FONT_LICENSE_PATH',
+      destination: 'license',
+    },
+  ];
+  const installedFontFiles = PrepareOfficeRuntime.installCjkFont(bundledSoffice, {
+    platform: 'darwin',
+    env: {
+      TEST_FONT_PATH: fontSource,
+      TEST_FONT_LICENSE_PATH: licenseSource,
+    },
+    assets: fontAssets,
+  });
+  assert.equal(
+    fs.readFileSync(installedFontFiles[0], 'utf8'),
+    'test-font',
+  );
+  assert.equal(
+    fs.readFileSync(installedFontFiles[1], 'utf8'),
+    'test-license',
+  );
+
   const wrapper = path.join(temp, 'soffice');
   fs.writeFileSync(wrapper, '#!/bin/sh\nexit 0\n');
   fs.chmodSync(wrapper, 0o755);

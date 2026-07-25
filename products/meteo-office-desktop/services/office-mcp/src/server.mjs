@@ -6,8 +6,13 @@ import path from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import * as z from 'zod/v4';
+import {
+  MAX_DOCUMENT_TABLE_CELLS,
+  MAX_MARKDOWN_BYTES,
+  markdownDocumentInput,
+} from './markdown-document.mjs';
 
-const SERVER_VERSION = '1.1.0';
+const SERVER_VERSION = '1.2.0';
 const MAX_WORKER_OUTPUT_BYTES = 8 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 120_000;
 const SCHEMA_VERSION = 'meteomate.office/v1';
@@ -141,6 +146,74 @@ const relativePath = z.string().min(1).max(1024)
   .refine((value) => !value.split(/[\\/]/).includes('..'), '路径不能包含 ..');
 const sourceHash = z.string().regex(/^(?:sha256:)?[a-f0-9]{64}$/i);
 const objectValue = z.record(z.string(), z.unknown());
+const documentText = z.string().max(100_000);
+const documentCell = z.union([z.string().max(20_000), z.number(), z.boolean(), z.null()]);
+const documentBlock = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('paragraph'),
+    text: documentText,
+    style: z.string().min(1).max(128).optional(),
+  }).strict(),
+  z.object({
+    type: z.literal('heading'),
+    text: documentText,
+    level: z.number().int().min(1).max(9).optional(),
+  }).strict(),
+  z.object({
+    type: z.literal('table'),
+    rows: z.array(z.array(documentCell).min(1).max(100)).min(1).max(1_000),
+    style: z.string().min(1).max(128).optional(),
+  }).strict(),
+  z.object({
+    type: z.literal('image'),
+    path: relativePath,
+    widthInches: z.number().positive().max(30).optional(),
+    heightInches: z.number().positive().max(30).optional(),
+  }).strict(),
+  z.object({ type: z.literal('page_break') }).strict(),
+  z.object({ type: z.literal('spacer') }).strict(),
+]);
+const documentSpec = z.object({
+  title: documentText.optional(),
+  header: documentText.optional(),
+  footer: documentText.optional(),
+  defaultFont: z.string().min(1).max(128).optional(),
+  defaultFontSize: z.number().positive().max(200).optional(),
+  page: z.object({
+    orientation: z.enum(['portrait', 'landscape']).optional(),
+    topMarginInches: z.number().min(0).max(10).optional(),
+    bottomMarginInches: z.number().min(0).max(10).optional(),
+    leftMarginInches: z.number().min(0).max(10).optional(),
+    rightMarginInches: z.number().min(0).max(10).optional(),
+  }).strict().optional(),
+  anchors: z.record(z.string().min(1).max(256), documentCell).optional(),
+  blocks: z.array(documentBlock).min(1).max(500).optional(),
+}).strict().superRefine((spec, context) => {
+  const tableCellCount = (spec.blocks || [])
+    .filter((block) => block.type === 'table')
+    .reduce(
+      (total, block) => total + (
+        block.rows.length * Math.max(...block.rows.map((row) => row.length))
+      ),
+      0
+    );
+  if (tableCellCount > MAX_DOCUMENT_TABLE_CELLS) {
+    context.addIssue({
+      code: 'custom',
+      path: ['blocks'],
+      message: `表格总单元格不能超过 ${MAX_DOCUMENT_TABLE_CELLS} 个`,
+    });
+  }
+});
+
+function validatedMarkdownDocumentInput(input) {
+  const transformed = markdownDocumentInput(input);
+  return {
+    ...transformed,
+    spec: documentSpec.parse(transformed.spec),
+  };
+}
+
 const operation = z.object({
   op: z.string().min(1).max(64),
 }).catchall(z.unknown());
@@ -158,10 +231,20 @@ function enqueueWorker(toolName, input, timeoutMs) {
   return run;
 }
 
-function registerTool(name, description, inputSchema, timeoutMs = DEFAULT_TIMEOUT_MS) {
+function registerTool(
+  name,
+  description,
+  inputSchema,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+  { workerToolName = name, transformInput = (input) => input } = {}
+) {
   server.registerTool(name, { description, inputSchema }, async (input) => {
     try {
-      return toolResult(await enqueueWorker(name, input, timeoutMs));
+      return toolResult(await enqueueWorker(
+        workerToolName,
+        transformInput(input),
+        timeoutMs
+      ));
     } catch (error) {
       return toolFailure(error);
     }
@@ -175,13 +258,34 @@ registerTool('docx_inspect', '检查工作区内 DOCX 的段落、表格、样�
   include: z.array(z.enum(['structure', 'anchors', 'fonts', 'media', 'security'])).max(5).optional(),
 });
 
-registerTool('docx_create', '从受控规范或工作区模板创建新的 DOCX；默认拒绝覆盖现有文件。', {
+registerTool('docx_create_from_markdown', '普通 Word 新建的首选工具。标题单独提交，Markdown 正文按单行字符串数组 contentLines 提交；默认拒绝覆盖现有文件。', {
+  schemaVersion,
+  workspaceId,
+  outputPath: relativePath,
+  title: z.string().min(1).max(1_000),
+  contentLines: z.array(
+    z.string().max(20_000)
+      .refine((value) => !/[\r\n]/.test(value), '每个正文元素必须是单行字符串')
+  ).min(1).max(5_000)
+    .refine((lines) => lines.some((line) => Boolean(line.trim())), '正文不能为空')
+    .refine(
+      (lines) => Buffer.byteLength(lines.join('\n'), 'utf8') <= MAX_MARKDOWN_BYTES,
+      `正文不能超过 ${MAX_MARKDOWN_BYTES} 字节`
+    ),
+  header: documentText.optional(),
+  footer: documentText.optional(),
+}, DEFAULT_TIMEOUT_MS, {
+  workerToolName: 'docx_create',
+  transformInput: validatedMarkdownDocumentInput,
+});
+
+registerTool('docx_create', '仅用于模板锚点、表格、图片或精确版式等高级结构化 DOCX。普通 Word 新建必须优先使用 docx_create_from_markdown；默认拒绝覆盖现有文件。', {
   schemaVersion,
   workspaceId,
   outputPath: relativePath,
   templatePath: relativePath.optional(),
   templateHash: sourceHash.optional(),
-  spec: objectValue,
+  spec: documentSpec,
 });
 
 registerTool('docx_edit', '以乐观锁方式对 DOCX 执行白名单结构化编辑，并写入新文件。', {

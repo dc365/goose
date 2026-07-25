@@ -152,6 +152,14 @@ const capabilityRenderSource = fs.readFileSync(path.join(root, 'capability-cente
 const stateStoreSource = fs.readFileSync(path.join(root, 'harness/state-store.js'), 'utf8');
 const stateRestoreSource = fs.readFileSync(path.join(root, 'harness/state-restore.js'), 'utf8');
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+const documentsManifest = JSON.parse(
+  fs.readFileSync(path.join(root, 'bundled-skills/documents/meteomate.json'), 'utf8')
+);
+const documentsSkill = fs.readFileSync(
+  path.join(root, 'bundled-skills/documents/SKILL.md'),
+  'utf8'
+);
+assert.ok(documentsSkill.includes(`version: "${documentsManifest.version}"`));
 
 assert.ok(rendererActionsSource.includes('function latestAssistantMessage(task)'));
 assert.ok(rendererActionsSource.includes('const assistant = currentStreamingAssistant(task);\n  if (!assistant) return null;'));

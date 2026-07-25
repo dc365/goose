@@ -7,8 +7,10 @@ const os = require('node:os');
 const path = require('node:path');
 const OfficeConnector = require('../capabilities/office-connector.js');
 const OfficeRuntime = require('../capabilities/office-runtime.cjs');
+const officePackage = require('../services/office-mcp/package.json');
 
-assert.equal(OfficeConnector.SAFE_TOOLS.length, 14);
+assert.equal(OfficeConnector.SAFE_TOOLS.length, 15);
+assert.equal(officePackage.version, OfficeConnector.RUNTIME_VERSION);
 assert.equal(OfficeConnector.toolRisk('docx_inspect'), 'observe');
 assert.equal(OfficeConnector.toolRisk('pptx_inspect'), 'observe');
 assert.equal(OfficeConnector.toolRisk('xlsx_edit'), 'mutation');

@@ -4,7 +4,7 @@ description: 在当前 MeteoMate 项目中检查、创建、编辑、渲染和�
 license: Apache-2.0
 metadata:
   author: MeteoMate
-  version: "1.0.0"
+  version: "1.1.0"
 ---
 
 # Documents
@@ -17,10 +17,34 @@ metadata:
 
 1. 明确输出文件名、业务模板、正文结构、图片和表格来源。
 2. 使用 `docx_inspect` 检查模板的锚点、样式、字体和安全状态。
-3. 使用 `docx_create` 创建新版本；模板内容优先写入 content control 或 bookmark。
+3. 无模板的新文档必须使用 `docx_create_from_markdown`；只有模板锚点、表格、图片或精确版式场景才使用 `docx_create`。
 4. 使用 `artifact_render` 生成预览。
 5. 使用 `artifact_validate` 完成结构、安全和渲染校验。
 6. 只有返回状态为 `ready` 时，才说明文件已经完成。
+
+无模板新建时，使用扁平参数。`title` 是字符串，`contentLines` 是单行字符串数组；空字符串代表段落间空行。数组元素内严禁包含换行：
+
+```json
+{
+  "outputPath": "artifacts/未来三天天气预报.docx",
+  "title": "未来三天天气预报",
+  "contentLines": [
+    "发布时次：2026年7月25日20时",
+    "",
+    "## 一、天气概况",
+    "",
+    "这里填写正文。",
+    "",
+    "| 日期 | 天气 |",
+    "| --- | --- |",
+    "| 7月26日 | 多云 |"
+  ]
+}
+```
+
+普通新建不要调用 `docx_create`，也不要生成 `spec`、`blocks`、`sections`、`paragraphs`、`items` 或 `runs`。遇到 `OUTPUT_EXISTS` 时改用带版本号的新文件名，不得用 Shell 删除或覆盖原文档。
+
+只有高级结构化场景才使用 `docx_create`：`spec.title` 必须是字符串，正文必须放在 `spec.blocks` 数组，且不得在 JSON 字符串中写入未转义换行。
 
 ### 修改文档
 
@@ -32,6 +56,7 @@ metadata:
 ## 工具
 
 - `docx_inspect`
+- `docx_create_from_markdown`
 - `docx_create`
 - `docx_edit`
 - `artifact_render`
@@ -41,6 +66,7 @@ metadata:
 
 - 所有路径使用当前项目工作区内的相对路径。
 - 输出使用 `.docx`，并放在 `artifacts/` 或用户指定的项目子目录。
+- DOCX 创建、检查、重试和删除都不得回退到 Shell；Office 工作区与 Shell 当前目录不是同一目录。
 - 修改必须提供 `sourceHash`，发生 `SOURCE_CHANGED` 后重新 inspect。
 - 不生成或处理 `.docm`、宏、ActiveX、嵌入对象和外部关系。
 - 不以 `{{field}}` 文本替换作为新模板的默认锚点。

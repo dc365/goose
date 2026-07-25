@@ -2,14 +2,32 @@
 
 const crypto = require('node:crypto');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 const productRoot = path.resolve(__dirname, '..');
-const runtimeVersion = '1.1.0';
+const runtimeVersion = '1.2.0';
 const runtimeRoot = path.join(productRoot, 'runtime', 'office', `${process.platform}-${process.arch}`);
 const requirementsPath = path.join(productRoot, 'services', 'office-mcp', 'python', 'requirements.lock');
 const workerSourcePath = path.join(productRoot, 'services', 'office-mcp', 'python', 'worker.py');
+const notoCjkReleaseBase = 'https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004';
+const cjkFontAssets = [
+  {
+    name: 'NotoSansCJKsc-Regular.otf',
+    relativeUrl: 'Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf',
+    sha256: '2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b',
+    envPath: 'METEOMATE_OFFICE_CJK_FONT_PATH',
+    destination: 'font',
+  },
+  {
+    name: 'LICENSE.Noto-CJK.txt',
+    relativeUrl: 'LICENSE',
+    sha256: '6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2',
+    envPath: 'METEOMATE_OFFICE_CJK_FONT_LICENSE_PATH',
+    destination: 'license',
+  },
+];
 
 function isExecutable(filePath) {
   try {
@@ -222,6 +240,96 @@ function copyLibreOffice(
   return path.join(target, path.basename(sourceCommand));
 }
 
+function libreOfficeFontDirectories(
+  sofficeCommand,
+  platform = process.platform,
+) {
+  if (platform === 'darwin') {
+    const contents = path.dirname(path.dirname(sofficeCommand));
+    const resources = path.join(contents, 'Resources');
+    return {
+      fonts: path.join(resources, 'fonts', 'truetype'),
+      licenses: path.join(resources, 'fonts'),
+    };
+  }
+  const installationRoot = path.resolve(path.dirname(sofficeCommand), '..');
+  return {
+    fonts: path.join(installationRoot, 'share', 'fonts', 'truetype'),
+    licenses: path.join(installationRoot, 'share', 'fonts'),
+  };
+}
+
+function downloadRuntimeAsset(asset, {
+  env = process.env,
+  cacheDirectory = path.join(os.tmpdir(), 'meteomate-runtime-downloads'),
+  releaseBase = notoCjkReleaseBase,
+} = {}) {
+  const providedPath = String(env[asset.envPath] || '').trim();
+  if (providedPath) {
+    const source = path.resolve(providedPath);
+    if (!fs.statSync(source).isFile()) throw new Error(`${asset.envPath} 必须指向文件`);
+    const digest = sha256(source);
+    if (digest !== asset.sha256) {
+      throw new Error(`${asset.name} 完整性校验失败：期望 ${asset.sha256}，实际 ${digest}`);
+    }
+    return source;
+  }
+
+  fs.mkdirSync(cacheDirectory, { recursive: true, mode: 0o700 });
+  const cached = path.join(cacheDirectory, asset.name);
+  if (fs.existsSync(cached) && sha256(cached) !== asset.sha256) {
+    fs.rmSync(cached, { force: true });
+  }
+  if (!fs.existsSync(cached)) {
+    const base = String(env.METEOMATE_OFFICE_FONT_DOWNLOAD_BASE_URL || releaseBase).replace(/\/+$/, '');
+    const url = `${base}/${asset.relativeUrl}`;
+    run('curl', [
+      '--location',
+      '--fail',
+      '--show-error',
+      '--retry',
+      '3',
+      '--connect-timeout',
+      '20',
+      '--max-time',
+      '900',
+      '--user-agent',
+      'MeteoMate Runtime Builder',
+      '--output',
+      cached,
+      '--url',
+      url,
+    ]);
+  }
+  const digest = sha256(cached);
+  if (digest !== asset.sha256) {
+    fs.rmSync(cached, { force: true });
+    throw new Error(`${asset.name} 完整性校验失败：期望 ${asset.sha256}，实际 ${digest}`);
+  }
+  return cached;
+}
+
+function installCjkFont(
+  sofficeCommand,
+  {
+    platform = process.platform,
+    env = process.env,
+    cacheDirectory,
+    assets = cjkFontAssets,
+  } = {},
+) {
+  const directories = libreOfficeFontDirectories(sofficeCommand, platform);
+  fs.mkdirSync(directories.fonts, { recursive: true, mode: 0o700 });
+  fs.mkdirSync(directories.licenses, { recursive: true, mode: 0o700 });
+  return assets.map((asset) => {
+    const source = downloadRuntimeAsset(asset, { env, cacheDirectory });
+    const directory = asset.destination === 'font' ? directories.fonts : directories.licenses;
+    const target = path.join(directory, asset.name);
+    fs.copyFileSync(source, target);
+    return target;
+  });
+}
+
 function normalizePortableSymlinks(root) {
   for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
     const entryPath = path.join(root, entry.name);
@@ -297,6 +405,7 @@ function prepareOfficeRuntime() {
     env: pythonEnv,
   }));
   const bundledSoffice = copyLibreOffice(findLibreOffice());
+  const bundledCjkFontFiles = installCjkFont(bundledSoffice);
   const workerPath = path.join(runtimeRoot, 'worker.py');
   fs.copyFileSync(workerSourcePath, workerPath);
   fs.chmodSync(workerPath, 0o600);
@@ -312,6 +421,7 @@ function prepareOfficeRuntime() {
     criticalFiles: [
       path.relative(runtimeRoot, pythonCommand),
       path.relative(runtimeRoot, bundledSoffice),
+      ...bundledCjkFontFiles.map((filePath) => path.relative(runtimeRoot, filePath)),
       path.relative(runtimeRoot, workerPath),
     ].map((relativePath) => ({
       path: relativePath.split(path.sep).join('/'),
@@ -330,8 +440,12 @@ function prepareOfficeRuntime() {
 if (require.main === module) prepareOfficeRuntime();
 
 module.exports = {
+  cjkFontAssets,
   copyLibreOffice,
+  downloadRuntimeAsset,
   findLibreOffice,
+  installCjkFont,
+  libreOfficeFontDirectories,
   normalizeBundleSymlinks,
   normalizePortableSymlinks,
   prepareOfficeRuntime,

@@ -21,7 +21,9 @@ from xml.sax.saxutils import escape
 from defusedxml import ElementTree as SafeElementTree
 from docx import Document
 from docx.enum.section import WD_ORIENT
+from docx.enum.style import WD_STYLE_TYPE
 from docx.enum.text import WD_BREAK
+from docx.oxml.ns import qn
 from docx.shared import Inches, Pt
 from openpyxl import Workbook, load_workbook
 from openpyxl.chart import BarChart, LineChart, PieChart, Reference
@@ -54,9 +56,14 @@ from reportlab.platypus import (
 )
 
 SCHEMA_VERSION = "meteomate.office/v1"
-RUNTIME_VERSION = os.environ.get("METEOMATE_OFFICE_RUNTIME_VERSION", "1.1.0")
+RUNTIME_VERSION = os.environ.get("METEOMATE_OFFICE_RUNTIME_VERSION", "1.2.0")
+DEFAULT_DOCUMENT_FONT = os.environ.get(
+    "METEOMATE_OFFICE_DOCUMENT_FONT",
+    "Noto Sans CJK SC",
+)
 MAX_INPUT_BYTES = 100 * 1024 * 1024
 MAX_OOXML_EXPANDED_BYTES = 500 * 1024 * 1024
+MAX_DOCUMENT_TABLE_CELLS = 10_000
 MAX_OOXML_ENTRIES = 10_000
 MAX_OOXML_RATIO = 200
 MAX_PDF_PAGES = 1_000
@@ -452,7 +459,7 @@ def fill_bookmark(document: Document, name: str, value: str) -> bool:
 
 
 def fill_anchor(document: Document, name: str, value: Any) -> bool:
-    text = str(value)
+    text = "" if value is None else str(value)
     return fill_content_control(document, name, text) or fill_bookmark(document, name, text)
 
 
@@ -481,50 +488,179 @@ def document_add_table(document: Document, block: dict[str, Any]) -> None:
     rows = block.get("rows")
     if not isinstance(rows, list) or not rows or not all(isinstance(row, list) for row in rows):
         fail("INVALID_ARGUMENT", "table.rows 必须是非空二维数组")
+    if len(rows) > 1000 or any(not row or len(row) > 100 for row in rows):
+        fail("RESOURCE_LIMIT", "table.rows 不能超过 1000 行、每行不能超过 100 列")
+    if any(
+        isinstance(value, (dict, list))
+        for row in rows
+        for value in row
+    ):
+        fail("INVALID_ARGUMENT", "table.rows 单元格只能是字符串、数字、布尔值或 null")
     column_count = max(len(row) for row in rows)
     table = document.add_table(rows=len(rows), cols=column_count)
     style = block.get("style")
     if style:
         table.style = str(style)
-    for row_index, row in enumerate(rows):
-        for column_index, value in enumerate(row):
-            table.cell(row_index, column_index).text = str(value)
+    for table_row, values in zip(table.rows, rows):
+        cells = table_row.cells
+        for column_index, value in enumerate(values):
+            cells[column_index].text = "" if value is None else str(value)
+
+
+def reject_unknown_fields(value: dict[str, Any], allowed: set[str], field: str) -> None:
+    unknown = sorted(set(value) - allowed)
+    if unknown:
+        fail("INVALID_ARGUMENT", f"{field} 包含不支持字段：{', '.join(unknown[:20])}")
+
+
+def require_document_text(value: Any, field: str) -> str:
+    if not isinstance(value, str):
+        fail("INVALID_ARGUMENT", f"{field} 必须是字符串")
+    return value
+
+
+def validate_docx_spec(spec: dict[str, Any], has_template: bool) -> None:
+    reject_unknown_fields(
+        spec,
+        {
+            "title",
+            "header",
+            "footer",
+            "defaultFont",
+            "defaultFontSize",
+            "page",
+            "anchors",
+            "blocks",
+        },
+        "spec",
+    )
+    for field in ("title", "header", "footer", "defaultFont"):
+        if spec.get(field) is not None:
+            require_document_text(spec[field], f"spec.{field}")
+    font_size = spec.get("defaultFontSize")
+    if font_size is not None and (
+        isinstance(font_size, bool)
+        or not isinstance(font_size, (int, float))
+        or not 0 < float(font_size) <= 200
+    ):
+        fail("INVALID_ARGUMENT", "spec.defaultFontSize 必须是 0 到 200 之间的数字")
+    page = spec.get("page")
+    if page is not None:
+        if not isinstance(page, dict):
+            fail("INVALID_ARGUMENT", "spec.page 必须是对象")
+        reject_unknown_fields(
+            page,
+            {
+                "orientation",
+                "topMarginInches",
+                "bottomMarginInches",
+                "leftMarginInches",
+                "rightMarginInches",
+            },
+            "spec.page",
+        )
+        orientation = page.get("orientation")
+        if orientation is not None and orientation not in {"portrait", "landscape"}:
+            fail("INVALID_ARGUMENT", "spec.page.orientation 仅支持 portrait 或 landscape")
+        for field in (
+            "topMarginInches",
+            "bottomMarginInches",
+            "leftMarginInches",
+            "rightMarginInches",
+        ):
+            value = page.get(field)
+            if value is not None and (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not 0 <= float(value) <= 10
+            ):
+                fail("INVALID_ARGUMENT", f"spec.page.{field} 必须是 0 到 10 之间的数字")
+    anchors = spec.get("anchors")
+    if anchors is not None:
+        if not isinstance(anchors, dict):
+            fail("INVALID_ARGUMENT", "spec.anchors 必须是对象")
+        if any(isinstance(value, (dict, list)) for value in anchors.values()):
+            fail("INVALID_ARGUMENT", "spec.anchors 的值只能是字符串、数字、布尔值或 null")
+    blocks = spec.get("blocks")
+    if blocks is not None and (not isinstance(blocks, list) or not blocks):
+        fail("INVALID_ARGUMENT", "spec.blocks 必须是非空数组")
+    if not has_template and not spec.get("title") and not blocks:
+        fail("INVALID_ARGUMENT", "新建 DOCX 至少需要 spec.title 或 spec.blocks")
 
 
 def document_add_blocks(document: Document, blocks: Any) -> None:
     if not isinstance(blocks, list):
         fail("INVALID_ARGUMENT", "spec.blocks 必须是数组")
-    for block in blocks:
+    if len(blocks) > 500:
+        fail("RESOURCE_LIMIT", "spec.blocks 不能超过 500 个内容块")
+    table_cell_count = 0
+    for index, block in enumerate(blocks):
         if not isinstance(block, dict):
             fail("INVALID_ARGUMENT", "文档内容块必须是对象")
         kind = str(block.get("type") or "paragraph")
         if kind == "paragraph":
-            paragraph = document.add_paragraph(str(block.get("text") or ""))
+            reject_unknown_fields(block, {"type", "text", "style"}, f"spec.blocks[{index}]")
+            paragraph = document.add_paragraph(
+                require_document_text(block.get("text"), f"spec.blocks[{index}].text")
+            )
             if block.get("style"):
                 paragraph.style = str(block["style"])
         elif kind == "heading":
-            document.add_heading(str(block.get("text") or ""), level=int(block.get("level") or 1))
+            reject_unknown_fields(block, {"type", "text", "level"}, f"spec.blocks[{index}]")
+            level = block.get("level", 1)
+            if isinstance(level, bool) or not isinstance(level, int) or not 1 <= level <= 9:
+                fail("INVALID_ARGUMENT", f"spec.blocks[{index}].level 必须是 1 到 9 的整数")
+            document.add_heading(
+                require_document_text(block.get("text"), f"spec.blocks[{index}].text"),
+                level=level,
+            )
         elif kind == "table":
+            reject_unknown_fields(block, {"type", "rows", "style"}, f"spec.blocks[{index}]")
+            rows = block.get("rows")
+            if isinstance(rows, list) and all(isinstance(row, list) for row in rows):
+                table_cell_count += len(rows) * max((len(row) for row in rows), default=0)
+                if table_cell_count > MAX_DOCUMENT_TABLE_CELLS:
+                    fail(
+                        "RESOURCE_LIMIT",
+                        f"文档表格总单元格不能超过 {MAX_DOCUMENT_TABLE_CELLS} 个",
+                    )
             document_add_table(document, block)
         elif kind == "image":
+            reject_unknown_fields(
+                block,
+                {"type", "path", "widthInches", "heightInches"},
+                f"spec.blocks[{index}]",
+            )
             document_add_image(document, block)
         elif kind == "page_break":
+            reject_unknown_fields(block, {"type"}, f"spec.blocks[{index}]")
             document.add_page_break()
         elif kind == "spacer":
+            reject_unknown_fields(block, {"type"}, f"spec.blocks[{index}]")
             document.add_paragraph("")
         else:
             fail("UNSUPPORTED_FEATURE", f"DOCX 不支持内容块 {kind}")
 
 
-def configure_document(document: Document, spec: dict[str, Any]) -> None:
-    font_name = str(spec.get("defaultFont") or "")
+def configure_document(
+    document: Document,
+    spec: dict[str, Any],
+    *,
+    has_template: bool = False,
+) -> None:
+    font_name = str(spec.get("defaultFont") or ("" if has_template else DEFAULT_DOCUMENT_FONT))
     font_size = spec.get("defaultFontSize")
-    if font_name or font_size:
-        normal = document.styles["Normal"]
-        if font_name:
-            normal.font.name = font_name
-        if font_size:
-            normal.font.size = Pt(float(font_size))
+    if font_name:
+        for style in document.styles:
+            if style.type not in (WD_STYLE_TYPE.PARAGRAPH, WD_STYLE_TYPE.CHARACTER):
+                continue
+            style.font.name = font_name
+            style._element.get_or_add_rPr().get_or_add_rFonts().set(
+                qn("w:eastAsia"),
+                font_name,
+            )
+    if font_size:
+        document.styles["Normal"].font.size = Pt(float(font_size))
     page = spec.get("page")
     if isinstance(page, dict):
         for section in document.sections:
@@ -599,11 +735,12 @@ def docx_inspect(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def docx_create(payload: dict[str, Any]) -> dict[str, Any]:
-    output = resolve_output(payload.get("outputPath"), ".docx")
     spec = payload.get("spec")
     if not isinstance(spec, dict):
         fail("INVALID_ARGUMENT", "spec 必须是对象")
     template_path = payload.get("templatePath")
+    validate_docx_spec(spec, bool(template_path))
+    output = resolve_output(payload.get("outputPath"), ".docx")
     template_id = None
     template_hash = None
     if template_path:
@@ -616,7 +753,7 @@ def docx_create(payload: dict[str, Any]) -> dict[str, Any]:
         template_id = Path(str(template_path)).stem
     else:
         document = Document()
-    configure_document(document, spec)
+    configure_document(document, spec, has_template=bool(template_path))
     anchors = spec.get("anchors")
     if anchors is not None:
         if not isinstance(anchors, dict):
@@ -625,7 +762,7 @@ def docx_create(payload: dict[str, Any]) -> dict[str, Any]:
         if missing:
             fail("VALIDATION_FAILED", f"模板缺少锚点：{', '.join(missing[:20])}")
     if spec.get("title") and not template_path:
-        document.add_heading(str(spec["title"]), level=0)
+        document.add_heading(spec["title"], level=0)
     if "blocks" in spec:
         document_add_blocks(document, spec["blocks"])
     atomic_save(document.save, output)

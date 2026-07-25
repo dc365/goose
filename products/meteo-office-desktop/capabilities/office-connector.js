@@ -8,7 +8,7 @@
   'use strict';
 
   const ID = 'office-artifacts';
-  const RUNTIME_VERSION = '1.1.0';
+  const RUNTIME_VERSION = '1.2.0';
 
   const OBSERVE_TOOLS = Object.freeze([
     'docx_inspect',
@@ -19,6 +19,7 @@
     'artifact_validate',
   ]);
   const MUTATION_TOOLS = Object.freeze([
+    'docx_create_from_markdown',
     'docx_create',
     'docx_edit',
     'pptx_create',
@@ -34,7 +35,7 @@
     id: ID,
     name: 'Office 成果物',
     description: '在当前项目内创建、编辑、渲染并校验 DOCX、PPTX、XLSX 和 PDF 成果物。',
-    version: '1.1.0',
+    version: '1.2.0',
     transport: 'stdio',
     command: 'MeteoMate Runtime',
     args: [],

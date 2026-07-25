@@ -17,7 +17,7 @@ const resolvedRuntime = OfficeRuntime.resolveOfficeRuntime({
       : {}),
   },
 });
-const worker = resolvedRuntime.env.METEOMATE_OFFICE_WORKER;
+const worker = path.join(productRoot, 'services', 'office-mcp', 'python', 'worker.py');
 const python = resolvedRuntime.env.METEOMATE_OFFICE_PYTHON;
 
 const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'meteomate-office-worker-'));
@@ -111,7 +111,7 @@ try {
       blocks: [
         { type: 'heading', level: 1, text: '天气概况' },
         { type: 'paragraph', text: '预计今天夜间到明天白天有强降水。' },
-        { type: 'table', rows: [['区域', '雨量'], ['福州', '50–80 mm']] },
+        { type: 'table', rows: [['区域', '雨量', '备注'], ['福州', '50–80 mm', null]] },
       ],
     },
   });
@@ -119,6 +119,7 @@ try {
 
   const docxInspection = invoke('docx_inspect', { sourcePath: docx.artifact.path });
   assert.ok(docxInspection.structure.paragraphs.some((paragraph) => paragraph.text.includes('强降水')));
+  assert.equal(docxInspection.structure.tables[0].preview[1][2], '');
   const editedDocx = invoke('docx_edit', {
     sourcePath: docx.artifact.path,
     sourceHash: docx.artifact.contentHash,
@@ -132,9 +133,80 @@ try {
 
   const docxRender = invoke('artifact_render', { sourcePath: editedDocx.artifact.path, dpi: 96 });
   assert.ok(docxRender.render.pageCount >= 1);
+  const docxPreviewInspection = invoke('pdf_inspect', {
+    sourcePath: docxRender.render.previewPath,
+  });
+  assert.match(docxPreviewInspection.pages[0].textPreview, /强降水天气专报/);
   const docxValidation = invoke('artifact_validate', { sourcePath: editedDocx.artifact.path });
   assert.equal(docxValidation.valid, true);
   assert.equal(docxValidation.artifact.status, 'ready');
+
+  invokeFailure('docx_create', {
+    outputPath: 'artifacts/invalid-object-title.docx',
+    spec: {
+      title: { text: '错误对象标题', style: 'Title' },
+      sections: {},
+    },
+  }, /INVALID_ARGUMENT: spec 包含不支持字段：sections/);
+  invokeFailure('docx_create', {
+    outputPath: 'artifacts/invalid-runs.docx',
+    spec: {
+      blocks: [{
+        type: 'paragraph',
+        runs: [{ text: '错误 runs 结构' }],
+      }],
+    },
+  }, /INVALID_ARGUMENT: spec\.blocks\[0\] 包含不支持字段：runs/);
+  invokeFailure('docx_create', {
+    outputPath: 'artifacts/invalid-heading-level.docx',
+    spec: {
+      blocks: [{ type: 'heading', level: 0, text: '错误标题级别' }],
+    },
+  }, /INVALID_ARGUMENT: spec\.blocks\[0\]\.level 必须是 1 到 9 的整数/);
+  invokeFailure('docx_create', {
+    outputPath: 'artifacts/too-many-table-cells.docx',
+    spec: {
+      blocks: [
+        {
+          type: 'table',
+          rows: [
+            Array.from({ length: 100 }, () => ''),
+            ...Array.from({ length: 999 }, () => ['']),
+          ],
+        },
+      ],
+    },
+  }, /RESOURCE_LIMIT: 文档表格总单元格不能超过 10000 个/);
+
+  const styledTemplate = invoke('docx_create', {
+    outputPath: 'artifacts/styled-template.docx',
+    spec: {
+      title: '业务模板',
+      defaultFont: 'Liberation Serif',
+    },
+  });
+  const templatedDocx = invoke('docx_create', {
+    outputPath: 'artifacts/from-styled-template.docx',
+    templatePath: styledTemplate.artifact.path,
+    templateHash: styledTemplate.artifact.contentHash,
+    spec: {
+      blocks: [{ type: 'paragraph', text: '模板字体应保持不变。' }],
+    },
+  });
+  const templateFont = spawnSync(python, [
+    '-c',
+    'from docx import Document; import sys; print(Document(sys.argv[1]).styles["Normal"].font.name or "")',
+    path.join(workspace, templatedDocx.artifact.path),
+  ], {
+    cwd: workspace,
+    env: environment,
+    encoding: 'utf8',
+    shell: false,
+    windowsHide: true,
+    timeout: 30_000,
+  });
+  assert.equal(templateFont.status, 0, templateFont.stderr);
+  assert.equal(templateFont.stdout.trim(), 'Liberation Serif');
 
   const presentation = invoke('pptx_create', {
     outputPath: 'artifacts/weather-briefing.pptx',
