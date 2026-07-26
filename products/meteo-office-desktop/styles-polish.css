@@ -1,0 +1,670 @@
+/* ============================================================
+   MeteoMate Design Polish Layer
+   设计语言：气象工作台的"精确 + 轻盈"——冷调中性色、深海军蓝主行动色、
+   柔和分层阴影、统一的圆角尺度与微交互。
+   本文件只做增量覆盖，最后加载，不改写既有样式表。
+   ============================================================ */
+
+:root {
+  /* 更冷、更干净的中性底色 */
+  --polish-bg: #f3f5f9;
+  --polish-sidebar: #edeff5;
+  --polish-panel: #ffffff;
+  --polish-line: #e7eaf0;
+  --polish-line-soft: #eef1f6;
+  --polish-text: #1d2430;
+  --polish-muted: #667085;
+  --polish-faint: #98a2b3;
+
+  /* 主行动色：深海军蓝（呼应应用图标） */
+  --polish-navy: #232c3a;
+  --polish-navy-hover: #171f2c;
+  --polish-navy-active: #10161f;
+
+  /* 品牌蓝保持不变，补充悬停与光晕 */
+  --polish-accent: #4b75f2;
+  --polish-accent-hover: #3b63dd;
+  --polish-accent-ring: rgba(75, 117, 242, 0.14);
+  --polish-accent-soft: #eaf0fe;
+
+  /* 分层阴影 */
+  --polish-shadow-xs: 0 1px 2px rgba(23, 32, 44, 0.05);
+  --polish-shadow-sm: 0 1px 2px rgba(23, 32, 44, 0.05), 0 4px 12px rgba(23, 32, 44, 0.05);
+  --polish-shadow-md: 0 1px 2px rgba(23, 32, 44, 0.04), 0 10px 28px rgba(23, 32, 44, 0.09);
+  --polish-shadow-lg: 0 2px 4px rgba(23, 32, 44, 0.05), 0 18px 48px rgba(23, 32, 44, 0.13);
+
+  --polish-ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+::selection {
+  background: rgba(75, 117, 242, 0.18);
+}
+
+/* ---------- 滚动条 ---------- */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 8px;
+  background: rgba(23, 32, 44, 0.16);
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(23, 32, 44, 0.28);
+  background-clip: padding-box;
+}
+
+/* ---------- 全局底色 ---------- */
+body {
+  background: var(--polish-bg);
+  color: var(--polish-text);
+}
+
+.sidebar {
+  background: var(--polish-sidebar);
+  border-right: 1px solid rgba(231, 234, 240, 0.8);
+}
+
+.main-shell {
+  background: var(--polish-bg);
+}
+
+/* ---------- 侧边栏 ---------- */
+.brand-row {
+  padding: 4px 6px 10px;
+}
+
+.brand-row .brand-mark,
+.brand-row img {
+  border-radius: 12px;
+  box-shadow: var(--polish-shadow-sm);
+}
+
+.brand-name,
+.brand-row strong {
+  letter-spacing: 0.2px;
+  font-weight: 750;
+}
+
+.nav-item {
+  position: relative;
+  margin: 1px 8px;
+  border-radius: 10px;
+  padding: 8px 12px;
+  color: #45505f;
+  font-weight: 550;
+  transition: background-color 140ms var(--polish-ease), color 140ms var(--polish-ease);
+}
+
+.nav-item:hover {
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--polish-text);
+}
+
+.nav-item.active,
+.nav-item[aria-current='page'] {
+  background: #ffffff;
+  color: var(--polish-text);
+  font-weight: 650;
+  box-shadow: var(--polish-shadow-sm);
+}
+
+.nav-item.active .icon,
+.nav-item[aria-current='page'] .icon {
+  color: var(--polish-accent);
+}
+
+/* 侧边栏分区标题（任务 / 空间） */
+.sidebar-section-label,
+.sidebar-group-label {
+  padding: 14px 14px 6px;
+  color: var(--polish-faint);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.6px;
+}
+
+/* 底部账户卡 */
+.sidebar-account-trigger {
+  margin: 8px;
+  border: 1px solid rgba(231, 234, 240, 0.9);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.66);
+  padding: 8px 10px;
+  transition: background-color 140ms var(--polish-ease), box-shadow 140ms var(--polish-ease);
+}
+
+.sidebar-account-trigger:hover {
+  background: #ffffff;
+  box-shadow: var(--polish-shadow-sm);
+}
+
+/* ---------- 标题栏 ---------- */
+.window-titlebar {
+  border-bottom: 1px solid rgba(231, 234, 240, 0.7);
+  background: rgba(243, 245, 249, 0.86);
+}
+
+.titlebar-action,
+.window-titlebar .ghost-button {
+  border-radius: 9px;
+  font-weight: 550;
+  transition: background-color 140ms var(--polish-ease), color 140ms var(--polish-ease);
+}
+
+.titlebar-action.primary {
+  border-radius: 10px;
+  background: var(--polish-navy);
+  box-shadow: var(--polish-shadow-xs);
+}
+
+.titlebar-action.primary:hover {
+  background: var(--polish-navy-hover);
+}
+
+.titlebar-action.danger:hover {
+  background: #fdecec;
+  color: #c4322b;
+}
+
+/* ---------- 按钮体系 ---------- */
+.primary-button,
+.card-launch,
+button.card-launch {
+  border-radius: 10px;
+  background: var(--polish-navy);
+  font-weight: 600;
+  letter-spacing: 0.1px;
+  box-shadow: var(--polish-shadow-xs);
+  transition: background-color 150ms var(--polish-ease), transform 120ms var(--polish-ease), box-shadow 150ms var(--polish-ease);
+}
+
+.primary-button:hover,
+.card-launch:hover {
+  background: var(--polish-navy-hover);
+  box-shadow: var(--polish-shadow-sm);
+  transform: translateY(-1px);
+}
+
+.primary-button:active,
+.card-launch:active {
+  background: var(--polish-navy-active);
+  box-shadow: none;
+  transform: translateY(0) scale(0.985);
+}
+
+.primary-button:focus-visible,
+.card-launch:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 4px var(--polish-accent-ring);
+}
+
+.secondary-button,
+.ghost-button {
+  border: 1px solid var(--polish-line);
+  border-radius: 10px;
+  background: #ffffff;
+  color: #3d4756;
+  font-weight: 550;
+  transition: background-color 140ms var(--polish-ease), border-color 140ms var(--polish-ease);
+}
+
+.secondary-button:hover,
+.ghost-button:hover {
+  border-color: #d8dde6;
+  background: #f6f8fb;
+}
+
+.accent-button,
+.is-accent {
+  background: var(--polish-accent);
+}
+
+.accent-button:hover,
+.is-accent:hover {
+  background: var(--polish-accent-hover);
+}
+
+/* ---------- 卡片体系（专家 / 技能 / 工具 / 项目 / 自动化） ---------- */
+.expert-card,
+.capability-card,
+.project-workspace-card,
+.project-template-card,
+.automation-template-card,
+.automation-card,
+.settings-section-block {
+  border: 1px solid var(--polish-line);
+  border-radius: 16px;
+  background: var(--polish-panel);
+  box-shadow: var(--polish-shadow-xs);
+  transition: transform 180ms var(--polish-ease), box-shadow 180ms var(--polish-ease), border-color 180ms var(--polish-ease);
+}
+
+.expert-card:hover,
+.capability-card:hover,
+.project-workspace-card:hover,
+.project-template-card:hover,
+.automation-template-card:hover {
+  border-color: #d7e0f4;
+  box-shadow: var(--polish-shadow-md);
+  transform: translateY(-2px);
+}
+
+/* 卡片网格呼吸感 */
+.catalog-grid,
+.project-grid,
+.automation-template-grid,
+.scene-grid {
+  gap: 18px;
+}
+
+/* 专家/技能头像：从单色升级为柔和渐变，字形加白加粗 */
+.avatar {
+  color: #ffffff;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-shadow: 0 1px 2px rgba(15, 23, 42, 0.18);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.22), var(--polish-shadow-xs);
+}
+
+.avatar-0 { background: linear-gradient(135deg, #4b75f2, #7ba0f8); }
+.avatar-1 { background: linear-gradient(135deg, #0e9f8a, #4fc9b4); }
+.avatar-2 { background: linear-gradient(135deg, #e07b39, #f2a766); }
+.avatar-3 { background: linear-gradient(135deg, #7c5cf0, #a78bfa); }
+.avatar-4 { background: linear-gradient(135deg, #2563eb, #60a5fa); }
+.avatar-5 { background: linear-gradient(135deg, #db4f72, #f0829e); }
+.avatar-6 { background: linear-gradient(135deg, #2f8577, #5bbfa9); }
+.avatar-7 { background: linear-gradient(135deg, #8a6d3b, #c9a86a); }
+
+/* 标签 pill 更轻 */
+.tag,
+.chip {
+  border: none;
+  border-radius: 8px;
+  background: #f1f4f9;
+  color: #66748c;
+  font-weight: 550;
+}
+
+/* ---------- 场景卡 ---------- */
+.scene-card {
+  border: 1px solid var(--polish-line);
+  border-radius: 16px;
+  transition: transform 180ms var(--polish-ease), box-shadow 180ms var(--polish-ease), border-color 180ms var(--polish-ease);
+}
+
+.scene-card:hover {
+  border-color: #d7e0f4;
+  box-shadow: var(--polish-shadow-md);
+  transform: translateY(-2px);
+}
+
+.scene-orb {
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.35), var(--polish-shadow-xs);
+}
+
+.scene-blue .scene-orb { background: linear-gradient(135deg, #4b75f2, #86a9f8); color: #fff; }
+.scene-cyan .scene-orb { background: linear-gradient(135deg, #0e9f8a, #56ccb9); color: #fff; }
+.scene-amber .scene-orb { background: linear-gradient(135deg, #e07b39, #f3b268); color: #fff; }
+.scene-purple .scene-orb { background: linear-gradient(135deg, #7c5cf0, #ab90fa); color: #fff; }
+
+/* ---------- 能力中心页签：分段控件 ---------- */
+.catalog-tabs,
+.capability-tabs {
+  border: none;
+  border-radius: 12px;
+  background: #e9ecf3;
+  padding: 3px;
+  gap: 2px;
+}
+
+.catalog-tabs button,
+.capability-tabs button {
+  border: none;
+  border-radius: 9px;
+  color: var(--polish-muted);
+  font-weight: 550;
+  transition: background-color 150ms var(--polish-ease), color 150ms var(--polish-ease), box-shadow 150ms var(--polish-ease);
+}
+
+.catalog-tabs button.active,
+.capability-tabs button.active,
+.catalog-tabs button[aria-selected='true'],
+.capability-tabs button[aria-selected='true'] {
+  background: #ffffff;
+  color: var(--polish-text);
+  font-weight: 650;
+  box-shadow: var(--polish-shadow-sm);
+}
+
+/* 搜索框 */
+.catalog-search input,
+.search-input,
+input[type='search'] {
+  border: 1px solid var(--polish-line);
+  border-radius: 10px;
+  background: #ffffff;
+  transition: border-color 150ms var(--polish-ease), box-shadow 150ms var(--polish-ease);
+}
+
+.catalog-search input:focus,
+.search-input:focus,
+input[type='search']:focus {
+  border-color: #a9c1f7;
+  outline: none;
+  box-shadow: 0 0 0 4px var(--polish-accent-ring);
+}
+
+/* ---------- 对话区 ---------- */
+.conversation-scroll {
+  background: var(--polish-bg);
+}
+
+.message-row .message-avatar {
+  border-radius: 50%;
+  font-size: 12px;
+  font-weight: 700;
+  box-shadow: var(--polish-shadow-xs);
+}
+
+.message-row.user .message-avatar {
+  background: var(--polish-navy);
+  color: #f4f7fc;
+}
+
+.message-row.assistant .message-avatar {
+  background: linear-gradient(135deg, #4b75f2, #7ba0f8);
+  color: #ffffff;
+  text-shadow: 0 1px 2px rgba(15, 23, 42, 0.2);
+}
+
+/* 用户气泡：深海军蓝 + 不对称圆角 */
+.message-row.user .message-bubble {
+  border: none;
+  border-radius: 18px 18px 6px 18px;
+  background: var(--polish-navy);
+  color: #f3f6fb;
+  box-shadow: var(--polish-shadow-sm);
+}
+
+.message-row.user .message-bubble pre {
+  font-family: inherit;
+  line-height: 1.7;
+}
+
+/* 助手回复：白卡 + 更舒展的排版 */
+.message-row.assistant .message-bubble {
+  border: 1px solid var(--polish-line);
+  border-radius: 18px 18px 18px 6px;
+  background: #ffffff;
+  box-shadow: var(--polish-shadow-xs);
+  line-height: 1.78;
+}
+
+.message-row.assistant .message-bubble p {
+  line-height: 1.78;
+}
+
+.message-row.assistant .message-bubble code {
+  border-radius: 6px;
+  background: #f1f4f9;
+  padding: 2px 6px;
+  font-size: 0.92em;
+}
+
+.message-row.assistant .message-bubble pre {
+  border: 1px solid var(--polish-line);
+  border-radius: 12px;
+  background: #f7f9fc;
+}
+
+.message-row.assistant .message-bubble h1,
+.message-row.assistant .message-bubble h2,
+.message-row.assistant .message-bubble h3 {
+  margin: 14px 0 8px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.message-row.assistant .message-bubble h1:first-child,
+.message-row.assistant .message-bubble h2:first-child,
+.message-row.assistant .message-bubble h3:first-child {
+  margin-top: 0;
+}
+
+.message-row.assistant .message-bubble blockquote {
+  margin: 10px 0;
+  border-left: 3px solid #d7e0f4;
+  border-radius: 0 8px 8px 0;
+  background: #f6f9ff;
+  padding: 8px 14px;
+  color: #51607a;
+}
+
+.message-meta {
+  color: var(--polish-faint);
+  font-size: 11px;
+  letter-spacing: 0.2px;
+}
+
+/* 执行过程/计划折叠块 */
+.response-process {
+  border: 1px solid var(--polish-line-soft);
+  border-radius: 14px;
+  background: #fafbfe;
+}
+
+/* 权限卡片更醒目 */
+.permission-card {
+  border: 1px solid #f3ddb3;
+  border-radius: 14px;
+  background: #fffdf7;
+  box-shadow: var(--polish-shadow-xs);
+}
+
+/* 成果物卡片 */
+.message-office-artifact {
+  border: 1px solid var(--polish-line);
+  border-radius: 14px;
+  background: #ffffff;
+  transition: border-color 160ms var(--polish-ease), box-shadow 160ms var(--polish-ease);
+}
+
+.message-office-artifact:hover {
+  border-color: #d7e0f4;
+  box-shadow: var(--polish-shadow-sm);
+}
+
+/* ---------- 输入区 ---------- */
+.composer-dock {
+  background: linear-gradient(to top, var(--polish-bg) 72%, rgba(243, 245, 249, 0));
+  padding-top: 18px;
+}
+
+.composer-shell {
+  border: 1px solid var(--polish-line);
+  border-radius: 18px;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(23, 32, 44, 0.05), 0 14px 36px rgba(23, 32, 44, 0.08);
+  transition: border-color 160ms var(--polish-ease), box-shadow 160ms var(--polish-ease);
+}
+
+.composer-shell:focus-within {
+  border-color: #a9c1f7;
+  box-shadow: 0 0 0 4px var(--polish-accent-ring), 0 14px 36px rgba(23, 32, 44, 0.08);
+}
+
+.composer-shell textarea {
+  font-size: 14.5px;
+  line-height: 1.65;
+}
+
+.composer-context-button,
+.composer-select,
+.composer-icon-action {
+  border-radius: 9px;
+  color: #5b6a7e;
+  transition: background-color 140ms var(--polish-ease), color 140ms var(--polish-ease);
+}
+
+.composer-context-button:hover,
+.composer-select:hover,
+.composer-icon-action:hover {
+  background: #f0f3f9;
+  color: var(--polish-text);
+}
+
+.send-icon-button {
+  border-radius: 12px;
+  background: var(--polish-navy);
+  box-shadow: var(--polish-shadow-xs);
+  transition: background-color 150ms var(--polish-ease), transform 120ms var(--polish-ease);
+}
+
+.send-icon-button:hover {
+  background: var(--polish-navy-hover);
+  transform: translateY(-1px);
+}
+
+.send-icon-button:active {
+  transform: scale(0.94);
+}
+
+/* ---------- 空状态 ---------- */
+.large-empty,
+.empty-state {
+  border: 1.5px dashed #dde2ec;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.55);
+}
+
+.large-empty .icon,
+.empty-state .icon {
+  color: #c2cbd9;
+}
+
+/* ---------- 统计数字 ---------- */
+.settings-stat-grid > div {
+  border: 1px solid var(--polish-line);
+  border-radius: 14px;
+  background: #fafbfe;
+}
+
+.settings-stat-grid strong,
+.settings-stat-grid .stat-value {
+  font-variant-numeric: tabular-nums;
+  font-weight: 750;
+  letter-spacing: -0.3px;
+}
+
+/* ---------- 设置页 ---------- */
+.settings-page-nav nav button {
+  border-radius: 10px;
+  font-weight: 550;
+}
+
+.settings-page-nav nav button.active {
+  background: #ffffff;
+  color: var(--polish-accent);
+  font-weight: 650;
+  box-shadow: var(--polish-shadow-sm);
+}
+
+.settings-section-block {
+  border-radius: 18px;
+}
+
+/* ---------- 表单控件 ---------- */
+input:not([type='checkbox']):not([type='radio']):not([type='search']),
+select,
+textarea {
+  transition: border-color 150ms var(--polish-ease), box-shadow 150ms var(--polish-ease);
+}
+
+input:not([type='checkbox']):not([type='radio']):focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  border-color: #a9c1f7;
+  outline: none;
+  box-shadow: 0 0 0 4px var(--polish-accent-ring);
+}
+
+/* ---------- 登录 / 账户门 ---------- */
+.account-gate,
+.account-page {
+  background:
+    radial-gradient(1200px 500px at 70% -10%, rgba(75, 117, 242, 0.09), transparent 60%),
+    radial-gradient(900px 420px at 12% 110%, rgba(75, 117, 242, 0.07), transparent 55%),
+    var(--polish-bg);
+}
+
+.account-login-panel {
+  border: 1px solid rgba(231, 234, 240, 0.9);
+  border-radius: 22px;
+  background: #ffffff;
+  box-shadow: var(--polish-shadow-lg);
+}
+
+.account-login-panel .account-product-icon {
+  border-radius: 14px;
+  box-shadow: var(--polish-shadow-md);
+}
+
+.account-login-panel .account-login-button {
+  min-height: 44px;
+  border-radius: 11px;
+  font-size: 14px;
+}
+
+.account-login-panel .account-field input {
+  border-radius: 10px;
+}
+
+/* ---------- 弹窗 ---------- */
+.capability-modal-shell .capability-modal,
+.capability-modal {
+  border: 1px solid var(--polish-line);
+  border-radius: 20px;
+  box-shadow: var(--polish-shadow-lg);
+}
+
+.modal-backdrop,
+.dialog-backdrop,
+.capability-modal-backdrop {
+  background: rgba(23, 32, 44, 0.32);
+  backdrop-filter: blur(3px);
+}
+
+/* ---------- 排队卡微调（配合上一轮的排队功能） ---------- */
+.queued-prompt-card {
+  border: 1px dashed #d8c9a8;
+  background: #fffdf6;
+}
+
+/* 减少动态偏好时，所有微交互降级 */
+@media (prefers-reduced-motion: reduce) {
+  .expert-card,
+  .capability-card,
+  .scene-card,
+  .primary-button,
+  .card-launch,
+  .send-icon-button {
+    transition: none;
+  }
+
+  .expert-card:hover,
+  .capability-card:hover,
+  .scene-card:hover,
+  .primary-button:hover,
+  .card-launch:hover {
+    transform: none;
+  }
+}
