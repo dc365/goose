@@ -11,6 +11,16 @@ contextBridge.exposeInMainWorld('meteoDesktop', {
   saveDesktopPreferences: (request) => ipcRenderer.invoke('auth:preferences-save', request),
   refreshRuntimePreferences: () => ipcRenderer.invoke('runtime:preferences-refresh'),
   setWindowMode: (mode) => ipcRenderer.invoke('window:mode', mode),
+  platform: process.platform,
+  windowMinimize: () => ipcRenderer.invoke('window:minimize'),
+  windowToggleMaximize: () => ipcRenderer.invoke('window:toggle-maximize'),
+  windowClose: () => ipcRenderer.invoke('window:close'),
+  windowIsMaximized: () => ipcRenderer.invoke('window:is-maximized'),
+  onWindowStateChange: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('window:state', listener);
+    return () => ipcRenderer.removeListener('window:state', listener);
+  },
 
   getRuntimeStatus: () => ipcRenderer.invoke('runtime:status'),
   getModelSettings: () => ipcRenderer.invoke('runtime:model-settings'),

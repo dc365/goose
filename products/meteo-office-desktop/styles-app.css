@@ -477,3 +477,168 @@
     transition: none;
   }
 }
+
+/* ===== UX 修复包：窗口控制 / 排队消息 / 场景图标 / 模型配置入口 ===== */
+
+/* Windows / Linux 自绘窗口控制（macOS 使用系统红绿灯，不显示） */
+body.platform-win32 .window-titlebar,
+body.platform-linux .window-titlebar {
+  padding-right: 138px;
+}
+
+.window-controls {
+  position: absolute;
+  z-index: 96;
+  top: 0;
+  right: 0;
+  display: flex;
+  height: var(--window-titlebar-height);
+  -webkit-app-region: no-drag;
+}
+
+.window-control-button {
+  display: inline-flex;
+  width: 46px;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: var(--muted);
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.window-control-button:hover,
+.window-control-button:focus-visible {
+  background: #eceef1;
+  color: var(--text);
+  outline: none;
+}
+
+.window-control-button .icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.window-control-close:hover,
+.window-control-close:focus-visible {
+  background: #e81123;
+  color: #ffffff;
+}
+
+/* 场景 SVG 图标尺寸对齐原有 Unicode 符号的视觉大小 */
+.scene-orb .icon svg {
+  width: 26px;
+  height: 26px;
+}
+
+.new-task-scene-symbol .icon svg {
+  width: 20px;
+  height: 20px;
+}
+
+/* 模型不可用时的设置入口 */
+.composer-model-fix {
+  min-height: 30px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 4px 10px;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.composer-model-fix:hover,
+.composer-model-fix:focus-visible {
+  background: var(--accent-soft);
+  outline: none;
+}
+
+/* 运行中发送键进入排队语义 */
+.send-icon-button.queue-mode {
+  position: relative;
+}
+
+.send-icon-button.queue-mode::after {
+  content: '';
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 7px;
+  height: 7px;
+  border: 1.5px solid var(--panel);
+  border-radius: 50%;
+  background: var(--warning);
+}
+
+/* 排队消息 */
+.queued-prompt-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 4px 0 12px;
+}
+
+.queued-prompt-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+  padding: 10px 12px;
+}
+
+.queued-prompt-card > .icon {
+  margin-top: 1px;
+  color: var(--warning);
+}
+
+.queued-prompt-card .queued-prompt-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.queued-prompt-card .queued-prompt-copy > span {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.queued-prompt-card .queued-prompt-copy small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.queued-prompt-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.queued-prompt-actions button {
+  border-radius: 7px;
+  background: transparent;
+  padding: 4px 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.queued-prompt-actions button:hover,
+.queued-prompt-actions button:focus-visible {
+  background: #eceef1;
+  color: var(--text);
+  outline: none;
+}
+
+.queued-prompt-actions .queued-send {
+  color: var(--accent);
+  font-weight: 650;
+}

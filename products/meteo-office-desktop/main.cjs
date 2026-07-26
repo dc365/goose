@@ -1794,6 +1794,10 @@ async function runHeadlessTask(request) {
   return { accepted: true, runtime: 'headless', sessionId: null, pid: child.pid };
 }
 
+function desktopTitleBarStyle(platform = process.platform) {
+  return platform === 'darwin' ? 'hiddenInset' : 'hidden';
+}
+
 function createWindow() {
   const initialWindow = WINDOW_MODES.account;
   mainWindow = new BrowserWindow({
@@ -1802,7 +1806,7 @@ function createWindow() {
     minWidth: initialWindow.minWidth,
     minHeight: initialWindow.minHeight,
     title: '气象智伴 MeteoMate',
-    titleBarStyle: 'hiddenInset',
+    titleBarStyle: desktopTitleBarStyle(),
     icon: APP_ICON,
     backgroundColor: '#f5f6f8',
     show: false,
@@ -1817,6 +1821,14 @@ function createWindow() {
   mainWindow.setMenuBarVisibility(false);
   mainWindow.loadFile(path.join(__dirname, 'index.html'));
   mainWindow.once('ready-to-show', () => mainWindow.show());
+  const sendWindowState = () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('window:state', { maximized: mainWindow.isMaximized() });
+    }
+  };
+  mainWindow.on('maximize', sendWindowState);
+  mainWindow.on('unmaximize', sendWindowState);
+  mainWindow.on('restore', sendWindowState);
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
@@ -1827,6 +1839,25 @@ function createWindow() {
 }
 
 ipcMain.handle('window:mode', (_event, mode) => setMainWindowMode(mode));
+
+ipcMain.handle('window:minimize', () => {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.minimize();
+  return true;
+});
+
+ipcMain.handle('window:toggle-maximize', () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return false;
+  if (mainWindow.isMaximized()) mainWindow.unmaximize();
+  else mainWindow.maximize();
+  return mainWindow.isMaximized();
+});
+
+ipcMain.handle('window:close', () => {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.close();
+  return true;
+});
+
+ipcMain.handle('window:is-maximized', () => Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isMaximized()));
 
 ipcMain.handle('runtime:status', async () => {
   await acpRuntime.initialize();
