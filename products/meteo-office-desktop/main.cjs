@@ -1794,6 +1794,10 @@ async function runHeadlessTask(request) {
   return { accepted: true, runtime: 'headless', sessionId: null, pid: child.pid };
 }
 
+function desktopTitleBarStyle(platform = process.platform) {
+  return platform === 'darwin' ? 'hiddenInset' : 'hidden';
+}
+
 function createWindow() {
   const initialWindow = WINDOW_MODES.account;
   mainWindow = new BrowserWindow({
@@ -1802,7 +1806,7 @@ function createWindow() {
     minWidth: initialWindow.minWidth,
     minHeight: initialWindow.minHeight,
     title: '气象智伴 MeteoMate',
-    titleBarStyle: 'hiddenInset',
+    titleBarStyle: desktopTitleBarStyle(),
     icon: APP_ICON,
     backgroundColor: '#f5f6f8',
     show: false,

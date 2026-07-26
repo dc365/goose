@@ -1749,7 +1749,12 @@ function renderTaskDraftContext(expert, isNewTask) {
   const scene = isNewTask ? catalog.scenes.find((entry) => entry.id === state.draftSceneId) : null;
   const expertSelected = isNewTask && state.selectedExpertId;
   const expertLabel = scene ? `场景：${scene.title}` : expertSelected ? `专家：${expert.name}` : '';
-  const fileReferences = getActiveTask()?.fileReferences || state.draftFileReferences || [];
+  const activeTask = getActiveTask();
+  const fileReferences = activeTask
+    ? Array.isArray(activeTask.queuedDraftFileReferences)
+      ? activeTask.queuedDraftFileReferences
+      : activeTask.fileReferences || []
+    : state.draftFileReferences || [];
   return `
     <div class="composer-draft-context">
       ${expertLabel ? `<button type="button" class="composer-draft-chip" data-clear-task-expert aria-label="移除${escapeHtml(expertLabel)}"><span>${escapeHtml(expertLabel)}</span><b>×</b></button>` : ''}

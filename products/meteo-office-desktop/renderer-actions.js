@@ -10,6 +10,7 @@ const RUNTIME_PROGRESS_COMMIT_INTERVAL_MS = 350;
 const runtimeStreamCommitTimers = new Map();
 const runtimeProgressCommitTimers = new Map();
 const pendingStreamCommitTaskIds = new Set();
+const pendingQueuedPromptTaskIds = new Set();
 // 中文输入法组合态标记：组合期间不做全量重绘，避免打断输入
 let composerImeComposing = false;
 
@@ -26,6 +27,7 @@ document.addEventListener(
     if (event.target?.id !== 'task-prompt') return;
     composerImeComposing = false;
     flushPendingStreamCommits();
+    flushPendingQueuedTaskPrompts();
   },
   true
 );
@@ -44,6 +46,12 @@ function commitRuntimeStreamNow(task) {
   }
   saveState();
   if (state.activeTaskId === task.id || state.view === 'automation') render();
+}
+
+function flushPendingQueuedTaskPrompts() {
+  const taskIds = [...pendingQueuedPromptTaskIds];
+  pendingQueuedPromptTaskIds.clear();
+  taskIds.forEach((taskId) => flushQueuedTaskPrompts(taskId));
 }
 const composerWorkspaceFileCache = new Map();
 const composerTriggerUI = {
@@ -213,9 +221,21 @@ function persistComposerDraft(textarea) {
   else if (state.view === 'task') state.draftPrompt = textarea.value;
 }
 
+function composerFileReferences() {
+  const task = getActiveTask();
+  if (!task) return state.draftFileReferences || [];
+  if (Array.isArray(task.queuedDraftFileReferences)) return task.queuedDraftFileReferences;
+  return task.fileReferences || [];
+}
+
 function setTaskFileReferences(fileReferences) {
   const task = getActiveTask();
   if (task) {
+    if (task.status === 'running' || Array.isArray(task.queuedDraftFileReferences)) {
+      task.queuedDraftFileReferences = [...fileReferences];
+      task.updatedAt = Date.now();
+      return;
+    }
     const changed = JSON.stringify(task.fileReferences || []) !== JSON.stringify(fileReferences);
     task.fileReferences = [...fileReferences];
     if (changed && task.sessionId) {
@@ -259,7 +279,7 @@ function selectComposerTriggerItem(index) {
       state.draftSkillIds = skillIds;
     }
   } else {
-    const current = getActiveTask()?.fileReferences || state.draftFileReferences || [];
+    const current = composerFileReferences();
     setTaskFileReferences([...new Set([...current, item.id])]);
   }
 
@@ -829,7 +849,8 @@ function bindEvents() {
       const item = queued[index];
       if (!item) return;
       task.queuedPrompts = queued.filter((_entry, entryIndex) => entryIndex !== index);
-      if (item.fileReferences?.length) task.fileReferences = [...item.fileReferences];
+      task.fileReferences = [...(item.fileReferences || [])];
+      delete task.queuedDraftFileReferences;
       saveState();
       void sendTaskMessage({ prompt: item.text, dequeue: true });
     });
@@ -859,7 +880,7 @@ function bindEvents() {
   document.querySelectorAll('[data-remove-task-file]').forEach((button) => {
     button.addEventListener('click', () => {
       const filePath = button.dataset.removeTaskFile;
-      const current = getActiveTask()?.fileReferences || state.draftFileReferences || [];
+      const current = composerFileReferences();
       setTaskFileReferences(current.filter((entry) => entry !== filePath));
       const textarea = document.getElementById('task-prompt');
       const cursor = textarea?.selectionStart || 0;
@@ -3014,11 +3035,16 @@ function flushQueuedTaskPrompts(taskId) {
   // 仅在任务仍处于当前视图时自动续发，避免后台任务抢占用户正在进行的其他任务
   const activeTask = getActiveTask();
   if (!activeTask || activeTask.id !== taskId || activeTask.status !== 'completed') return;
+  if (composerImeComposing) {
+    pendingQueuedPromptTaskIds.add(taskId);
+    return;
+  }
   const queued = Array.isArray(activeTask.queuedPrompts) ? activeTask.queuedPrompts : [];
   const next = queued[0];
   if (!next) return;
   activeTask.queuedPrompts = queued.slice(1);
-  if (next.fileReferences?.length) activeTask.fileReferences = [...next.fileReferences];
+  activeTask.fileReferences = [...(next.fileReferences || [])];
+  delete activeTask.queuedDraftFileReferences;
   saveState();
   void sendTaskMessage({ prompt: next.text, dequeue: true });
 }
@@ -3040,13 +3066,13 @@ async function sendTaskMessage(options = {}) {
     const item = {
       id: `queued-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       text: prompt,
-      fileReferences: [...(existing.fileReferences || state.draftFileReferences || [])],
+      fileReferences: [...(existing.queuedDraftFileReferences || [])],
       createdAt: Date.now(),
     };
     const queued = Array.isArray(existing.queuedPrompts) ? existing.queuedPrompts : [];
     existing.queuedPrompts = options.dequeue ? [item, ...queued] : [...queued, item];
     if (!options.dequeue) {
-      existing.fileReferences = [];
+      existing.queuedDraftFileReferences = [];
       state.draftFileReferences = [];
       if (textarea) textarea.value = '';
       existing.draftPrompt = '';
@@ -3075,6 +3101,11 @@ async function sendTaskMessage(options = {}) {
   const task =
     existing || createTask(expert, prompt, permissionProfileId, providerId, modelId);
   const previousTranscript = transcriptForRuntime(task);
+  if (Array.isArray(task.queuedDraftFileReferences)) {
+    task.fileReferences = [...task.queuedDraftFileReferences];
+  }
+  const submittedFileReferences = [...(task.fileReferences || [])];
+  task.queuedDraftFileReferences = [];
 
   task.permissionProfileId = permissionProfile.id;
   task.allowFileTools = allowFileTools;
@@ -3130,7 +3161,7 @@ async function sendTaskMessage(options = {}) {
       providerId,
       modelId,
       submittedAt: response.startedAt,
-      fileReferences: [...(task.fileReferences || [])],
+      fileReferences: submittedFileReferences,
       transcript: previousTranscript,
     });
     task.runtimeMode = result.runtime;
@@ -3138,8 +3169,7 @@ async function sendTaskMessage(options = {}) {
     task.sessionCapabilityHash = result.capabilityHash || task.capabilityResolution?.id || null;
     task.capabilityLoad = result.capabilityLoad || task.capabilityLoad || null;
     task.updatedAt = Date.now();
-    saveState();
-    render();
+    commitRuntimeStreamNow(task);
   } catch (error) {
     task.status = 'failed';
     const assistant = ensureStreamingAssistant(task);
@@ -3152,8 +3182,7 @@ async function sendTaskMessage(options = {}) {
     });
     task.updatedAt = Date.now();
     finalizeAssistantResponse(task, 'failed');
-    saveState();
-    render();
+    commitRuntimeStreamNow(task);
   }
 }
 
@@ -3680,6 +3709,13 @@ function handleRuntimeEvent(event) {
   }
 
   if (['turn_completed', 'turn_cancelled', 'turn_failed'].includes(event.type)) finishAutomationRun(task);
+  if (
+    ['turn_completed', 'turn_cancelled', 'turn_failed'].includes(event.type)
+    && !task.draftPrompt
+    && !task.queuedDraftFileReferences?.length
+  ) {
+    delete task.queuedDraftFileReferences;
+  }
   task.updatedAt = Date.now();
   const project = getConversationProject(task);
   if (project) project.updatedAt = task.updatedAt;
@@ -3694,8 +3730,7 @@ function handleRuntimeEvent(event) {
   }
   clearRuntimeProgressCommit(task.id);
   clearRuntimeStreamCommit(task.id);
-  saveState();
-  if (state.activeTaskId === task.id || state.view === 'automation') render();
+  commitRuntimeStreamNow(task);
   if (event.type === 'turn_completed') {
     window.setTimeout(() => flushQueuedTaskPrompts(task.id), 300);
   }

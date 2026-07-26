@@ -201,7 +201,15 @@ assert.ok(preloadSource.includes('openExternalUrl'));
 assert.ok(mainSource.includes("ipcMain.handle('window:mode'"));
 assert.ok(mainSource.includes("ipcMain.handle('runtime:preferences-refresh'"));
 assert.ok(mainSource.includes('WINDOW_MODES'));
-assert.ok(mainSource.includes("titleBarStyle: 'hiddenInset'"));
+const titleBarContext = vm.createContext({});
+vm.runInContext(
+  `${extractNamedFunction(mainSource, 'desktopTitleBarStyle')}; this.desktopTitleBarStyle = desktopTitleBarStyle;`,
+  titleBarContext
+);
+assert.equal(titleBarContext.desktopTitleBarStyle('darwin'), 'hiddenInset');
+assert.equal(titleBarContext.desktopTitleBarStyle('win32'), 'hidden');
+assert.equal(titleBarContext.desktopTitleBarStyle('linux'), 'hidden');
+assert.ok(mainSource.includes('titleBarStyle: desktopTitleBarStyle()'));
 assert.ok(mainSource.includes("ipcMain.handle('workspace:assistant-default'"));
 assert.ok(mainSource.includes("ipcMain.handle('workspace:project-default'"));
 assert.ok(mainSource.includes("ipcMain.handle('workspace:project-create'"));
