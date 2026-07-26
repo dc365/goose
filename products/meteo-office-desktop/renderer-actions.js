@@ -9,6 +9,42 @@ const RUNTIME_STREAM_COMMIT_INTERVAL_MS = 80;
 const RUNTIME_PROGRESS_COMMIT_INTERVAL_MS = 350;
 const runtimeStreamCommitTimers = new Map();
 const runtimeProgressCommitTimers = new Map();
+const pendingStreamCommitTaskIds = new Set();
+// 中文输入法组合态标记：组合期间不做全量重绘，避免打断输入
+let composerImeComposing = false;
+
+document.addEventListener(
+  'compositionstart',
+  (event) => {
+    if (event.target?.id === 'task-prompt') composerImeComposing = true;
+  },
+  true
+);
+document.addEventListener(
+  'compositionend',
+  (event) => {
+    if (event.target?.id !== 'task-prompt') return;
+    composerImeComposing = false;
+    flushPendingStreamCommits();
+  },
+  true
+);
+
+function flushPendingStreamCommits() {
+  if (!pendingStreamCommitTaskIds.size) return;
+  pendingStreamCommitTaskIds.clear();
+  saveState();
+  render();
+}
+
+function commitRuntimeStreamNow(task) {
+  if (composerImeComposing) {
+    pendingStreamCommitTaskIds.add(task.id);
+    return;
+  }
+  saveState();
+  if (state.activeTaskId === task.id || state.view === 'automation') render();
+}
 const composerWorkspaceFileCache = new Map();
 const composerTriggerUI = {
   mode: null,
@@ -762,7 +798,42 @@ function bindEvents() {
   bindTaskComposerMenus();
 
   const sendButton = document.getElementById('send-task');
-  if (sendButton) sendButton.addEventListener('click', sendTaskMessage);
+  if (sendButton) sendButton.addEventListener('click', () => sendTaskMessage());
+
+  document.getElementById('window-minimize')?.addEventListener('click', () => window.meteoDesktop.windowMinimize?.());
+  document.getElementById('window-maximize')?.addEventListener('click', () => window.meteoDesktop.windowToggleMaximize?.());
+  document.getElementById('window-close')?.addEventListener('click', () => window.meteoDesktop.windowClose?.());
+
+  document.getElementById('composer-open-model-settings')?.addEventListener('click', () => openSettingsDialog('models'));
+
+  document.querySelectorAll('[data-queue-cancel]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const task = getActiveTask();
+      if (!task) return;
+      const index = Number(button.dataset.queueCancel);
+      task.queuedPrompts = (Array.isArray(task.queuedPrompts) ? task.queuedPrompts : []).filter(
+        (_item, itemIndex) => itemIndex !== index
+      );
+      task.updatedAt = Date.now();
+      saveState();
+      render();
+    });
+  });
+
+  document.querySelectorAll('[data-queue-send]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const task = getActiveTask();
+      if (!task || task.status === 'running') return;
+      const index = Number(button.dataset.queueSend);
+      const queued = Array.isArray(task.queuedPrompts) ? task.queuedPrompts : [];
+      const item = queued[index];
+      if (!item) return;
+      task.queuedPrompts = queued.filter((_entry, entryIndex) => entryIndex !== index);
+      if (item.fileReferences?.length) task.fileReferences = [...item.fileReferences];
+      saveState();
+      void sendTaskMessage({ prompt: item.text, dequeue: true });
+    });
+  });
 
   const cancelButton = document.getElementById('cancel-task');
   if (cancelButton) cancelButton.addEventListener('click', cancelTask);
@@ -2840,8 +2911,7 @@ function scheduleRuntimeStreamCommit(task) {
   if (runtimeStreamCommitTimers.has(task.id)) return;
   const timer = window.setTimeout(() => {
     runtimeStreamCommitTimers.delete(task.id);
-    saveState();
-    if (state.activeTaskId === task.id || state.view === 'automation') render();
+    commitRuntimeStreamNow(task);
   }, RUNTIME_STREAM_COMMIT_INTERVAL_MS);
   runtimeStreamCommitTimers.set(task.id, timer);
 }
@@ -2857,8 +2927,7 @@ function scheduleRuntimeProgressCommit(task) {
   if (runtimeProgressCommitTimers.has(task.id)) return;
   const timer = window.setTimeout(() => {
     runtimeProgressCommitTimers.delete(task.id);
-    saveState();
-    if (state.activeTaskId === task.id || state.view === 'automation') render();
+    commitRuntimeStreamNow(task);
   }, RUNTIME_PROGRESS_COMMIT_INTERVAL_MS);
   runtimeProgressCommitTimers.set(task.id, timer);
 }
@@ -2934,9 +3003,29 @@ function waitForPendingResponsePaint() {
   });
 }
 
-async function sendTaskMessage() {
+function scrollConversationToBottom() {
+  window.requestAnimationFrame(() => {
+    const scroll = document.querySelector('.conversation-scroll');
+    if (scroll) scroll.scrollTop = scroll.scrollHeight;
+  });
+}
+
+function flushQueuedTaskPrompts(taskId) {
+  // 仅在任务仍处于当前视图时自动续发，避免后台任务抢占用户正在进行的其他任务
+  const activeTask = getActiveTask();
+  if (!activeTask || activeTask.id !== taskId || activeTask.status !== 'completed') return;
+  const queued = Array.isArray(activeTask.queuedPrompts) ? activeTask.queuedPrompts : [];
+  const next = queued[0];
+  if (!next) return;
+  activeTask.queuedPrompts = queued.slice(1);
+  if (next.fileReferences?.length) activeTask.fileReferences = [...next.fileReferences];
+  saveState();
+  void sendTaskMessage({ prompt: next.text, dequeue: true });
+}
+
+async function sendTaskMessage(options = {}) {
   const textarea = document.getElementById('task-prompt');
-  const prompt = textarea?.value.trim();
+  const prompt = String(options.prompt ?? textarea?.value ?? '').trim();
   if (!prompt) {
     textarea?.focus();
     textarea?.classList.add('field-error');
@@ -2944,6 +3033,31 @@ async function sendTaskMessage() {
   }
 
   const existing = getActiveTask();
+
+  // 任务运行中：消息进入排队，当前回复完成后自动发送；
+  // dequeue 途中的消息若撞上新一轮运行（竞态），回到队首等待
+  if (existing && existing.status === 'running') {
+    const item = {
+      id: `queued-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      text: prompt,
+      fileReferences: [...(existing.fileReferences || state.draftFileReferences || [])],
+      createdAt: Date.now(),
+    };
+    const queued = Array.isArray(existing.queuedPrompts) ? existing.queuedPrompts : [];
+    existing.queuedPrompts = options.dequeue ? [item, ...queued] : [...queued, item];
+    if (!options.dequeue) {
+      existing.fileReferences = [];
+      state.draftFileReferences = [];
+      if (textarea) textarea.value = '';
+      existing.draftPrompt = '';
+      state.draftPrompt = '';
+    }
+    existing.updatedAt = Date.now();
+    saveState();
+    render();
+    return;
+  }
+
   const expert = existing ? getTaskExpert(existing) : getSelectedExpert();
   const requestedPermissionProfileId =
     document.getElementById('composer-permission')?.dataset.permissionProfileId ||
@@ -2992,11 +3106,12 @@ async function sendTaskMessage() {
     status: 'running',
   });
 
-  textarea.value = '';
+  if (textarea) textarea.value = '';
   task.draftPrompt = '';
   state.draftPrompt = '';
   state.draftFileReferences = [];
   render();
+  scrollConversationToBottom();
   await waitForPendingResponsePaint();
   saveState();
 
@@ -3581,6 +3696,9 @@ function handleRuntimeEvent(event) {
   clearRuntimeStreamCommit(task.id);
   saveState();
   if (state.activeTaskId === task.id || state.view === 'automation') render();
+  if (event.type === 'turn_completed') {
+    window.setTimeout(() => flushQueuedTaskPrompts(task.id), 300);
+  }
 }
 
 async function initialize(accountStatePromise) {
@@ -3602,6 +3720,22 @@ async function initialize(accountStatePromise) {
       null;
   }
   unsubscribeRuntimeEvents = runtimeRouter.subscribe(handleRuntimeEvent);
+  try {
+    state.windowMaximized = Boolean(await window.meteoDesktop.windowIsMaximized?.());
+  } catch {
+    state.windowMaximized = false;
+  }
+  window.meteoDesktop.onWindowStateChange?.((payload) => {
+    const maximized = Boolean(payload?.maximized);
+    if (state.windowMaximized === maximized) return;
+    state.windowMaximized = maximized;
+    const button = document.getElementById('window-maximize');
+    if (button) {
+      button.innerHTML = icon(maximized ? 'windowRestore' : 'windowMaximize');
+      button.setAttribute('aria-label', maximized ? '还原' : '最大化');
+      button.title = maximized ? '还原' : '最大化';
+    }
+  });
   try {
     const workspace = await window.meteoDesktop.getDefaultAssistantWorkspace();
     if (workspace) {
