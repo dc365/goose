@@ -28,6 +28,7 @@
     const capabilities = context.capabilities || {};
     const hasCapabilities = Boolean(
       (capabilities.skills || []).length
+      || (capabilities.workflows || []).length
       || (capabilities.connectors || []).length
       || Object.keys(capabilities.toolSelections || {}).length
     );
@@ -278,6 +279,7 @@
       project: normalizedProject,
       expert,
       task,
+      capabilities,
       permissionProfiles: catalog.permissionProfiles || {},
     });
     const body = {
@@ -303,6 +305,7 @@
         source: Shared.deepClone(expert.source || { type: 'system' }),
         instruction: expert.instruction || '',
         methodology: Shared.deepClone(expert.methodology || []),
+        playbook: Shared.deepClone(expert.playbook || expert.workflow || []),
         workflow: Shared.deepClone(expert.workflow || []),
         limitations: Shared.deepClone(expert.limitations || []),
         inputs: Shared.deepClone(expert.inputs || []),
@@ -310,6 +313,8 @@
         prompts: Shared.deepClone(expert.prompts || []),
         requiredSkills: Shared.deepClone(expert.requiredSkills || []),
         recommendedSkills: Shared.deepClone(expert.recommendedSkills || []),
+        requiredWorkflows: Shared.deepClone(expert.requiredWorkflows || []),
+        recommendedWorkflows: Shared.deepClone(expert.recommendedWorkflows || []),
         requiredConnectors: Shared.deepClone(expert.requiredConnectors || []),
         recommendedConnectors: Shared.deepClone(expert.recommendedConnectors || []),
         toolSelections: Shared.deepClone(expert.toolSelections || {}),
@@ -331,6 +336,8 @@
       },
       permissionPolicy: {
         id: policy.permissionProfileId,
+        requestedId: policy.requestedPermissionProfileId,
+        workflowConstraints: Shared.deepClone(policy.workflowPermissionProfiles),
         workMode: policy.workMode,
         profile: Shared.deepClone(policy.permissionProfile),
       },
@@ -361,6 +368,12 @@
         hash: snapshot.capabilities.id,
         grantMode: snapshot.capabilities.grantMode || 'inherit',
         skillIds: snapshot.capabilities.skills.map((item) => item.id),
+        workflows: snapshot.capabilities.workflows.map((item) => ({
+          id: item.id,
+          version: item.version,
+          digest: item.digest,
+          role: item.role || 'selected',
+        })),
         connectorIds: snapshot.capabilities.connectors.map((item) => item.id),
         toolSelections: Shared.deepClone(snapshot.capabilities.toolSelections || {}),
         connectorSources: Shared.deepClone(snapshot.capabilities.connectorSources || {}),

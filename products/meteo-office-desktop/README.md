@@ -9,14 +9,16 @@
 - WorkBuddy 风格的信息架构：任务、助理、项目、专家、技能、工具和自动化；
 - Goose ACP 作为首选运行时，支持多轮会话、会话恢复、流式消息和取消；
 - ACP 不可用时自动降级到安全 Headless 模式；没有 Goose 时进入演示模式；
-- 工具调用、思考进展、执行计划和成果物在独立检查面板展示；
+- 工具调用、思考进展和执行计划跟随对话展示；成果物可在右侧工作台多标签预览；
 - 文件写入与命令执行通过 ACP 权限请求逐次审批；
 - 项目、任务、会话 ID、收藏专家和运行历史保存在本地；
 - Expert、Skill、Connector 和 Scene 已拆分为独立 Manifest；
+- 工作流作为与 Expert、Skill、Connector 同级的可复用资产，收拢在能力中心，支持默认画布、通用节点、结构试跑、版本发布和 YAML 导入导出；
 - 个人专家可离线编辑并同步到 SkillHub，组织和系统专家支持远程审核、灰度分发、停用与历史回滚；
 - 浏览器操作复用 Goose 推荐的 Playwright MCP，提供隔离会话、工具白名单和任务级授权；
 - 桌面应用操作使用内嵌 Cua Driver，继承 MeteoMate 的系统权限，并经过 Driver 策略与 ACP 审批；
 - Office 成果物通过本地 MCP Runtime 创建、编辑、渲染和校验 DOCX、PPTX、XLSX 与 PDF；
+- HTML、网页、PDF、图片、Markdown 和代码文件可在任务右侧直接预览，支持刷新、前进后退、外部打开和拖拽调宽；
 - 后续气象数据、天气诊断、GIS 和 Office 模板中心能力继续通过 MCP/Artifact Service 接入。
 
 所有产品代码仍位于：
@@ -252,5 +254,6 @@ npm run test:browser
 更多信息：
 
 - [`docs/PRODUCT_BETA.md`](docs/PRODUCT_BETA.md)
+- [`docs/WORKFLOWS_V1.md`](docs/WORKFLOWS_V1.md)
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 - [`docs/PRODUCT_MVP.md`](docs/PRODUCT_MVP.md)（历史版本）

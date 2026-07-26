@@ -38,7 +38,9 @@
 
   const originalCatalogTitlebarActions = renderCatalogTitlebarActions;
   renderCatalogTitlebarActions = function renderCapabilityTitlebarActions() {
-    if (state.view !== 'catalog' || state.catalogTab === 'experts') return originalCatalogTitlebarActions();
+    if (state.view !== 'catalog' || ['experts', 'workflows'].includes(state.catalogTab)) {
+      return originalCatalogTitlebarActions();
+    }
     const skillTab = state.catalogTab === 'skills';
     const connected = api.configuredConnectors().filter((item) => item.enabled).length;
     return `<div class="top-actions capability-top-actions">
@@ -54,7 +56,7 @@
 
   const originalCatalog = renderCatalogView;
   renderCatalogView = function renderCapabilityCatalog() {
-    if (state.catalogTab === 'experts') return originalCatalog();
+    if (['experts', 'workflows'].includes(state.catalogTab)) return originalCatalog();
     const skillTab = state.catalogTab === 'skills';
     let items = skillTab
       ? api.skillCatalog()

@@ -45,14 +45,43 @@
     },
   });
 
-  function resolvePolicy({ project, expert, task, permissionProfiles = {} }) {
+  const PERMISSION_PROFILE_RANK = Object.freeze({
+    'analysis-readonly': 0,
+    'trusted-workspace': 0.5,
+    'artifact-approval': 1,
+    'workspace-approval': 2,
+  });
+
+  function restrictivePermissionProfile(requestedId, workflowProfileIds) {
+    const normalizedRequested = Object.prototype.hasOwnProperty.call(PERMISSION_PROFILE_RANK, requestedId)
+      ? requestedId
+      : 'analysis-readonly';
+    return Shared.uniqueStrings(workflowProfileIds).reduce((current, candidate) => {
+      if (!Object.prototype.hasOwnProperty.call(PERMISSION_PROFILE_RANK, candidate)) {
+        return 'analysis-readonly';
+      }
+      return PERMISSION_PROFILE_RANK[candidate] < PERMISSION_PROFILE_RANK[current]
+        ? candidate
+        : current;
+    }, normalizedRequested);
+  }
+
+  function resolvePolicy({ project, expert, task, capabilities = {}, permissionProfiles = {} }) {
     const projectPolicies = project?.spec?.policies || {};
     const workMode = task?.workMode || projectPolicies.defaultWorkMode || expert?.defaultWorkMode || WORK_MODES.ASK;
-    const permissionProfileId =
+    const requestedPermissionProfileId =
       task?.permissionProfileId ||
       projectPolicies.defaultPermissionProfileId ||
       expert?.permissionProfile ||
       'analysis-readonly';
+    const workflowPermissionProfiles = Shared.uniqueStrings([
+      ...Shared.asArray(capabilities.workflowPermissionProfiles),
+      ...Shared.asArray(capabilities.workflows).map((workflow) => workflow?.permissionProfile),
+    ]);
+    const permissionProfileId = restrictivePermissionProfile(
+      requestedPermissionProfileId,
+      workflowPermissionProfiles
+    );
     const profile = {
       ...(DEFAULT_PERMISSION_POLICIES[permissionProfileId] || DEFAULT_PERMISSION_POLICIES['analysis-readonly']),
       ...Shared.cleanObject(permissionProfiles[permissionProfileId]),
@@ -61,6 +90,8 @@
     return {
       workMode: Object.values(WORK_MODES).includes(workMode) ? workMode : WORK_MODES.ASK,
       permissionProfileId,
+      requestedPermissionProfileId,
+      workflowPermissionProfiles,
       permissionProfile: profile,
       modelPolicy: task?.modelPolicy || projectPolicies.modelPolicy || expert?.modelPolicy || 'workspace-default',
     };
@@ -97,5 +128,13 @@
     return { decision: DECISIONS.DENY, reason: `${label}未被当前策略授权。` };
   }
 
-  return { WORK_MODES, DECISIONS, DEFAULT_PERMISSION_POLICIES, resolvePolicy, authorize };
+  return {
+    WORK_MODES,
+    DECISIONS,
+    DEFAULT_PERMISSION_POLICIES,
+    PERMISSION_PROFILE_RANK,
+    restrictivePermissionProfile,
+    resolvePolicy,
+    authorize,
+  };
 });

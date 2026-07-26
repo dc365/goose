@@ -7,7 +7,7 @@
   "properties": {
     "id": { "type": "string", "minLength": 1 },
     "title": { "type": "string" },
-    "kind": { "enum": ["task", "assistant", "automation"] },
+    "kind": { "enum": ["task", "assistant", "automation", "workflow"] },
     "lifecycleState": {
       "enum": ["DRAFT", "PLANNING", "WAITING_INPUT", "WAITING_APPROVAL", "RUNNING", "PARTIAL", "COMPLETED", "FAILED", "CANCELLED", "ARCHIVED"]
     },
@@ -15,6 +15,10 @@
     "projectId": { "type": ["string", "null"] },
     "expertId": { "type": ["string", "null"] },
     "expertSnapshot": { "$ref": "expert.schema.json" },
+    "workflowId": { "type": ["string", "null"] },
+    "workflowVersion": { "type": ["string", "null"] },
+    "workflowRunId": { "type": ["string", "null"] },
+    "workflowIds": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
     "teamDefinition": { "type": ["object", "null"] },
     "teamRun": {
       "type": ["object", "null"],

@@ -45,6 +45,7 @@ const harnessAssets = [
   'harness/context-compiler.js',
   'harness/event-normalizer.js',
   'harness/artifact-registry.js',
+  'harness/artifact-preview.js',
   'harness/evidence-ledger.js',
   'harness/validation-engine.js',
   'harness/state-store.js',
@@ -59,6 +60,7 @@ for (const asset of [
   'styles-account.css',
   'styles-connectors.css',
   'styles-team.css',
+  'styles-preview.css',
   'capabilities/browser-connector.js',
   'capabilities/computer-connector.js',
   'capabilities/office-connector.js',
@@ -163,6 +165,7 @@ assert.ok(rendererActionsSource.includes("case 'team_synthesis_started'"));
 assert.ok(rendererActionsSource.includes('assistant.artifactIds ='));
 assert.ok(rendererSource.includes('function renderMessageArtifacts(message, task)'));
 assert.ok(rendererSource.includes('function renderTeamCollaborationBar(task, expert)'));
+assert.ok(rendererSource.includes('function renderArtifactPreviewPanel(task)'));
 assert.ok(rendererSource.includes("'专家协作中'"));
 assert.ok(rendererSource.includes('class="message-artifact-gallery"'));
 assert.ok(responseStylesSource.includes('.message-artifact-image img'));
@@ -216,6 +219,9 @@ assert.ok(preloadSource.includes('getAccountState'));
 assert.ok(preloadSource.includes('loginAccount'));
 assert.ok(preloadSource.includes('setWindowMode'));
 assert.ok(preloadSource.includes('openExternalUrl'));
+assert.ok(preloadSource.includes('showArtifactPreview'));
+assert.ok(preloadSource.includes('navigateArtifactPreview'));
+assert.ok(mainSource.includes("ipcMain.handle('artifact-preview:show'"));
 assert.ok(mainSource.includes("ipcMain.handle('window:mode'"));
 assert.ok(mainSource.includes("ipcMain.handle('runtime:preferences-refresh'"));
 assert.ok(mainSource.includes('WINDOW_MODES'));

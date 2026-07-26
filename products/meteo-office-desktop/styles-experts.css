@@ -194,6 +194,10 @@
   border-radius: 13px;
 }
 
+.expert-capability-panel.workflow {
+  grid-column: 1 / -1;
+}
+
 .expert-panel-heading {
   display: flex;
   align-items: center;

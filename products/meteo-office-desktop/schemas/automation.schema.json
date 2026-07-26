@@ -9,6 +9,16 @@
     "name": { "type": "string" },
     "projectId": { "type": "string" },
     "enabled": { "type": "boolean" },
+    "workflowRef": {
+      "type": ["object", "null"],
+      "properties": {
+        "id": { "type": "string" },
+        "version": { "type": "string" }
+      },
+      "required": ["id", "version"],
+      "additionalProperties": false
+    },
+    "inputMapping": { "type": "object" },
     "taskTemplate": {
       "type": "object",
       "required": ["prompt", "expertId", "permissionProfileId"],
@@ -31,20 +41,7 @@
         "modelId": { "type": "string" }
       }
     },
-    "trigger": {
-      "type": "object",
-      "required": ["type", "mode"],
-      "properties": {
-        "type": { "enum": ["cron", "data-arrival", "file-change", "event", "manual", "task-completed"] },
-        "mode": { "enum": ["recurring", "interval", "once"] },
-        "cadence": { "enum": ["daily", "workdays", "weekly"] },
-        "time": { "type": "string", "pattern": "^(?:[01][0-9]|2[0-3]):[0-5][0-9]$" },
-        "weekdays": { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 6 }, "uniqueItems": true },
-        "intervalValue": { "type": "integer", "minimum": 1 },
-        "intervalUnit": { "enum": ["minutes", "hours", "days"] },
-        "runAt": { "type": "string" }
-      }
-    },
+    "trigger": { "$ref": "#/$defs/trigger" },
     "executionPolicy": {
       "type": "object",
       "properties": {
@@ -58,5 +55,21 @@
     "lastRunAt": { "type": ["integer", "null"] },
     "nextRunAt": { "type": ["integer", "null"] },
     "lastStatus": { "type": "string" }
+  },
+  "$defs": {
+    "trigger": {
+      "type": "object",
+      "required": ["type", "mode"],
+      "properties": {
+        "type": { "enum": ["cron", "data-arrival", "file-change", "event", "manual", "task-completed"] },
+        "mode": { "enum": ["recurring", "interval", "once"] },
+        "cadence": { "enum": ["daily", "workdays", "weekly"] },
+        "time": { "type": "string", "pattern": "^(?:[01][0-9]|2[0-3]):[0-5][0-9]$" },
+        "weekdays": { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 6 }, "uniqueItems": true },
+        "intervalValue": { "type": "integer", "minimum": 1 },
+        "intervalUnit": { "enum": ["minutes", "hours", "days"] },
+        "runAt": { "type": "string" }
+      }
+    }
   }
 }

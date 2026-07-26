@@ -36,7 +36,19 @@ contextBridge.exposeInMainWorld('meteoDesktop', {
   chooseWorkspace: (request) => ipcRenderer.invoke('workspace:choose', request),
   listWorkspaceFiles: (request) => ipcRenderer.invoke('workspace:list-files', request),
   openWorkspace: (targetPath) => ipcRenderer.invoke('workspace:open', targetPath),
+  importWorkflow: () => ipcRenderer.invoke('workflow:import'),
+  exportWorkflow: (request) => ipcRenderer.invoke('workflow:export', request),
   openExternalUrl: (targetUrl) => ipcRenderer.invoke('external:open', targetUrl),
+  showArtifactPreview: (request) => ipcRenderer.invoke('artifact-preview:show', request),
+  updateArtifactPreviewBounds: (request) => ipcRenderer.invoke('artifact-preview:bounds', request),
+  navigateArtifactPreview: (request) => ipcRenderer.invoke('artifact-preview:navigate', request),
+  hideArtifactPreview: () => ipcRenderer.invoke('artifact-preview:hide'),
+  closeArtifactPreview: (previewId) => ipcRenderer.invoke('artifact-preview:close', previewId),
+  onArtifactPreviewStateChange: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('artifact-preview:state', listener);
+    return () => ipcRenderer.removeListener('artifact-preview:state', listener);
+  },
   listKnowledgeSources: () => ipcRenderer.invoke('knowledge:list'),
   importLocalKnowledgeSources: (request) => ipcRenderer.invoke('knowledge:import-local', request),
   saveKnowledgeSource: (request) => ipcRenderer.invoke('knowledge:save', request),

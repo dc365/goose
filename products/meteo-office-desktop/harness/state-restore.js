@@ -4,6 +4,71 @@
   const bootstrap = root.__METEOMATE_STATE_BOOTSTRAP__;
   if (!harness?.StateStore || !bootstrap) return;
 
+  function runtimeWorkflowCatalog() {
+    return [
+      ...(state.workflowVersions || []),
+      ...(state.workflows || []).filter((workflow) => workflow.metadata?.status === 'published'),
+    ];
+  }
+
+  function runtimeCatalog() {
+    const experts = (typeof allExperts === 'function' ? allExperts() : catalog.experts) || [];
+    return {
+      ...catalog,
+      experts,
+      teams: experts.filter((expert) => expert.kind === 'team'),
+      workflows: runtimeWorkflowCatalog(),
+    };
+  }
+
+  function workflowDefinitions(capabilities = {}) {
+    return (capabilities.workflows || []).map((reference) =>
+      runtimeWorkflowCatalog().find((workflow) =>
+        workflow.metadata?.id === reference.id
+        && workflow.metadata?.version === reference.version
+        && workflow.digest === reference.digest
+      )
+    ).filter(Boolean);
+  }
+
+  function workflowRuntimeInstruction(workflows, capabilities = {}) {
+    if (!workflows.length) return '';
+    const contracts = workflows.map((workflow) => ({
+      id: workflow.metadata.id,
+      name: workflow.metadata.name,
+      version: workflow.metadata.version,
+      digest: workflow.digest,
+      role: capabilities.workflows?.find((reference) =>
+        reference.id === workflow.metadata.id
+        && reference.version === workflow.metadata.version
+      )?.role || 'selected',
+      inputSchema: workflow.spec.inputSchema,
+      outputSchema: workflow.spec.outputSchema,
+      policy: workflow.spec.policy,
+      nodes: workflow.spec.nodes.map((node) => ({
+        id: node.id,
+        type: node.type,
+        name: node.name,
+        description: node.description,
+        capability: node.capability,
+        skills: node.skills,
+        inputs: node.inputs,
+        outputs: node.outputs,
+        config: node.config,
+        retry: node.retry,
+        timeoutSeconds: node.timeoutSeconds,
+        onError: node.onError,
+      })),
+      edges: workflow.spec.edges,
+    }));
+    return [
+      '以下是本次任务已授权的已发布工作流。它们是版本固定的执行契约。',
+      '仅在用户目标匹配或任务明确绑定时采用。role=dependency 的工作流只在其父工作流调用时执行，不应作为独立顶层流程重复执行。按依赖顺序推进，审批节点必须暂停并请求用户确认，不能虚构节点、工具调用或运行结果。',
+      '当前客户端会把工作流作为编排契约加载；若没有专用 workflow.call 工具，应使用现有专家、Skill 和工具逐步完成，并如实说明实际执行范围。',
+      `<selected-workflows>\n${JSON.stringify(contracts, null, 2)}\n</selected-workflows>`,
+    ].join('\n\n');
+  }
+
   function latestRunningAttempt(task) {
     return [...(task?.runAttempts || [])].reverse().find((attempt) => attempt.status === 'running') || null;
   }
@@ -31,7 +96,7 @@
       task,
       project: normalizedProject,
       expert,
-      catalog,
+      catalog: runtimeCatalog(),
       prompt: request.prompt,
     });
     task.contextSnapshot = snapshot;
@@ -56,9 +121,26 @@
     });
     request.contextSnapshot = snapshot;
     request.contextEnvelope = harness.ContextCompiler.runtimeEnvelope(snapshot);
+    request.permissionProfileId = snapshot.permissionPolicy.id;
+    request.permissionProfileName = snapshot.permissionPolicy.profile?.name || snapshot.permissionPolicy.id;
+    request.permissionProfileDescription = snapshot.permissionPolicy.profile?.description || '';
     request.completionContract = structuredClone(snapshot.completionContract);
     request.completionRecipe = harness.ContextCompiler.completionRecipe(snapshot.completionContract);
     request.skillIds = snapshot.capabilities.skills.map((item) => item.id);
+    request.workflowDefinitions = workflowDefinitions(snapshot.capabilities);
+    request.workflowRefs = snapshot.capabilities.workflows.map((item) => ({
+      id: item.id,
+      version: item.version,
+      digest: item.digest,
+      role: item.role || 'selected',
+    }));
+    const workflowInstruction = workflowRuntimeInstruction(
+      request.workflowDefinitions,
+      snapshot.capabilities
+    );
+    if (workflowInstruction) {
+      request.expertInstruction = [request.expertInstruction, workflowInstruction].filter(Boolean).join('\n\n');
+    }
     request.connectorIds = snapshot.capabilities.connectors.map((item) => item.id);
     request.toolSelections = structuredClone(snapshot.capabilities.toolSelections || {});
     request.capabilityHash = snapshot.capabilities.id;
@@ -148,7 +230,7 @@
         task,
         project: getConversationProject(task) || {},
         expert: getTaskExpert(task) || primaryAssistant,
-        catalog,
+        catalog: runtimeCatalog(),
       });
     },
   });

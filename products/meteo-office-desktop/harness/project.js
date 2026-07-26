@@ -62,6 +62,7 @@
         capabilities: {
           experts: Shared.uniqueStrings(capabilities.experts ?? project.expertIds),
           skills: Shared.uniqueStrings(capabilities.skills ?? project.skillIds),
+          workflows: Shared.uniqueStrings(capabilities.workflows ?? project.workflowIds),
           connectors: connectorIds,
           toolSelections: normalizeToolSelections(capabilities.toolSelections ?? project.toolSelections, connectorIds),
         },

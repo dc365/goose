@@ -43,6 +43,7 @@
           "properties": {
             "experts": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
             "skills": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+            "workflows": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
             "connectors": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
             "toolSelections": {
               "type": "object",

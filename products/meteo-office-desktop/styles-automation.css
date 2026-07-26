@@ -721,6 +721,38 @@
   font-size: 10px;
 }
 
+.automation-capabilities .automation-workflow-capability {
+  grid-column: 1 / -1;
+}
+
+.automation-capabilities .automation-workflow-capability > div {
+  max-height: none;
+  grid-template-columns: 1fr;
+}
+
+.automation-capabilities .automation-workflow-capability label {
+  display: grid;
+  min-height: auto;
+  grid-template-columns: 110px minmax(0, 1fr);
+  gap: 8px 12px;
+  padding: 7px;
+}
+
+.automation-workflow-capability label > span {
+  align-self: center;
+  font-weight: 650;
+}
+
+.automation-workflow-capability label > select {
+  min-width: 0;
+}
+
+.automation-workflow-capability label > small {
+  grid-column: 2;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
 .automation-capabilities input {
   width: 14px;
   height: 14px;

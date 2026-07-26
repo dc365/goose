@@ -60,6 +60,7 @@
       ...task,
       lifecycleState: inferLifecycleState(task),
       capabilityMode: inferCapabilityMode(task),
+      workflowIds: Shared.uniqueStrings(task.workflowIds),
       connectorIds: Shared.uniqueStrings(task.connectorIds),
       toolSelections: Shared.cleanObject(task.toolSelections),
       workMode:

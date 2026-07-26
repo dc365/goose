@@ -29,7 +29,8 @@
     "instruction": { "type": "string", "minLength": 1 },
     "mission": { "type": "string" },
     "methodology": { "type": "array", "items": { "type": "string" } },
-    "workflow": { "type": "array", "items": { "type": "string" } },
+    "playbook": { "type": "array", "items": { "type": "string" } },
+    "workflow": { "type": "array", "items": { "type": "string" }, "deprecated": true },
     "limitations": { "type": "array", "items": { "type": "string" } },
     "inputs": { "type": "array", "items": { "type": "string" } },
     "outputs": { "type": "array", "items": { "type": "string" } },
@@ -37,6 +38,8 @@
     "tags": { "type": "array", "items": { "type": "string" } },
     "requiredSkills": { "type": "array", "items": { "type": "string" } },
     "recommendedSkills": { "type": "array", "items": { "type": "string" } },
+    "requiredWorkflows": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+    "recommendedWorkflows": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
     "requiredConnectors": { "type": "array", "items": { "type": "string" } },
     "recommendedConnectors": { "type": "array", "items": { "type": "string" } },
     "toolSelections": {

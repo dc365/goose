@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meteomate.local/schemas/workflow-run.schema.json",
+  "title": "MeteoMate Workflow Run",
+  "type": "object",
+  "required": ["apiVersion", "kind", "id", "workflowId", "workflowVersion", "workflowDigest", "status", "nodeRuns"],
+  "properties": {
+    "apiVersion": { "const": "meteomate.ai/v1alpha1" },
+    "kind": { "const": "WorkflowRun" },
+    "id": { "type": "string" },
+    "workflowId": { "type": "string" },
+    "workflowVersion": { "type": "string" },
+    "workflowDigest": { "type": "string" },
+    "workflowName": { "type": "string" },
+    "invocation": {
+      "type": "object",
+      "required": ["source", "parentRunId", "parentNodeId", "depth"],
+      "properties": {
+        "source": { "enum": ["manual", "expert", "automation", "workflow", "structural-test"] },
+        "parentRunId": { "type": ["string", "null"] },
+        "parentNodeId": { "type": ["string", "null"] },
+        "depth": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "taskId": { "type": ["string", "null"] },
+    "status": { "enum": ["queued", "running", "waiting_input", "waiting_approval", "completed", "partial", "failed", "cancelled"] },
+    "inputs": { "type": "object" },
+    "outputs": { "type": "object" },
+    "startedAt": { "type": "integer" },
+    "finishedAt": { "type": ["integer", "null"] },
+    "nodeRuns": { "type": "array", "items": { "type": "object" } },
+    "events": { "type": "array", "items": { "type": "object" } }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meteomate.local/schemas/workflow.schema.json",
+  "title": "MeteoMate Workflow",
+  "type": "object",
+  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "properties": {
+    "apiVersion": { "const": "meteomate.ai/v1alpha1" },
+    "kind": { "const": "Workflow" },
+    "metadata": {
+      "type": "object",
+      "required": ["id", "name", "version", "status"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9._-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+(?:[-+][0-9A-Za-z.-]+)?$" },
+        "description": { "type": "string", "maxLength": 2048 },
+        "tags": { "type": "array", "items": { "type": "string", "maxLength": 80 }, "maxItems": 64, "uniqueItems": true },
+        "owner": { "type": "string", "maxLength": 120 },
+        "visibility": { "enum": ["private", "organization", "public"] },
+        "status": { "enum": ["draft", "published", "disabled", "archived"] },
+        "revision": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "spec": {
+      "type": "object",
+      "required": ["inputSchema", "outputSchema", "policy", "nodes", "edges"],
+      "properties": {
+        "inputSchema": { "type": "object" },
+        "outputSchema": { "type": "object" },
+        "policy": {
+          "type": "object",
+          "required": ["permissionProfile", "maxParallel", "timeoutSeconds", "failurePolicy", "maxWorkflowDepth"],
+          "properties": {
+            "permissionProfile": { "enum": ["analysis-readonly", "artifact-approval", "trusted-workspace", "workspace-approval"] },
+            "maxParallel": { "type": "integer", "minimum": 1, "maximum": 6 },
+            "timeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 86400 },
+            "failurePolicy": { "enum": ["abort", "continue"] },
+            "maxWorkflowDepth": { "type": "integer", "minimum": 1, "maximum": 5 }
+          },
+          "additionalProperties": false
+        },
+        "nodes": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 500,
+          "items": {
+            "type": "object",
+            "required": ["id", "type", "name", "inputs", "outputs", "config", "retry", "timeoutSeconds", "onError", "position"],
+            "properties": {
+              "id": { "type": "string", "pattern": "^[a-zA-Z0-9._-]+$" },
+              "type": { "enum": ["input", "trigger", "expert", "llm", "classifier", "extractor", "knowledge", "document", "tool", "http", "code", "workflow", "condition", "iteration", "join", "transform", "assign", "approval", "template", "delay", "output"] },
+              "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+              "description": { "type": "string", "maxLength": 2048 },
+              "capability": {
+                "type": ["object", "null"],
+                "properties": {
+                  "kind": { "enum": ["Expert", "Tool", "Workflow"] },
+                  "id": { "type": "string", "maxLength": 200 },
+                  "version": { "type": "string", "maxLength": 80 },
+                  "connectorId": { "type": "string", "maxLength": 200 },
+                  "toolName": { "type": "string", "maxLength": 200 }
+                },
+                "required": ["kind", "id", "version", "connectorId", "toolName"],
+                "additionalProperties": false
+              },
+              "skills": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["id", "version"],
+                  "properties": {
+                    "id": { "type": "string", "minLength": 1, "maxLength": 200 },
+                    "version": { "type": "string", "maxLength": 80 }
+                  },
+                  "additionalProperties": false
+                },
+                "maxItems": 64
+              },
+              "inputs": { "type": "object" },
+              "outputs": { "type": "object" },
+              "config": { "type": "object" },
+              "retry": {
+                "type": "object",
+                "required": ["maxAttempts", "delaySeconds"],
+                "properties": {
+                  "maxAttempts": { "type": "integer", "minimum": 1, "maximum": 5 },
+                  "delaySeconds": { "type": "integer", "minimum": 0, "maximum": 300 }
+                },
+                "additionalProperties": false
+              },
+              "timeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 86400 },
+              "onError": { "enum": ["abort", "continue"] },
+              "position": {
+                "type": "object",
+                "required": ["x", "y"],
+                "properties": {
+                  "x": { "type": "number" },
+                  "y": { "type": "number" }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "edges": {
+          "type": "array",
+          "maxItems": 2000,
+          "items": {
+            "type": "object",
+            "required": ["id", "from", "to", "label"],
+            "properties": {
+              "id": { "type": "string", "minLength": 1, "maxLength": 240 },
+              "from": {
+                "type": "object",
+                "required": ["nodeId", "port"],
+                "properties": {
+                  "nodeId": { "type": "string", "minLength": 1, "maxLength": 200 },
+                  "port": { "type": "string", "minLength": 1, "maxLength": 80 }
+                },
+                "additionalProperties": false
+              },
+              "to": {
+                "type": "object",
+                "required": ["nodeId", "port"],
+                "properties": {
+                  "nodeId": { "type": "string", "minLength": 1, "maxLength": 200 },
+                  "port": { "type": "string", "minLength": 1, "maxLength": 80 }
+                },
+                "additionalProperties": false
+              },
+              "label": { "type": "string", "maxLength": 200 }
+            },
+            "additionalProperties": false
+          }
+        },
+        "ui": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "digest": { "type": "string" },
+    "createdAt": { "type": "integer" },
+    "updatedAt": { "type": "integer" },
+    "publishedAt": { "type": ["integer", "null"] }
+  },
+  "additionalProperties": false
+}

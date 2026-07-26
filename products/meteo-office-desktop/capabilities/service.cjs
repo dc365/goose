@@ -407,6 +407,9 @@ function createCapabilityService({
     const requiredConnectors = uniqueStrings(input.requiredConnectors ?? existing?.requiredConnectors);
     const recommendedConnectors = uniqueStrings(input.recommendedConnectors ?? existing?.recommendedConnectors)
       .filter((id) => !requiredConnectors.includes(id));
+    const requiredWorkflows = uniqueStrings(input.requiredWorkflows ?? existing?.requiredWorkflows);
+    const recommendedWorkflows = uniqueStrings(input.recommendedWorkflows ?? existing?.recommendedWorkflows)
+      .filter((id) => !requiredWorkflows.includes(id));
     const connectorIds = [...requiredConnectors, ...recommendedConnectors];
     const status = EXPERT_STATUSES.has(input.status) ? input.status : existing?.status || 'draft';
     const remote = existing?.remote || null;
@@ -435,6 +438,8 @@ function createCapabilityService({
       prompts: uniqueStrings(input.prompts ?? existing?.prompts),
       requiredSkills: uniqueStrings(input.requiredSkills ?? existing?.requiredSkills),
       recommendedSkills: uniqueStrings(input.recommendedSkills ?? input.optionalSkills ?? existing?.recommendedSkills),
+      requiredWorkflows,
+      recommendedWorkflows,
       requiredConnectors,
       recommendedConnectors,
       toolSelections: normalizeExpertToolSelections(input.toolSelections ?? existing?.toolSelections, connectorIds),
@@ -458,6 +463,9 @@ function createCapabilityService({
     const requiredConnectors = uniqueStrings(input.requiredConnectors);
     const recommendedConnectors = uniqueStrings(input.recommendedConnectors)
       .filter((id) => !requiredConnectors.includes(id));
+    const requiredWorkflows = uniqueStrings(input.requiredWorkflows);
+    const recommendedWorkflows = uniqueStrings(input.recommendedWorkflows)
+      .filter((id) => !requiredWorkflows.includes(id));
     const connectorIds = [...requiredConnectors, ...recommendedConnectors];
     const source = input.source && typeof input.source === 'object'
       ? input.source
@@ -492,6 +500,8 @@ function createCapabilityService({
       prompts: uniqueStrings(input.prompts),
       requiredSkills: uniqueStrings(input.requiredSkills),
       recommendedSkills: uniqueStrings(input.recommendedSkills),
+      requiredWorkflows,
+      recommendedWorkflows,
       requiredConnectors,
       recommendedConnectors,
       toolSelections: normalizeExpertToolSelections(input.toolSelections, connectorIds),
@@ -526,7 +536,13 @@ function createCapabilityService({
   }
 
   function acceptRemoteExpert(input = {}, context = {}) {
-    const record = remoteExpertRecord(input, context);
+    const existing = input.id ? getRegistry().getExpert(input.id) : null;
+    const remoteRecord = remoteExpertRecord(input, context);
+    const record = {
+      ...remoteRecord,
+      requiredWorkflows: existing?.requiredWorkflows || remoteRecord.requiredWorkflows,
+      recommendedWorkflows: existing?.recommendedWorkflows || remoteRecord.recommendedWorkflows,
+    };
     if (!record.id || !record.name || !record.instruction) {
       throw new Error('SkillHub 返回的专家记录不完整');
     }
@@ -558,8 +574,13 @@ function createCapabilityService({
     for (const item of remoteItems) {
       if (!item?.id) continue;
       remoteIds.add(item.id);
-      const incoming = remoteExpertRecord(item, { baseUrl });
       const existing = getRegistry().getExpert(item.id);
+      const remoteRecord = remoteExpertRecord(item, { baseUrl });
+      const incoming = {
+        ...remoteRecord,
+        requiredWorkflows: existing?.requiredWorkflows || remoteRecord.requiredWorkflows,
+        recommendedWorkflows: existing?.recommendedWorkflows || remoteRecord.recommendedWorkflows,
+      };
       const ownPersonal = incoming.source.type === 'user' && incoming.ownerId === currentUserId;
       const locallyChanged = ownPersonal && existing
         && ['local_only', 'pending_upload', 'conflict'].includes(existing.syncStatus);

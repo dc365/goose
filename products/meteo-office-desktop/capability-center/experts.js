@@ -47,6 +47,8 @@
       prompts: [],
       requiredSkills: [],
       recommendedSkills: [],
+      requiredWorkflows: [],
+      recommendedWorkflows: [],
       requiredConnectors: [],
       recommendedConnectors: [],
       toolSelections: {},
@@ -67,6 +69,8 @@
       source: duplicate ? undefined : source.source,
       requiredSkills: [...list(source.requiredSkills)],
       recommendedSkills: [...list(source.recommendedSkills)],
+      requiredWorkflows: [...list(source.requiredWorkflows)],
+      recommendedWorkflows: [...list(source.recommendedWorkflows)],
       requiredConnectors: [...list(source.requiredConnectors)],
       recommendedConnectors: [...list(source.recommendedConnectors)],
       toolSelections: structuredClone(source.toolSelections || {}),
@@ -102,6 +106,8 @@
       modelPolicy: form.elements.modelPolicy.value,
       requiredSkills: selectedByMode(form, 'skill', 'required'),
       recommendedSkills: selectedByMode(form, 'skill', 'recommended'),
+      requiredWorkflows: selectedByMode(form, 'workflow', 'required'),
+      recommendedWorkflows: selectedByMode(form, 'workflow', 'recommended'),
       requiredConnectors: selectedByMode(form, 'connector', 'required'),
       recommendedConnectors: selectedByMode(form, 'connector', 'recommended'),
     };
@@ -115,12 +121,21 @@
   }
 
   function capabilityRows(type) {
-    const requiredKey = type === 'skill' ? 'requiredSkills' : 'requiredConnectors';
-    const recommendedKey = type === 'skill' ? 'recommendedSkills' : 'recommendedConnectors';
+    const keys = {
+      skill: ['requiredSkills', 'recommendedSkills'],
+      workflow: ['requiredWorkflows', 'recommendedWorkflows'],
+      connector: ['requiredConnectors', 'recommendedConnectors'],
+    };
+    const [requiredKey, recommendedKey] = keys[type];
     const ids = [...new Set([...list(ui.draft?.[requiredKey]), ...list(ui.draft?.[recommendedKey])])];
-    const items = type === 'skill' ? api.skillCatalog() : api.connectorCatalog();
+    const items = type === 'skill'
+      ? api.skillCatalog()
+      : type === 'workflow'
+        ? publishedWorkflowOptions()
+        : api.connectorCatalog();
     if (!ids.length) {
-      return `<p class="expert-editor-empty">尚未选择${type === 'skill' ? '技能' : '工具'}，任务仍可继承项目能力。</p>`;
+      const label = { skill: '技能', workflow: '工作流', connector: '工具' }[type];
+      return `<p class="expert-editor-empty">尚未选择${label}，任务仍可继承项目能力。</p>`;
     }
     return ids.map((id) => {
       const item = items.find((candidate) => candidate.id === id);
@@ -138,6 +153,22 @@
     }).join('');
   }
 
+  function publishedWorkflowOptions() {
+    const latest = new Map();
+    for (const workflow of [...list(state.workflowVersions), ...list(state.workflows)]) {
+      if (workflow?.metadata?.status !== 'published') continue;
+      const reference = `${workflow.metadata.id}@${workflow.metadata.version}`;
+      if (latest.has(reference)) continue;
+      latest.set(reference, {
+        id: reference,
+        name: workflow.metadata.name,
+        description: `v${workflow.metadata.version} · ${workflow.metadata.description || '已发布工作流'}`,
+        icon: '流',
+      });
+    }
+    return [...latest.values()];
+  }
+
   function localPreflight() {
     const skillIndex = new Map(api.enabledSkillCatalog().map((item) => [item.id, item]));
     const connectorIndex = new Map(
@@ -145,6 +176,7 @@
         .filter((item) => item.binding?.enabled && !item.binding?.policyBlocked)
         .map((item) => [item.id, item])
     );
+    const workflowIndex = new Set(publishedWorkflowOptions().map((item) => item.id));
     const issues = [
       ...list(ui.draft?.requiredSkills)
         .filter((id) => !skillIndex.has(id))
@@ -152,6 +184,9 @@
       ...list(ui.draft?.requiredConnectors)
         .filter((id) => !connectorIndex.has(id))
         .map((id) => `必需工具未连接：${id}`),
+      ...list(ui.draft?.requiredWorkflows)
+        .filter((id) => !workflowIndex.has(id))
+        .map((id) => `必需工作流未发布：${id}`),
     ];
     return {
       ready: issues.length === 0,
@@ -203,6 +238,7 @@
           <div class="expert-capability-columns">
             <div class="expert-capability-panel"><div class="expert-panel-heading"><div><h3>技能</h3><p>业务方法、规范和可复用流程</p></div><button type="button" data-expert-pick="skill">${icon('plus')} 添加技能</button></div>${capabilityRows('skill')}</div>
             <div class="expert-capability-panel"><div class="expert-panel-heading"><div><h3>工具</h3><p>MCP 服务与精确工具范围</p></div><button type="button" data-expert-pick="connector">${icon('plus')} 添加工具</button></div>${capabilityRows('connector')}</div>
+            <div class="expert-capability-panel workflow"><div class="expert-panel-heading"><div><h3>工作流</h3><p>固定到已发布版本，运行时作为可复用执行契约加载</p></div><button type="button" data-expert-pick="workflow">${icon('plus')} 添加工作流</button></div>${capabilityRows('workflow')}</div>
           </div>
         </section>
 
@@ -250,9 +286,29 @@
   function picker(type) {
     syncDraftFromForm();
     const skillPicker = type === 'skill';
+    const workflowPicker = type === 'workflow';
     const items = skillPicker
       ? api.skillCatalog().filter((item) => item.installation?.enabled)
+      : workflowPicker
+        ? publishedWorkflowOptions()
       : api.connectorCatalog().filter((item) => item.id !== 'goose-runtime');
+    if (workflowPicker) {
+      const selected = new Set([...list(ui.draft.requiredWorkflows), ...list(ui.draft.recommendedWorkflows)]);
+      api.ui.modal(`<header class="capability-modal-header"><div><h2>添加工作流</h2><p>只显示已发布版本。专家引用会固定版本，后续发布不会静默改变当前能力。</p></div><button data-modal-close>×</button></header><div class="capability-modal-body expert-picker-list">${items.length ? items.map((item) => `<label class="capability-picker-item"><input type="checkbox" name="expertWorkflowIds" value="${escapeHtml(item.id)}" ${selected.has(item.id) ? 'checked' : ''}/><span><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.description)}</small></span></label>`).join('') : '<p class="capability-muted">还没有已发布工作流，请先在工作流中心完成发布。</p>'}</div><footer class="capability-modal-footer"><button class="ghost-button" data-modal-close>取消</button><button class="primary-button" data-expert-picker-apply="workflow">应用</button></footer>`, {
+        wide: true,
+        onReady(element) {
+          element.querySelector('[data-expert-picker-apply="workflow"]')?.addEventListener('click', () => {
+            const ids = [...element.querySelectorAll('input[name="expertWorkflowIds"]:checked')].map((input) => input.value);
+            const previousRequired = new Set(ui.draft.requiredWorkflows);
+            ui.draft.requiredWorkflows = ids.filter((id) => previousRequired.has(id));
+            ui.draft.recommendedWorkflows = ids.filter((id) => !previousRequired.has(id));
+            element.remove();
+            render();
+          });
+        },
+      });
+      return;
+    }
     if (skillPicker) {
       const selected = new Set([...list(ui.draft.requiredSkills), ...list(ui.draft.recommendedSkills)]);
       api.ui.modal(`<header class="capability-modal-header"><div><h2>添加技能</h2><p>只显示已安装并启用的技能；选中后可在编辑页设为必需或建议。</p></div><button data-modal-close>×</button></header><div class="capability-modal-body expert-picker-list">${items.length ? items.map((item) => `<label class="capability-picker-item"><input type="checkbox" name="expertSkillIds" value="${escapeHtml(item.id)}" ${selected.has(item.id) ? 'checked' : ''}/><span><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.description || item.id)}</small></span></label>`).join('') : '<p class="capability-muted">还没有已启用技能，请先到技能中心安装。</p>'}</div><footer class="capability-modal-footer"><button class="ghost-button" data-modal-close>取消</button><button class="primary-button" data-expert-picker-apply="skill">应用</button></footer>`, {
@@ -294,6 +350,12 @@
     ui.error = '';
     try {
       const effectiveStatus = status === 'current' ? draft.status || 'draft' : status;
+      const preflight = localPreflight();
+      if (effectiveStatus === 'enabled' && !preflight.ready) {
+        ui.error = preflight.issues.join('；');
+        render();
+        return;
+      }
       const result = await root.meteoDesktop.saveExpert({ ...draft, status: effectiveStatus });
       api.center.registry = result.registry;
       ui.mode = 'mine';
@@ -416,6 +478,9 @@
       if (type === 'skill') {
         ui.draft.requiredSkills = ui.draft.requiredSkills.filter((item) => item !== id);
         ui.draft.recommendedSkills = ui.draft.recommendedSkills.filter((item) => item !== id);
+      } else if (type === 'workflow') {
+        ui.draft.requiredWorkflows = ui.draft.requiredWorkflows.filter((item) => item !== id);
+        ui.draft.recommendedWorkflows = ui.draft.recommendedWorkflows.filter((item) => item !== id);
       } else {
         ui.draft.requiredConnectors = ui.draft.requiredConnectors.filter((item) => item !== id);
         ui.draft.recommendedConnectors = ui.draft.recommendedConnectors.filter((item) => item !== id);

@@ -258,6 +258,9 @@ const initialState = {
   assistantTaskId: null,
   automations: [],
   automationRuns: [],
+  workflows: [],
+  workflowVersions: [],
+  workflowRuns: [],
   selectedExpertId: null,
   draftTaskMode: 'forecast',
   draftSceneId: null,
@@ -349,6 +352,14 @@ const catalogUI = {
 const teamUI = {
   expanded: false,
   selectedMemberId: null,
+};
+const previewUI = {
+  open: false,
+  taskId: null,
+  activeId: null,
+  tabs: [],
+  width: 560,
+  surfaceStates: {},
 };
 const automationUI = {
   tab: 'schedules',
@@ -587,6 +598,8 @@ function normalizeExpertForRuntime(item, sourceType = 'system') {
     tags: strings(item.tags),
     requiredSkills: strings(item.requiredSkills),
     recommendedSkills: strings(item.recommendedSkills || item.skills),
+    requiredWorkflows: strings(item.requiredWorkflows),
+    recommendedWorkflows: strings(item.recommendedWorkflows),
     requiredConnectors,
     recommendedConnectors,
     toolSelections: normalizeToolSelections(item.toolSelections, [
@@ -672,6 +685,14 @@ function expertSnapshot(expert) {
     ...(snapshot.recommendedConnectors || []),
     ...memberSnapshots.flatMap((member) => member.recommendedConnectors || []),
   ])].filter((id) => !requiredConnectors.includes(id));
+  const requiredWorkflows = [...new Set([
+    ...(snapshot.requiredWorkflows || []),
+    ...memberSnapshots.flatMap((member) => member.requiredWorkflows || []),
+  ])];
+  const recommendedWorkflows = [...new Set([
+    ...(snapshot.recommendedWorkflows || []),
+    ...memberSnapshots.flatMap((member) => member.recommendedWorkflows || []),
+  ])].filter((id) => !requiredWorkflows.includes(id));
   return {
     ...snapshot,
     members: definition.nodes.map((node) => node.expert.id),
@@ -686,6 +707,8 @@ function expertSnapshot(expert) {
     memberSnapshots,
     requiredSkills,
     recommendedSkills,
+    requiredWorkflows,
+    recommendedWorkflows,
     requiredConnectors,
     recommendedConnectors,
     toolSelections: mergeTeamToolSelections([snapshot, ...memberSnapshots]),
@@ -950,6 +973,7 @@ function icon(name) {
     expert: '<svg viewBox="0 0 24 24"><path d="M4 7.5 12 3l8 4.5-8 4.5-8-4.5Z"/><path d="M7 10v5.5c2 2 8 2 10 0V10M20 8v6"/></svg>',
     skill: '<svg viewBox="0 0 24 24"><path d="M6 3h12v18H6z"/><path d="M9 8h6M9 12h6M9 16h4"/></svg>',
     automation: '<svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 13.5-5.8L20 9"/><path d="M20 4v5h-5M20 12a8 8 0 0 1-13.5 5.8L4 15"/><path d="M4 20v-5h5"/></svg>',
+    workflow: '<svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="6" r="2"/><circle cx="19" cy="12" r="2"/><circle cx="12" cy="18" r="2"/><path d="M7 11l3.5-3.5M13.5 7.5 17 11M17 13l-3.5 3.5M10.5 16.5 7 13"/></svg>',
     more: '<svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg>',
     search: '<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>',
     sidebar: '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg>',
@@ -1063,16 +1087,19 @@ function render() {
   if (accountSession.status === 'authenticated' && accountSession.user?.mustChangePassword) {
     appElement.innerHTML = `${renderAccountWindowTitlebar()}${renderPasswordChangeGate()}`;
     bindEvents();
+    window.requestAnimationFrame(() => window.MeteoMatePreview?.sync?.());
     return;
   }
   if (!['authenticated', 'offline'].includes(accountSession.status)) {
     appElement.innerHTML = `${renderAccountWindowTitlebar()}${renderAccountGate()}`;
     bindEvents();
+    window.requestAnimationFrame(() => window.MeteoMatePreview?.sync?.());
     return;
   }
   if (settingsDialog.open) {
     appElement.innerHTML = `${renderSettingsWindowTitlebar()}${renderAccountSettingsPage()}`;
     bindEvents();
+    window.requestAnimationFrame(() => window.MeteoMatePreview?.sync?.());
     return;
   }
   appElement.innerHTML = `
@@ -1094,6 +1121,7 @@ function render() {
     if (document.querySelector('[data-live-duration]')) {
       responseElapsedTimer = window.setInterval(updateLiveResponseDurations, 250);
     }
+    window.MeteoMatePreview?.sync?.();
   });
 }
 
@@ -1134,6 +1162,9 @@ function renderSettingsWindowTitlebar() {
 }
 
 function renderCatalogTitlebarActions() {
+  if (state.catalogTab === 'workflows') {
+    return window.MeteoMateWorkflowCenter?.titlebar?.().actions || '';
+  }
   if (state.catalogTab !== 'experts') return '';
   return `<label class="search-box titlebar-catalog-search">${icon('search')}<input id="catalog-search" value="${escapeHtml(state.search)}" placeholder="搜索专家名称或描述" /></label><button class="my-experts ${state.favoritesOnly ? 'active' : ''}" id="toggle-favorites">${icon('star')} 我的专家</button>`;
 }
@@ -1163,9 +1194,13 @@ function renderWindowTitlebar() {
       ? `<button class="titlebar-action" data-open-project="${escapeHtml(project.workspace)}">${icon('folder')} 打开目录</button><button class="titlebar-action primary" data-project-new-task="${escapeHtml(project.id)}">${icon('plus')} 新建任务</button>`
       : '';
   } else if (state.view === 'catalog') {
+    const workflowTitlebar = state.catalogTab === 'workflows'
+      ? window.MeteoMateWorkflowCenter?.titlebar?.() || {}
+      : {};
     title = '';
     titleIcon = null;
-    navigation = `<nav class="titlebar-catalog-tabs" aria-label="能力中心">${catalogTabButton('experts', '专家')}${catalogTabButton('skills', '技能')}${catalogTabButton('connectors', '工具')}</nav>`;
+    backButton = workflowTitlebar.backButton || '';
+    navigation = `<nav class="titlebar-catalog-tabs" aria-label="能力中心">${catalogTabButton('experts', '专家')}${catalogTabButton('skills', '技能')}${catalogTabButton('connectors', '工具')}${catalogTabButton('workflows', '工作流')}</nav>`;
     actions = renderCatalogTitlebarActions();
   } else if (state.view === 'automation') {
     const draft = automationUI.editor;
@@ -1194,6 +1229,10 @@ function renderWindowTitlebar() {
   } else if (state.view === 'more') {
     title = '产品信息';
     titleIcon = 'more';
+  }
+
+  if ((taskMode || assistantMode) && task?.artifacts?.length) {
+    actions = `<button class="titlebar-action ${previewUI.open && previewUI.taskId === task.id ? 'active' : ''}" data-preview-latest>${icon('file')} 预览成果 <span>${task.artifacts.length}</span></button>`;
   }
 
   const running = Boolean(task && task.status === 'running');
@@ -1385,6 +1424,9 @@ function renderMain() {
 
 function renderCatalogView() {
   const tab = state.catalogTab;
+  if (tab === 'workflows') {
+    return window.MeteoMateWorkflowCenter?.render?.() || '<div></div>';
+  }
   const allItems =
     tab === 'experts'
       ? state.teamMode
@@ -1450,7 +1492,7 @@ function renderCatalogView() {
 }
 
 function catalogTabButton(id, label) {
-  const iconName = { experts: 'expert', skills: 'skill', connectors: 'tool' }[id] || 'expert';
+  const iconName = { experts: 'expert', skills: 'skill', connectors: 'tool', workflows: 'workflow' }[id] || 'expert';
   return `<button class="titlebar-catalog-tab ${state.catalogTab === id ? 'active' : ''}" data-catalog-tab="${id}">${icon(iconName)}<span>${label}</span></button>`;
 }
 
@@ -1491,6 +1533,23 @@ function expertConnectorEntries(item) {
     .filter(Boolean);
 }
 
+function expertWorkflowEntries(item) {
+  const references = [...new Set([
+    ...(item.requiredWorkflows || []),
+    ...(item.recommendedWorkflows || []),
+  ])];
+  const workflows = [...(state.workflowVersions || []), ...(state.workflows || [])];
+  return references.map((reference) => {
+    const [id = '', ...versionParts] = String(reference).split('@');
+    const version = versionParts.join('@');
+    return workflows.find((workflow) =>
+      workflow.metadata?.id === id
+      && (!version || workflow.metadata?.version === version)
+      && workflow.metadata?.status === 'published'
+    );
+  }).filter(Boolean);
+}
+
 function expertMemberEntries(item) {
   return (item.members || []).map((id) => catalog.experts.find((expert) => expert.id === id)).filter(Boolean);
 }
@@ -1501,6 +1560,7 @@ function renderExpertCard(item) {
   const outputs = item.outputs || [];
   const skillCount = expertSkillEntries(item).length;
   const connectorCount = expertConnectorEntries(item).length;
+  const workflowCount = expertWorkflowEntries(item).length;
   const memberCount = expertMemberEntries(item).length;
   return `
     <article class="expert-card">
@@ -1515,7 +1575,7 @@ function renderExpertCard(item) {
         <span><small>交付</small><strong>${escapeHtml(outputs.slice(0, 2).join(' · ') || item.description)}</strong></span>
       </div>
       <div class="expert-card-meta">
-        <span>${memberCount ? `${memberCount} 位成员` : `${skillCount} 个技能 · ${connectorCount} 个工具`}</span>
+        <span>${memberCount ? `${memberCount} 位成员` : `${skillCount} 个技能 · ${workflowCount} 个工作流 · ${connectorCount} 个工具`}</span>
         <span>${escapeHtml(item.owner || 'MeteoMate')}</span>
       </div>
       <div class="expert-card-actions">
@@ -1532,6 +1592,7 @@ function renderExpertDetail(expertId) {
   const favorite = state.favoriteExpertIds.includes(item.id);
   const skills = expertSkillEntries(item);
   const connectors = expertConnectorEntries(item);
+  const workflows = expertWorkflowEntries(item);
   const members = expertMemberEntries(item);
   const workflow = item.workflow || item.tags || [];
   return `
@@ -1566,8 +1627,9 @@ function renderExpertDetail(expertId) {
             <div class="expert-detail-section-title"><strong>已绑定能力</strong><small>新任务会自动继承这些建议</small></div>
             <div class="expert-capability-list">
               ${(skills.length ? skills.map((skill) => `<span>${icon('skill')}<b>${escapeHtml(skill.name)}</b><small>技能</small></span>`).join('') : '')}
+              ${(workflows.length ? workflows.map((workflowDefinition) => `<span>${icon('workflow')}<b>${escapeHtml(workflowDefinition.metadata.name)}</b><small>工作流 v${escapeHtml(workflowDefinition.metadata.version)}</small></span>`).join('') : '')}
               ${(connectors.length ? connectors.map((connector) => `<span>${icon('tool')}<b>${escapeHtml(connector.name)}</b><small>工具</small></span>`).join('') : '')}
-              ${!skills.length && !connectors.length ? '<p>暂未绑定专用能力，将使用当前项目能力。</p>' : ''}
+              ${!skills.length && !workflows.length && !connectors.length ? '<p>暂未绑定专用能力，将使用当前项目能力。</p>' : ''}
             </div>
           </section>
           <section class="expert-detail-section">
@@ -1707,6 +1769,90 @@ function renderTeamCollaborationBar(task, expert) {
   `;
 }
 
+function previewTabsForTask(task) {
+  if (!task) return [];
+  return previewUI.tabs.filter((tab) => tab.taskId === task.id);
+}
+
+function activePreviewTab(task) {
+  const tabs = previewTabsForTask(task);
+  return tabs.find((tab) => tab.id === previewUI.activeId) || tabs.at(-1) || null;
+}
+
+function renderArtifactPreviewPanel(task) {
+  const tabs = previewTabsForTask(task);
+  const activeTab = activePreviewTab(task);
+  if (!activeTab) return '';
+  const surfaceState = previewUI.surfaceStates[activeTab.id] || {};
+  const address = surfaceState.address || activeTab.surfaceTarget || activeTab.target;
+  const loading = Boolean(surfaceState.loading);
+  const error = surfaceState.error || '';
+  return `
+    <aside class="artifact-preview-panel" aria-label="成果物预览区">
+      <div
+        class="artifact-preview-resizer"
+        id="artifact-preview-resizer"
+        role="separator"
+        tabindex="0"
+        aria-label="调整预览区宽度"
+        aria-orientation="vertical"
+        aria-valuemin="420"
+        aria-valuemax="1200"
+        aria-valuenow="${Math.round(previewUI.width)}"
+      ></div>
+      <header class="artifact-preview-tabs">
+        <div class="artifact-preview-tab-list" role="tablist" aria-label="已打开的预览">
+          ${tabs.map((tab) => `
+            <div class="artifact-preview-tab ${tab.id === activeTab.id ? 'active' : ''}">
+              <button
+                type="button"
+                role="tab"
+                aria-selected="${tab.id === activeTab.id}"
+                data-preview-tab="${escapeHtml(tab.id)}"
+                title="${escapeHtml(tab.title)}"
+              >
+                <span class="artifact-preview-tab-type">${escapeHtml(tab.extension)}</span>
+                <strong>${escapeHtml(tab.title)}</strong>
+              </button>
+              <button type="button" class="artifact-preview-tab-close" data-preview-close="${escapeHtml(tab.id)}" aria-label="关闭${escapeHtml(tab.title)}">${icon('close')}</button>
+            </div>
+          `).join('')}
+        </div>
+        <button type="button" class="artifact-preview-panel-close" data-preview-panel-close aria-label="收起预览区" title="收起预览区">${icon('sidebar')}</button>
+      </header>
+      <div class="artifact-preview-toolbar">
+        <div class="artifact-preview-navigation" role="group" aria-label="预览导航">
+          <button type="button" data-preview-navigate="back" aria-label="后退" title="后退" ${surfaceState.canGoBack ? '' : 'disabled'}>${icon('back')}</button>
+          <button type="button" data-preview-navigate="forward" aria-label="前进" title="前进" ${surfaceState.canGoForward ? '' : 'disabled'}>${icon('chevron')}</button>
+        </div>
+        <form class="artifact-preview-address" id="artifact-preview-address-form">
+          <span>${escapeHtml(activeTab.kind === 'web' ? 'WEB' : activeTab.extension)}</span>
+          <input id="artifact-preview-address-input" value="${escapeHtml(address)}" aria-label="预览地址" autocomplete="off" spellcheck="false" />
+        </form>
+        <button type="button" class="${loading ? 'loading' : ''}" data-preview-navigate="${loading ? 'stop' : 'reload'}" aria-label="${loading ? '停止加载' : '刷新'}" title="${loading ? '停止加载' : '刷新'}">${loading ? icon('close') : icon('refresh')}</button>
+        <button type="button" data-preview-open-external aria-label="在外部打开" title="在外部打开">${icon('external')}</button>
+      </div>
+      <div class="artifact-preview-surface-shell">
+        <div
+          class="artifact-preview-surface"
+          id="artifact-preview-surface"
+          role="tabpanel"
+          aria-label="${escapeHtml(activeTab.title)}预览"
+          data-preview-id="${escapeHtml(activeTab.id)}"
+          data-preview-target="${escapeHtml(activeTab.surfaceTarget)}"
+          data-preview-workspace="${escapeHtml(activeTab.workspace)}"
+        ></div>
+        <div class="artifact-preview-surface-status ${error ? 'error' : ''}" id="artifact-preview-surface-status" ${error ? '' : 'hidden'}>
+          ${icon(error ? 'warning' : 'file')}
+          <strong>${error ? '暂时无法预览' : '正在准备预览'}</strong>
+          <p>${escapeHtml(error || 'MeteoMate 正在打开成果物。')}</p>
+          ${error ? '<button type="button" data-preview-open-external>使用外部应用打开</button>' : ''}
+        </div>
+      </div>
+    </aside>
+  `;
+}
+
 function renderTaskView({ assistantMode = false } = {}) {
   const task = getActiveTask();
   const isNewTask = !assistantMode && !task;
@@ -1785,8 +1931,10 @@ function renderTaskView({ assistantMode = false } = {}) {
         ? '描述气象任务，@ 引用项目文件，/ 调用技能与指令'
         : '描述任务，@ 引用文件，/ 调用技能与指令';
   const sendShortcut = desktopSettings.preferences.sendOnEnter ? 'Enter' : 'Command / Ctrl + Enter';
+  const previewVisible = Boolean(task && previewUI.open && previewUI.taskId === task.id && activePreviewTab(task));
   return `
-    <section class="chat-workspace ${assistantMode ? 'assistant-chat-workspace' : ''}">
+    <div class="task-workbench ${previewVisible ? 'preview-open' : ''}" style="--preview-panel-width: ${Math.round(previewUI.width)}px">
+      <section class="chat-workspace ${assistantMode ? 'assistant-chat-workspace' : ''}">
         <div class="conversation-scroll">
           ${
             messages.length
@@ -1872,7 +2020,9 @@ function renderTaskView({ assistantMode = false } = {}) {
           </div>
           <p class="composer-ai-disclaimer">内容由 AI 生成，请仔细甄别</p>
         </div>
-    </section>
+      </section>
+      ${previewVisible ? renderArtifactPreviewPanel(task) : ''}
+    </div>
   `;
 }
 
@@ -2061,7 +2211,8 @@ function renderMessageArtifacts(message, task) {
     return (mediaType.startsWith('image/') || ['png', 'jpg', 'jpeg', 'webp', 'gif'].includes(extension))
       && artifact.metadata?.previewUri;
   });
-  const files = related.filter((artifact) => artifact.metadata?.source === 'office-artifacts');
+  const imageIds = new Set(images.map((artifact) => artifact.id));
+  const files = related.filter((artifact) => !imageIds.has(artifact.id));
   if (!images.length && !files.length) return '';
   return `<div class="message-artifact-gallery" aria-label="本次回答生成的成果物">
     ${images.map((artifact, index) => `
@@ -2085,6 +2236,7 @@ function artifactStatusLabel(status) {
 }
 
 function artifactSizeLabel(sizeBytes) {
+  if (sizeBytes == null || sizeBytes === '') return '';
   const size = Number(sizeBytes);
   if (!Number.isFinite(size) || size < 0) return '';
   if (size < 1024) return `${size} B`;
@@ -2799,6 +2951,12 @@ function renderAutomationSchedules(automations) {
 
 function renderAutomationScheduleRow(automation) {
   const project = state.projects.find((item) => item.id === automation.projectId);
+  const workflow = automation.workflowRef
+    ? (state.workflowVersions || []).find((item) =>
+        item.metadata?.id === automation.workflowRef.id
+        && item.metadata?.version === automation.workflowRef.version
+      )
+    : null;
   const nextRun = automation.enabled && automation.nextRunAt
     ? `下次 ${formatDateTime(automation.nextRunAt)}`
     : automation.enabled
@@ -2811,7 +2969,7 @@ function renderAutomationScheduleRow(automation) {
       <span class="automation-row-mark">${escapeHtml(automation.name.slice(0, 1))}</span>
       <button class="automation-row-main" data-automation-edit="${escapeHtml(automation.id)}">
         <strong>${escapeHtml(automation.name)}</strong>
-        <small>${escapeHtml(window.MeteoMateHarness.Automation.scheduleLabel(automation))} · ${escapeHtml(project?.name || '项目已移除')}</small>
+        <small>${escapeHtml(window.MeteoMateHarness.Automation.scheduleLabel(automation))} · ${escapeHtml(project?.name || '项目已移除')}${workflow ? ` · ${escapeHtml(workflow.metadata.name)}` : ''}</small>
       </button>
       <div class="automation-row-time"><strong>${running ? '执行中' : nextRun}</strong><small>${automation.lastRunAt ? `上次 ${formatDateTime(automation.lastRunAt)}` : '尚未运行'}</small></div>
       <button class="automation-run-button" data-automation-run="${escapeHtml(automation.id)}" ${running ? 'disabled' : ''}>${icon('play')} ${running ? '执行中' : '立即运行'}</button>
@@ -2864,6 +3022,18 @@ function automationModelOptions(draft) {
   return options.join('');
 }
 
+function publishedAutomationWorkflowOptions() {
+  const options = new Map();
+  for (const workflow of [...(state.workflowVersions || []), ...(state.workflows || [])]) {
+    if (workflow?.metadata?.status !== 'published') continue;
+    const reference = `${workflow.metadata.id}@${workflow.metadata.version}`;
+    if (!options.has(reference)) options.set(reference, workflow);
+  }
+  return [...options.entries()].sort((left, right) =>
+    String(left[1].metadata.name).localeCompare(String(right[1].metadata.name), 'zh-CN')
+  );
+}
+
 function dateTimeLocalValue(value) {
   if (!value) return '';
   const date = new Date(value);
@@ -2881,6 +3051,7 @@ function renderAutomationEditor() {
   const project = state.projects.find((item) => item.id === draft.projectId);
   const inheritProjectTools = draft.capabilityMode !== 'pinned';
   const projectCapabilities = project?.spec?.capabilities || {};
+  const publishedWorkflows = publishedAutomationWorkflowOptions();
   const connectorIds = inheritProjectTools
     ? [...(projectCapabilities.connectors || [])]
     : [...(draft.connectorIds || [])];
@@ -2902,6 +3073,7 @@ function renderAutomationEditor() {
           <label><span>权限策略</span><select id="automation-permission">${allowedPermissionProfiles().map((profile) => `<option value="${escapeHtml(profile.id)}" ${draft.permissionProfileId === profile.id ? 'selected' : ''}>${escapeHtml(profile.name)}</option>`).join('')}</select></label>
         </section>
         <section class="automation-capabilities">
+          <details class="automation-workflow-capability" ${draft.workflowRef ? 'open' : ''}><summary><span>工作流</span><small>${draft.workflowRef ? '已固定发布版本' : '可选'}</small></summary><div><label><span>绑定工作流</span><select id="automation-workflow"><option value="">不绑定，继续执行普通专家任务</option>${publishedWorkflows.map(([reference, workflow]) => `<option value="${escapeHtml(reference)}" ${draft.workflowRef === reference ? 'selected' : ''}>${escapeHtml(workflow.metadata.name)} · v${escapeHtml(workflow.metadata.version)}</option>`).join('')}</select><small>绑定后，定时任务会把该版本作为执行契约加载；审批和权限策略仍然生效。</small></label>${publishedWorkflows.length ? '' : '<p class="capability-muted">还没有已发布工作流，请先在工作流中心完成发布。</p>'}</div></details>
           <details><summary><span>技能</span><small>已选 ${(draft.skillIds || []).length}</small></summary><div>${availableSkills.length ? availableSkills.map((item) => `<label><input type="checkbox" name="automation-skills" value="${escapeHtml(item.id)}" ${selected('skillIds', item.id) ? 'checked' : ''} /><span>${escapeHtml(item.name)}</span></label>`).join('') : '<p class="capability-muted">没有已安装并启用的技能。</p>'}</div></details>
           <details class="automation-tool-capabilities"><summary><span>工具</span><small>${inheritProjectTools ? '继承项目' : '固定授权'} · ${connectorIds.filter((id) => id !== 'goose-runtime').length} 个服务 · ${connectorToolSelectionCount(connectorIds, toolSelections)} 个工具</small></summary><div><label class="automation-capability-mode"><span><strong>工具策略</strong><small>继承项目会自动跟随项目授权；固定授权保留当前选择。</small></span><select id="automation-capability-mode"><option value="inherit" ${inheritProjectTools ? 'selected' : ''}>继承项目</option><option value="pinned" ${inheritProjectTools ? '' : 'selected'}>固定授权</option></select></label><fieldset ${inheritProjectTools ? 'disabled' : ''}>${renderConnectorToolSelector({ scope: 'automation', connectorIds, toolSelections })}</fieldset></div></details>
         </section>

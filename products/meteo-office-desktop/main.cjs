@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, shell, WebContentsView } = require('electron');
 const { spawn, spawnSync } = require('node:child_process');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
@@ -8,9 +8,11 @@ const { createServer } = require('node:net');
 const { ReadableStream, WritableStream } = require('node:stream/web');
 const { pathToFileURL } = require('node:url');
 const { runtimeServices } = require('./capabilities/runtime-services.cjs');
+const WorkflowIo = require('./capabilities/workflow-io.cjs');
 const GooseRuntimeEnvironment = require('./capabilities/goose-runtime-environment.cjs');
 const PermissionPolicy = require('./capabilities/permission-policy.cjs');
 const OfficeArtifactCollector = require('./capabilities/office-artifact-collector.cjs');
+const ArtifactPreview = require('./capabilities/artifact-preview.cjs');
 const ProjectWorkspace = require('./capabilities/project-workspace.cjs');
 const SessionPlatformExtensions = require('./capabilities/session-platform-extensions.cjs');
 const ContextWindow = require('./harness/context-window');
@@ -52,12 +54,13 @@ const COMPOSER_SKIPPED_DIRECTORIES = new Set([
   '.git', '.svn', '.hg', '.idea', '.vscode', 'node_modules', 'dist', 'build', 'target',
   '.cache', 'coverage', '__pycache__', '.venv', 'venv',
 ]);
-
 app.setName('MeteoMate');
 
 const activeHeadlessRuns = new Map();
 const pendingPermissions = new Map();
 let mainWindow = null;
+const artifactPreviewEntries = new Map();
+let activeArtifactPreviewId = null;
 
 const WINDOW_MODES = Object.freeze({
   account: { width: 480, height: 580, minWidth: 420, minHeight: 520 },
@@ -78,6 +81,194 @@ function setMainWindowMode(mode, animate = true) {
   }
   mainWindow.center();
   return true;
+}
+
+function artifactPreviewId(value) {
+  const id = String(value || '');
+  if (!/^[a-zA-Z0-9_-]{1,120}$/.test(id)) throw new Error('预览标签标识不合法');
+  return id;
+}
+
+function artifactPreviewRoots(workspace) {
+  return [...new Set([
+    typeof workspace === 'string' && path.isAbsolute(workspace) ? workspace : null,
+    app.getPath('userData'),
+  ].filter(Boolean))];
+}
+
+function normalizedPreviewBounds(bounds) {
+  if (!mainWindow || mainWindow.isDestroyed()) throw new Error('预览窗口当前不可用');
+  const contentBounds = mainWindow.getContentBounds();
+  const x = Math.max(0, Math.round(Number(bounds?.x) || 0));
+  const y = Math.max(0, Math.round(Number(bounds?.y) || 0));
+  const width = Math.min(
+    Math.max(0, contentBounds.width - x),
+    Math.max(1, Math.round(Number(bounds?.width) || 1))
+  );
+  const height = Math.min(
+    Math.max(0, contentBounds.height - y),
+    Math.max(1, Math.round(Number(bounds?.height) || 1))
+  );
+  if (width < 40 || height < 40) throw new Error('预览区域尺寸过小');
+  return { x, y, width, height };
+}
+
+function artifactPreviewNavigationState(entry, patch = {}) {
+  const webContents = entry.view.webContents;
+  const currentUrl = webContents.getURL();
+  const address = currentUrl.startsWith('data:') ? entry.source.address : currentUrl || entry.source.address;
+  return {
+    id: entry.id,
+    address,
+    canGoBack: webContents.navigationHistory.canGoBack(),
+    canGoForward: webContents.navigationHistory.canGoForward(),
+    kind: entry.source.kind,
+    loading: webContents.isLoading(),
+    title: entry.title || entry.source.title,
+    ...patch,
+  };
+}
+
+function sendArtifactPreviewState(entry, patch = {}) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send('artifact-preview:state', artifactPreviewNavigationState(entry, patch));
+}
+
+function detachArtifactPreview(entry) {
+  if (!entry?.attached || !mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.contentView.removeChildView(entry.view);
+  entry.attached = false;
+}
+
+function attachArtifactPreview(entry, bounds) {
+  if (!mainWindow || mainWindow.isDestroyed()) throw new Error('预览窗口当前不可用');
+  for (const candidate of artifactPreviewEntries.values()) {
+    if (candidate !== entry) detachArtifactPreview(candidate);
+  }
+  if (!entry.attached) {
+    mainWindow.contentView.addChildView(entry.view);
+    entry.attached = true;
+  }
+  entry.view.setBounds(normalizedPreviewBounds(bounds));
+  activeArtifactPreviewId = entry.id;
+}
+
+function destroyArtifactPreview(entry) {
+  if (!entry) return;
+  detachArtifactPreview(entry);
+  if (!entry.view.webContents.isDestroyed()) entry.view.webContents.close();
+  artifactPreviewEntries.delete(entry.id);
+  if (activeArtifactPreviewId === entry.id) activeArtifactPreviewId = null;
+}
+
+function createArtifactPreviewEntry(id, source, roots, targetKey) {
+  const view = new WebContentsView({
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  view.setBackgroundColor('#f6f7f9');
+  const entry = {
+    id,
+    view,
+    source,
+    roots,
+    targetKey,
+    title: source.title,
+    attached: false,
+  };
+
+  const navigationAllowed = (event, url) => {
+    if (ArtifactPreview.navigationAllowed(url, entry.source, entry.roots)) return;
+    event.preventDefault();
+    sendArtifactPreviewState(entry, { error: '已阻止跳转到未授权地址', loading: false });
+  };
+  view.webContents.on('will-navigate', navigationAllowed);
+  view.webContents.on('will-redirect', navigationAllowed);
+  view.webContents.setWindowOpenHandler(({ url }) => {
+    try {
+      const parsed = new URL(url);
+      if (['http:', 'https:'].includes(parsed.protocol)) void shell.openExternal(parsed.toString());
+    } catch {
+      // 不向系统转交无效地址
+    }
+    return { action: 'deny' };
+  });
+  view.webContents.on('did-start-loading', () => sendArtifactPreviewState(entry, { loading: true, error: '' }));
+  view.webContents.on('did-stop-loading', () => sendArtifactPreviewState(entry, { loading: false, error: '' }));
+  view.webContents.on('did-navigate', () => sendArtifactPreviewState(entry));
+  view.webContents.on('did-navigate-in-page', () => sendArtifactPreviewState(entry));
+  view.webContents.on('page-title-updated', (_event, title) => {
+    if (title) entry.title = title;
+    sendArtifactPreviewState(entry);
+  });
+  view.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
+    if (errorCode === -3) return;
+    sendArtifactPreviewState(entry, {
+      error: errorDescription || '预览加载失败',
+      loading: false,
+    });
+  });
+  return entry;
+}
+
+async function showArtifactPreview(request = {}) {
+  const id = artifactPreviewId(request.id);
+  const roots = artifactPreviewRoots(request.workspace);
+  const target = String(request.target || '').trim();
+  const targetKey = JSON.stringify([target, ...roots]);
+  let entry = artifactPreviewEntries.get(id);
+  if (entry && entry.targetKey !== targetKey) {
+    destroyArtifactPreview(entry);
+    entry = null;
+  }
+  if (!entry) {
+    const source = await ArtifactPreview.resolvePreviewTarget({ target, roots });
+    entry = createArtifactPreviewEntry(id, source, roots, targetKey);
+    artifactPreviewEntries.set(id, entry);
+    void entry.view.webContents.loadURL(source.loadUrl).catch((error) => {
+      sendArtifactPreviewState(entry, { error: error?.message || '预览加载失败', loading: false });
+    });
+  }
+  attachArtifactPreview(entry, request.bounds);
+  return artifactPreviewNavigationState(entry);
+}
+
+async function navigateArtifactPreview(request = {}) {
+  const entry = artifactPreviewEntries.get(artifactPreviewId(request.id));
+  if (!entry) throw new Error('预览标签已关闭');
+  const history = entry.view.webContents.navigationHistory;
+  switch (request.action) {
+    case 'back':
+      if (history.canGoBack()) history.goBack();
+      break;
+    case 'forward':
+      if (history.canGoForward()) history.goForward();
+      break;
+    case 'reload':
+      entry.view.webContents.reload();
+      break;
+    case 'stop':
+      entry.view.webContents.stop();
+      break;
+    case 'url': {
+      const roots = artifactPreviewRoots(request.workspace);
+      const source = await ArtifactPreview.resolvePreviewTarget({ target: request.url, roots });
+      entry.source = source;
+      entry.roots = roots;
+      entry.targetKey = JSON.stringify([request.url, ...roots]);
+      entry.title = source.title;
+      void entry.view.webContents.loadURL(source.loadUrl).catch((error) => {
+        sendArtifactPreviewState(entry, { error: error?.message || '预览加载失败', loading: false });
+      });
+      break;
+    }
+    default:
+      throw new Error('预览导航操作不受支持');
+  }
+  return artifactPreviewNavigationState(entry);
 }
 
 function sendRuntimeEvent(payload) {
@@ -2501,6 +2692,7 @@ function createWindow() {
   mainWindow.on('unmaximize', sendWindowState);
   mainWindow.on('restore', sendWindowState);
   mainWindow.on('closed', () => {
+    for (const entry of [...artifactPreviewEntries.values()]) destroyArtifactPreview(entry);
     mainWindow = null;
   });
 
@@ -2648,6 +2840,38 @@ ipcMain.handle('workspace:open', async (_event, targetPath) => {
   return error === '';
 });
 
+ipcMain.handle('workflow:import', async () => {
+  const result = await dialog.showOpenDialog({
+    title: '导入 MeteoMate 工作流',
+    filters: [{ name: 'MeteoMate Workflow', extensions: ['yml', 'yaml'] }],
+    properties: ['openFile'],
+  });
+  if (result.canceled || !result.filePaths[0]) return null;
+  const filePath = result.filePaths[0];
+  const stats = await fs.promises.stat(filePath);
+  if (!stats.isFile() || stats.size > WorkflowIo.WORKFLOW_FILE_SIZE_LIMIT) {
+    throw new Error('工作流文件不存在或超过 2 MB');
+  }
+  const source = await fs.promises.readFile(filePath, 'utf8');
+  return { path: filePath, workflow: WorkflowIo.parseWorkflowYaml(source) };
+});
+
+ipcMain.handle('workflow:export', async (_event, request = {}) => {
+  const suggestedName = path.basename(String(request.suggestedName || 'workflow.workflow.yml'))
+    .replace(/[^a-zA-Z0-9._-]+/g, '-');
+  const result = await dialog.showSaveDialog({
+    title: '导出 MeteoMate 工作流',
+    defaultPath: path.join(app.getPath('documents'), suggestedName),
+    filters: [{ name: 'MeteoMate Workflow', extensions: ['yml', 'yaml'] }],
+    properties: ['createDirectory', 'showOverwriteConfirmation'],
+  });
+  if (result.canceled || !result.filePath) return { saved: false };
+  const serialized = WorkflowIo.serializeWorkflowYaml(request.workflow);
+  await fs.promises.writeFile(result.filePath, serialized, { encoding: 'utf8', mode: 0o600 });
+  await fs.promises.chmod(result.filePath, 0o600);
+  return { saved: true, path: result.filePath };
+});
+
 ipcMain.handle('external:open', async (_event, targetUrl) => {
   if (!targetUrl || typeof targetUrl !== 'string') return false;
   let parsed;
@@ -2658,6 +2882,30 @@ ipcMain.handle('external:open', async (_event, targetUrl) => {
   }
   if (!['http:', 'https:'].includes(parsed.protocol)) return false;
   await shell.openExternal(parsed.toString());
+  return true;
+});
+
+ipcMain.handle('artifact-preview:show', async (_event, request) => showArtifactPreview(request));
+
+ipcMain.handle('artifact-preview:bounds', async (_event, request = {}) => {
+  const entry = artifactPreviewEntries.get(artifactPreviewId(request.id));
+  if (!entry || activeArtifactPreviewId !== entry.id) return false;
+  entry.view.setBounds(normalizedPreviewBounds(request.bounds));
+  return true;
+});
+
+ipcMain.handle('artifact-preview:navigate', async (_event, request) => navigateArtifactPreview(request));
+
+ipcMain.handle('artifact-preview:hide', async () => {
+  const entry = artifactPreviewEntries.get(activeArtifactPreviewId);
+  detachArtifactPreview(entry);
+  activeArtifactPreviewId = null;
+  return true;
+});
+
+ipcMain.handle('artifact-preview:close', async (_event, previewId) => {
+  const entry = artifactPreviewEntries.get(artifactPreviewId(previewId));
+  destroyArtifactPreview(entry);
   return true;
 });
 

@@ -1,9 +1,11 @@
 (function (root, factory) {
-  const api = factory();
-  if (typeof module === 'object' && module.exports) module.exports = api;
+  const isNode = typeof module === 'object' && module.exports;
+  const Workflow = isNode ? require('./workflow') : root.MeteoMateHarness.Workflow;
+  const api = factory(Workflow);
+  if (isNode) module.exports = api;
   root.MeteoMateHarness = root.MeteoMateHarness || {};
   root.MeteoMateHarness.ExpertTeam = api;
-})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (Workflow) {
   'use strict';
 
   const MEMBER_STATUSES = Object.freeze([
@@ -210,6 +212,10 @@
     return Boolean(value && value.kind === 'team' && list(value.nodes).length);
   }
 
+  function toWorkflowDefinition(team) {
+    return Workflow.legacyTeamToWorkflow(team);
+  }
+
   return {
     MEMBER_STATUSES,
     clipText,
@@ -219,5 +225,6 @@
     memberPrompt,
     synthesisPrompt,
     isTeamRequest,
+    toWorkflowDefinition,
   };
 });

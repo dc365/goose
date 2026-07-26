@@ -1,10 +1,12 @@
 (function (root, factory) {
-  const Shared = typeof module === 'object' && module.exports ? require('./shared') : root.MeteoMateHarness.Shared;
-  const api = factory(Shared);
-  if (typeof module === 'object' && module.exports) module.exports = api;
+  const isNode = typeof module === 'object' && module.exports;
+  const Shared = isNode ? require('./shared') : root.MeteoMateHarness.Shared;
+  const Workflow = isNode ? require('./workflow') : root.MeteoMateHarness.Workflow;
+  const api = factory(Shared, Workflow);
+  if (isNode) module.exports = api;
   root.MeteoMateHarness = root.MeteoMateHarness || {};
   root.MeteoMateHarness.Automation = api;
-})(typeof globalThis !== 'undefined' ? globalThis : this, function (Shared) {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (Shared, Workflow) {
   'use strict';
 
   const INTERVAL_UNITS = Object.freeze({
@@ -73,6 +75,7 @@
     const trigger = Shared.cleanObject(automation.trigger);
     const taskTemplate = Shared.cleanObject(automation.taskTemplate);
     const executionPolicy = Shared.cleanObject(automation.executionPolicy);
+    const workflowRef = Shared.cleanObject(automation.workflowRef);
     const connectorIds = Shared.uniqueStrings(taskTemplate.connectorIds || automation.connectorIds);
     const toolSelections = Shared.cleanObject(taskTemplate.toolSelections || automation.toolSelections);
     const capabilityMode = ['inherit', 'pinned'].includes(taskTemplate.capabilityMode)
@@ -86,6 +89,13 @@
       name: automation.name || '未命名自动化',
       enabled: automation.enabled !== false,
       projectId: automation.projectId || '',
+      workflowRef: workflowRef.id
+        ? {
+            id: String(workflowRef.id),
+            version: String(workflowRef.version || ''),
+          }
+        : null,
+      inputMapping: Shared.deepClone(Shared.cleanObject(automation.inputMapping)),
       taskTemplate: {
         prompt: taskTemplate.prompt || automation.prompt || '',
         expertId: taskTemplate.expertId || automation.expertId || '',
@@ -156,5 +166,23 @@
     return Boolean(automation?.enabled && automation.nextRunAt && Number(automation.nextRunAt) <= now);
   }
 
-  return { INTERVAL_UNITS, normalizeAutomation, computeNextRunAt, scheduleLabel, isDue };
+  function workflowCapabilityReference(automation = {}) {
+    const reference = automation?.workflowRef;
+    if (!reference?.id) return '';
+    return `${reference.id}${reference.version ? `@${reference.version}` : ''}`;
+  }
+
+  function toWorkflowDefinition(automation = {}) {
+    return Workflow.legacyAutomationToWorkflow(automation);
+  }
+
+  return {
+    INTERVAL_UNITS,
+    normalizeAutomation,
+    computeNextRunAt,
+    scheduleLabel,
+    isDue,
+    workflowCapabilityReference,
+    toWorkflowDefinition,
+  };
 });

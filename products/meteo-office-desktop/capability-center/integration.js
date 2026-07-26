@@ -56,10 +56,16 @@
         ...(task.skillIds || []),
       ])]
         .filter((id) => enabledSkills.has(id));
-      const connectorIds = task.connectorIds || [];
+      const connectorIds = [...new Set([
+        ...(request.connectorIds || []),
+        ...(task.connectorIds || []),
+      ])];
       request.skillIds = [...skillIds];
       request.connectorIds = [...connectorIds];
-      request.toolSelections = normalizeToolSelections(task.toolSelections, connectorIds);
+      request.toolSelections = normalizeToolSelections({
+        ...(request.toolSelections || {}),
+        ...(task.toolSelections || {}),
+      }, connectorIds);
       request.projectId = task.projectId || null;
       const availableSkills = api.skillCatalog(task.projectId || null);
       const selectedSkills = skillIds

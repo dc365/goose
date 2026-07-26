@@ -5,6 +5,10 @@ let settingsDialogCleanup = null;
 let projectDialogCleanup = null;
 let composerTriggerCleanup = null;
 let catalogDetailCleanup = null;
+let unsubscribeArtifactPreviewEvents = null;
+let artifactPreviewResizeCleanup = null;
+let artifactPreviewSyncRequest = 0;
+let suppressNextUnloadStateSave = false;
 const RUNTIME_STREAM_COMMIT_INTERVAL_MS = 80;
 const RUNTIME_PROGRESS_COMMIT_INTERVAL_MS = 350;
 const runtimeStreamCommitTimers = new Map();
@@ -336,6 +340,7 @@ async function finishAccountActivation(session) {
     }
   }
   await window.meteoDesktop.setWindowMode('workspace');
+  suppressNextUnloadStateSave = true;
   window.location.reload();
 }
 
@@ -434,6 +439,8 @@ function bindEvents() {
   projectDialogCleanup = null;
   catalogDetailCleanup?.();
   catalogDetailCleanup = null;
+  artifactPreviewResizeCleanup?.();
+  artifactPreviewResizeCleanup = null;
   document.getElementById('account-login-form')?.addEventListener('submit', loginAccount);
   document.getElementById('account-password-form')?.addEventListener('submit', changeAccountPassword);
   document.getElementById('account-open-offline')?.addEventListener('click', openOfflineAccount);
@@ -482,12 +489,14 @@ function bindEvents() {
   document.querySelectorAll('[data-nav]').forEach((element) => {
     element.addEventListener('click', () => navigate(element.dataset.nav));
   });
+  window.MeteoMateWorkflowCenter?.bindEvents?.();
 
   document.querySelectorAll('[data-catalog-tab]').forEach((element) => {
     element.addEventListener('click', () => {
       catalogUI.detailExpertId = null;
       state.catalogTab = element.dataset.catalogTab;
       state.category = '全部';
+      window.MeteoMateWorkflowCenter?.onNavigate?.('catalog');
       render();
     });
   });
@@ -762,7 +771,12 @@ function bindEvents() {
   document.querySelectorAll('[data-open-artifact]').forEach((element) => {
     element.addEventListener('click', () => {
       const target = element.dataset.openArtifact;
-      if (/^https?:\/\//i.test(target)) window.meteoDesktop.openExternalUrl(target);
+      const task = state.view === 'assistants' ? getAssistantTask() : getActiveTask();
+      const artifact = task?.artifacts?.find((item) =>
+        [item.id, item.path, item.uri, item.name].filter(Boolean).includes(target)
+      );
+      if (artifact) openArtifactPreview(artifact, task);
+      else if (/^https?:\/\//i.test(target)) window.meteoDesktop.openExternalUrl(target);
       else window.meteoDesktop.openWorkspace(target);
     });
   });
@@ -816,6 +830,7 @@ function bindEvents() {
   }
 
   bindTaskComposerMenus();
+  bindArtifactPreviewEvents();
 
   const sendButton = document.getElementById('send-task');
   if (sendButton) sendButton.addEventListener('click', () => sendTaskMessage());
@@ -1008,6 +1023,315 @@ function bindEvents() {
   bindProjectDialogEvents();
 }
 
+function currentPreviewTask() {
+  return state.view === 'assistants' ? getAssistantTask() : getActiveTask();
+}
+
+function previewWorkspace(task) {
+  return task?.workspace || getConversationProject(task)?.workspace || '';
+}
+
+function openArtifactPreview(artifact, task = currentPreviewTask()) {
+  if (!artifact || !task) return;
+  const previewApi = window.MeteoMateHarness.ArtifactPreview;
+  let tab;
+  try {
+    tab = previewApi.createPreviewTab(artifact, {
+      taskId: task.id,
+      workspace: previewWorkspace(task),
+    });
+  } catch {
+    const target = artifact.path || artifact.uri;
+    if (/^https?:\/\//i.test(target)) window.meteoDesktop.openExternalUrl(target);
+    else if (target) window.meteoDesktop.openWorkspace(target);
+    return;
+  }
+
+  const staleTabs = previewUI.tabs.filter((item) => item.taskId !== task.id);
+  staleTabs.forEach((item) => {
+    void window.meteoDesktop.closeArtifactPreview(item.id);
+    delete previewUI.surfaceStates[item.id];
+  });
+  previewUI.tabs = previewUI.tabs.filter((item) => item.taskId === task.id);
+  const existingIndex = previewUI.tabs.findIndex((item) => item.id === tab.id);
+  if (existingIndex >= 0) previewUI.tabs[existingIndex] = { ...previewUI.tabs[existingIndex], ...tab };
+  else previewUI.tabs.push(tab);
+  if (previewUI.tabs.length > 8) {
+    const [removed] = previewUI.tabs.splice(0, 1);
+    if (removed.id !== tab.id) {
+      void window.meteoDesktop.closeArtifactPreview(removed.id);
+      delete previewUI.surfaceStates[removed.id];
+    }
+  }
+  previewUI.taskId = task.id;
+  previewUI.activeId = tab.id;
+  previewUI.open = true;
+  previewUI.surfaceStates[tab.id] = {
+    ...(previewUI.surfaceStates[tab.id] || {}),
+    address: tab.surfaceTarget,
+    loading: true,
+    error: '',
+  };
+  const workbenchWidth = document.querySelector('.task-workbench')?.clientWidth
+    || document.querySelector('.main-shell')?.clientWidth
+    || window.innerWidth;
+  previewUI.width = previewApi.normalizePanelWidth(previewUI.width, workbenchWidth);
+  render();
+}
+
+function activePreviewEntry() {
+  const task = currentPreviewTask();
+  return activePreviewTab(task);
+}
+
+function applyArtifactPreviewState(payload = {}) {
+  if (!payload.id) return;
+  previewUI.surfaceStates[payload.id] = {
+    ...(previewUI.surfaceStates[payload.id] || {}),
+    ...payload,
+  };
+  if (payload.id !== previewUI.activeId) return;
+
+  const addressInput = document.getElementById('artifact-preview-address-input');
+  if (addressInput && payload.address && document.activeElement !== addressInput) {
+    addressInput.value = payload.address;
+  }
+  const back = document.querySelector('[data-preview-navigate="back"]');
+  const forward = document.querySelector('[data-preview-navigate="forward"]');
+  if (back) back.disabled = !payload.canGoBack;
+  if (forward) forward.disabled = !payload.canGoForward;
+
+  const loadingButton = document.querySelector(
+    '[data-preview-navigate="reload"], [data-preview-navigate="stop"]'
+  );
+  if (loadingButton && typeof payload.loading === 'boolean') {
+    loadingButton.dataset.previewNavigate = payload.loading ? 'stop' : 'reload';
+    loadingButton.classList.toggle('loading', payload.loading);
+    loadingButton.innerHTML = icon(payload.loading ? 'close' : 'refresh');
+    loadingButton.setAttribute('aria-label', payload.loading ? '停止加载' : '刷新');
+    loadingButton.title = payload.loading ? '停止加载' : '刷新';
+  }
+
+  const status = document.getElementById('artifact-preview-surface-status');
+  if (!status) return;
+  const error = String(payload.error || '');
+  status.hidden = !error;
+  status.classList.toggle('error', Boolean(error));
+  const title = status.querySelector('strong');
+  const detail = status.querySelector('p');
+  if (title) title.textContent = error ? '暂时无法预览' : '正在准备预览';
+  if (detail) detail.textContent = error || 'MeteoMate 正在打开成果物。';
+}
+
+async function syncArtifactPreviewSurface() {
+  const requestId = ++artifactPreviewSyncRequest;
+  const surface = document.getElementById('artifact-preview-surface');
+  if (!surface || !previewUI.open) {
+    await window.meteoDesktop.hideArtifactPreview();
+    return;
+  }
+  const rect = surface.getBoundingClientRect();
+  if (rect.width < 40 || rect.height < 40) {
+    await window.meteoDesktop.hideArtifactPreview();
+    return;
+  }
+  try {
+    const snapshot = await window.meteoDesktop.showArtifactPreview({
+      id: surface.dataset.previewId,
+      target: surface.dataset.previewTarget,
+      workspace: surface.dataset.previewWorkspace,
+      bounds: {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+      },
+    });
+    if (requestId === artifactPreviewSyncRequest) applyArtifactPreviewState(snapshot);
+  } catch (error) {
+    if (requestId !== artifactPreviewSyncRequest) return;
+    applyArtifactPreviewState({
+      id: surface.dataset.previewId,
+      address: surface.dataset.previewTarget,
+      error: error?.message || '预览加载失败',
+      loading: false,
+    });
+  }
+}
+
+function updateArtifactPreviewBounds() {
+  const surface = document.getElementById('artifact-preview-surface');
+  if (!surface || !previewUI.open) return;
+  const workbench = document.querySelector('.task-workbench');
+  if (workbench) {
+    const previewApi = window.MeteoMateHarness.ArtifactPreview;
+    previewUI.width = previewApi.normalizePanelWidth(previewUI.width, workbench.clientWidth);
+    workbench.style.setProperty('--preview-panel-width', `${previewUI.width}px`);
+    const resizer = document.getElementById('artifact-preview-resizer');
+    resizer?.setAttribute('aria-valuenow', String(previewUI.width));
+    resizer?.setAttribute(
+      'aria-valuemax',
+      String(previewApi.normalizePanelWidth(100000, workbench.clientWidth))
+    );
+  }
+  const rect = surface.getBoundingClientRect();
+  if (rect.width < 40 || rect.height < 40) return;
+  void window.meteoDesktop.updateArtifactPreviewBounds({
+    id: surface.dataset.previewId,
+    bounds: {
+      x: rect.x,
+      y: rect.y,
+      width: rect.width,
+      height: rect.height,
+    },
+  });
+}
+
+async function navigateActivePreview(action, value = '') {
+  const tab = activePreviewEntry();
+  if (!tab) return;
+  try {
+    const snapshot = await window.meteoDesktop.navigateArtifactPreview({
+      id: tab.id,
+      action,
+      url: value,
+      workspace: tab.workspace,
+    });
+    applyArtifactPreviewState(snapshot);
+  } catch (error) {
+    applyArtifactPreviewState({
+      id: tab.id,
+      error: error?.message || '预览导航失败',
+      loading: false,
+    });
+  }
+}
+
+function closePreviewTab(previewId) {
+  const closingIndex = previewUI.tabs.findIndex((item) => item.id === previewId);
+  if (closingIndex < 0) return;
+  const wasActive = previewUI.activeId === previewId;
+  previewUI.tabs.splice(closingIndex, 1);
+  delete previewUI.surfaceStates[previewId];
+  void window.meteoDesktop.closeArtifactPreview(previewId);
+  const taskTabs = previewUI.tabs.filter((item) => item.taskId === previewUI.taskId);
+  if (!taskTabs.length) {
+    previewUI.open = false;
+    previewUI.activeId = null;
+    void window.meteoDesktop.hideArtifactPreview();
+  } else if (wasActive) {
+    previewUI.activeId = taskTabs[Math.min(closingIndex, taskTabs.length - 1)].id;
+  }
+  render();
+}
+
+function openActivePreviewExternally() {
+  const tab = activePreviewEntry();
+  if (!tab) return;
+  const target = tab.target || tab.surfaceTarget;
+  if (/^https?:\/\//i.test(target)) window.meteoDesktop.openExternalUrl(target);
+  else if (/^file:/i.test(target)) {
+    try {
+      window.meteoDesktop.openWorkspace(decodeURIComponent(new URL(target).pathname));
+    } catch {
+      return;
+    }
+  } else window.meteoDesktop.openWorkspace(target);
+}
+
+function bindArtifactPreviewResizer() {
+  const resizer = document.getElementById('artifact-preview-resizer');
+  const workbench = document.querySelector('.task-workbench');
+  if (!resizer || !workbench) return;
+  const previewApi = window.MeteoMateHarness.ArtifactPreview;
+  const applyWidth = (width) => {
+    previewUI.width = previewApi.normalizePanelWidth(width, workbench.clientWidth);
+    workbench.style.setProperty('--preview-panel-width', `${previewUI.width}px`);
+    resizer.setAttribute('aria-valuenow', String(previewUI.width));
+    resizer.setAttribute(
+      'aria-valuemax',
+      String(previewApi.normalizePanelWidth(100000, workbench.clientWidth))
+    );
+    window.requestAnimationFrame(updateArtifactPreviewBounds);
+  };
+  resizer.setAttribute(
+    'aria-valuemax',
+    String(previewApi.normalizePanelWidth(100000, workbench.clientWidth))
+  );
+  resizer.addEventListener('keydown', (event) => {
+    if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+    event.preventDefault();
+    applyWidth(previewUI.width + (event.key === 'ArrowLeft' ? 24 : -24));
+    localStorage.setItem('meteomate-preview-width-v1', String(previewUI.width));
+  });
+  resizer.addEventListener('click', () => resizer.focus());
+  resizer.addEventListener('pointerdown', (event) => {
+    event.preventDefault();
+    resizer.focus();
+    const startX = event.clientX;
+    const startWidth = previewUI.width;
+    document.body.classList.add('resizing-artifact-preview');
+    const move = (moveEvent) => applyWidth(startWidth + startX - moveEvent.clientX);
+    const finish = () => {
+      document.body.classList.remove('resizing-artifact-preview');
+      localStorage.setItem('meteomate-preview-width-v1', String(previewUI.width));
+      artifactPreviewResizeCleanup?.();
+      artifactPreviewResizeCleanup = null;
+    };
+    document.addEventListener('pointermove', move);
+    document.addEventListener('pointerup', finish, { once: true });
+    artifactPreviewResizeCleanup = () => {
+      document.removeEventListener('pointermove', move);
+      document.removeEventListener('pointerup', finish);
+      document.body.classList.remove('resizing-artifact-preview');
+    };
+  });
+}
+
+function bindArtifactPreviewEvents() {
+  document.querySelector('[data-preview-latest]')?.addEventListener('click', () => {
+    const task = currentPreviewTask();
+    const artifact = task?.artifacts?.at(-1);
+    if (artifact) openArtifactPreview(artifact, task);
+  });
+  document.querySelectorAll('[data-preview-tab]').forEach((element) => {
+    element.addEventListener('click', () => {
+      previewUI.activeId = element.dataset.previewTab;
+      previewUI.open = true;
+      render();
+    });
+  });
+  document.querySelectorAll('[data-preview-close]').forEach((element) => {
+    element.addEventListener('click', () => closePreviewTab(element.dataset.previewClose));
+  });
+  document.querySelector('[data-preview-panel-close]')?.addEventListener('click', () => {
+    previewUI.open = false;
+    void window.meteoDesktop.hideArtifactPreview();
+    render();
+  });
+  document.querySelectorAll('[data-preview-navigate]').forEach((element) => {
+    element.addEventListener('click', () => navigateActivePreview(element.dataset.previewNavigate));
+  });
+  document.getElementById('artifact-preview-address-form')?.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const value = document.getElementById('artifact-preview-address-input')?.value.trim();
+    if (value) void navigateActivePreview('url', value);
+  });
+  document.querySelectorAll('[data-preview-open-external]').forEach((element) => {
+    element.addEventListener('click', openActivePreviewExternally);
+  });
+  bindArtifactPreviewResizer();
+}
+
+window.MeteoMatePreview = {
+  openArtifact: openArtifactPreview,
+  sync: syncArtifactPreviewSurface,
+};
+
+window.addEventListener('resize', () => {
+  window.requestAnimationFrame(updateArtifactPreviewBounds);
+});
+
 function captureSettingsReturnContext() {
   const scrollSelectors = [
     '.conversation-scroll',
@@ -1015,6 +1339,9 @@ function captureSettingsReturnContext() {
     '.page-content',
     '.project-detail-content',
     '.automation-content',
+    '.workflow-library',
+    '.workflow-design-surface',
+    '.workflow-run-console',
   ];
   const scrollSelector = scrollSelectors.find((selector) => document.querySelector(selector)) || null;
   return {
@@ -1420,6 +1747,11 @@ async function deleteCustomModel(providerId, modelId) {
 
 function navigate(view) {
   catalogUI.detailExpertId = null;
+  if (view === 'workflows') {
+    state.catalogTab = 'workflows';
+    view = 'catalog';
+  }
+  window.MeteoMateWorkflowCenter?.onNavigate?.(view);
   if (view !== 'automation') {
     automationUI.editor = null;
     automationUI.error = '';
@@ -2362,6 +2694,7 @@ function automationEditorDraft(templateId = '', automation = null) {
     name: automation?.name || template?.name || '',
     projectId: automation?.projectId || project?.id || '',
     prompt: taskTemplate.prompt || '',
+    workflowRef: window.MeteoMateHarness.Automation.workflowCapabilityReference(automation),
     expertId: taskTemplate.expertId || project?.spec?.capabilities?.experts?.[0] || catalog.experts[0].id,
     skillIds: enabledSkillIds(taskTemplate.skillIds || [], automation?.projectId || project?.id || null),
     capabilityMode: taskTemplate.capabilityMode === 'pinned' ? 'pinned' : 'inherit',
@@ -2414,6 +2747,7 @@ function readAutomationEditorDraft() {
     name: document.getElementById('automation-name')?.value.trim() ?? current.name,
     projectId,
     prompt: document.getElementById('automation-prompt')?.value.trim() ?? current.prompt,
+    workflowRef: document.getElementById('automation-workflow')?.value ?? current.workflowRef,
     expertId: document.getElementById('automation-expert')?.value ?? current.expertId,
     permissionProfileId: document.getElementById('automation-permission')?.value ?? current.permissionProfileId,
     providerId,
@@ -2468,12 +2802,17 @@ function saveAutomationEditor(event) {
 
   const existing = draft.id ? (state.automations || []).find((item) => item.id === draft.id) : null;
   const now = Date.now();
+  const [workflowId = '', ...workflowVersionParts] = String(draft.workflowRef || '').split('@');
   const automation = window.MeteoMateHarness.Automation.normalizeAutomation({
     ...existing,
     id: existing?.id || cryptoRandomId(),
     name: draft.name,
     projectId: draft.projectId,
     enabled: draft.enabled,
+    workflowRef: workflowId
+      ? { id: workflowId, version: workflowVersionParts.join('@') }
+      : null,
+    inputMapping: existing?.inputMapping || {},
     taskTemplate: {
       prompt: draft.prompt,
       expertId: draft.expertId,
@@ -2579,6 +2918,10 @@ async function executeAutomationById(automationId, source = 'manual') {
   task.projectId = project.id;
   task.workspace = project.workspace;
   task.skillIds = enabledSkillIds(template.skillIds || [], project.id);
+  const workflowReference = window.MeteoMateHarness.Automation.workflowCapabilityReference(automation);
+  task.workflowIds = workflowReference ? [workflowReference] : [];
+  task.workflowId = automation.workflowRef?.id || null;
+  task.workflowVersion = automation.workflowRef?.version || null;
   task.capabilityMode = template.capabilityMode === 'pinned' ? 'custom' : 'inherit';
   task.connectorIds = task.capabilityMode === 'custom' ? [...(template.connectorIds || [])] : [];
   task.toolSelections = task.capabilityMode === 'custom'
@@ -3952,6 +4295,9 @@ async function initialize(accountStatePromise) {
     return;
   }
   state = loadState(accountSession.profileKey);
+  window.MeteoMateWorkflowCenter?.normalizeState?.();
+  const savedPreviewWidth = Number(localStorage.getItem('meteomate-preview-width-v1'));
+  if (Number.isFinite(savedPreviewWidth)) previewUI.width = savedPreviewWidth;
   await loadDesktopSettings({ rerender: false });
   normalizeAutomationState();
   await loadKnowledgeSources({ render: false });
@@ -3962,6 +4308,9 @@ async function initialize(accountStatePromise) {
       null;
   }
   unsubscribeRuntimeEvents = runtimeRouter.subscribe(handleRuntimeEvent);
+  unsubscribeArtifactPreviewEvents = window.meteoDesktop.onArtifactPreviewStateChange?.(
+    applyArtifactPreviewState
+  );
   try {
     state.windowMaximized = Boolean(await window.meteoDesktop.windowIsMaximized?.());
   } catch {
@@ -4023,13 +4372,15 @@ window.addEventListener('beforeunload', () => {
   runtimeStreamCommitTimers.clear();
   runtimeProgressCommitTimers.forEach((timer) => window.clearTimeout(timer));
   runtimeProgressCommitTimers.clear();
-  saveState();
+  if (!suppressNextUnloadStateSave) saveState();
   permissionMenuCleanup?.();
   taskComposerMenuCleanup?.();
   accountMenuCleanup?.();
   settingsDialogCleanup?.();
   composerTriggerCleanup?.();
   unsubscribeRuntimeEvents?.();
+  unsubscribeArtifactPreviewEvents?.();
+  void window.meteoDesktop.hideArtifactPreview();
 });
 
 window.MeteoMateAccountReady = window.meteoDesktop.getAccountState();

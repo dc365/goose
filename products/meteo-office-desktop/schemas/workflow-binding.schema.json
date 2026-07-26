@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meteomate.local/schemas/workflow-binding.schema.json",
+  "title": "MeteoMate Workflow Binding",
+  "type": "object",
+  "required": ["id", "name", "workflowRef", "trigger", "inputMapping", "executionPolicy"],
+  "properties": {
+    "id": { "type": "string" },
+    "name": { "type": "string", "minLength": 1 },
+    "enabled": { "type": "boolean" },
+    "projectId": { "type": ["string", "null"] },
+    "workflowRef": {
+      "type": "object",
+      "required": ["id", "version"],
+      "properties": {
+        "id": { "type": "string" },
+        "version": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "trigger": { "$ref": "automation.schema.json#/$defs/trigger" },
+    "inputMapping": { "type": "object" },
+    "executionPolicy": { "type": "object" },
+    "createdAt": { "type": "integer" },
+    "updatedAt": { "type": "integer" }
+  },
+  "additionalProperties": false
+}

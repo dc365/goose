@@ -181,6 +181,8 @@
         description: item.description,
         version: item.version,
         status: item.status,
+        tools: list(item.tools),
+        toolCount: item.toolCount,
         transport: item.binding?.transport || null,
       })),
     };
