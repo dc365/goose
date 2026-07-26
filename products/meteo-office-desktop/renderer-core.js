@@ -1,4 +1,8 @@
 const brand = window.METEOMATE_BRAND;
+// 平台标记：Windows/Linux 需要为自绘窗口控制按钮预留标题栏空间
+if (document.body) {
+  document.body.classList.add(`platform-${window.meteoDesktop?.platform || 'darwin'}`);
+}
 const catalog = Object.freeze({
   experts: window.METEOMATE_EXPERTS,
   teams: window.METEOMATE_TEAMS,
@@ -863,6 +867,16 @@ function formatTokenCount(value) {
 function icon(name) {
   const icons = {
     plus: '<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>',
+    windowMinimize: '<svg viewBox="0 0 24 24"><path d="M5 12h14"/></svg>',
+    windowMaximize: '<svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>',
+    windowRestore: '<svg viewBox="0 0 24 24"><rect x="8" y="8" width="11" height="11" rx="1.5"/><path d="M5 15V6a1.5 1.5 0 0 1 1.5-1.5H15"/></svg>',
+    windowClose: '<svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg>',
+    'scene-synoptic': '<svg viewBox="0 0 24 24"><path d="M3 8c3-2.5 6-2.5 9 0s6 2.5 9 0"/><path d="M3 13c3-2.5 6-2.5 9 0s6 2.5 9 0"/><path d="M3 18c3-2.5 6-2.5 9 0s6 2.5 9 0"/></svg>',
+    'scene-severe': '<svg viewBox="0 0 24 24"><path d="M13 2 5 14h6l-2 8 8-12h-6l2-8Z"/></svg>',
+    'scene-content': '<svg viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6V3Z"/><path d="M15 3v4h4M9 12h7M9 16h7"/></svg>',
+    'scene-data': '<svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v6c0 1.7 3.1 3 7 3s7-1.3 7-3V6"/><path d="M5 12v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/></svg>',
+    'scene-operations': '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"/></svg>',
+    queue: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>',
     assistant: '<svg viewBox="0 0 24 24"><path d="M9 4h6l1 3 3 2v8l-3 2H8l-3-2V9l3-2 1-3Z"/><path d="M9 12h.01M15 12h.01M9 16h6"/></svg>',
     project: '<svg viewBox="0 0 24 24"><circle cx="6" cy="12" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="18" cy="18" r="2"/><path d="m8 11 8-4M8 13l8 4"/></svg>',
     expert: '<svg viewBox="0 0 24 24"><path d="M4 7.5 12 3l8 4.5-8 4.5-8-4.5Z"/><path d="M7 10v5.5c2 2 8 2 10 0V10M20 8v6"/></svg>',
@@ -898,6 +912,11 @@ function icon(name) {
   return `<span class="icon">${icons[name] || icons.more}</span>`;
 }
 
+function sceneIcon(scene) {
+  // 场景图标统一使用 SVG，避免 Unicode 符号在各平台字体下渲染不一致
+  return icon(`scene-${scene?.icon || 'operations'}`);
+}
+
 function taskStatusText(status) {
   return (
     {
@@ -911,9 +930,68 @@ function taskStatusText(status) {
   );
 }
 
+function captureInteractionSnapshot() {
+  // 全量重绘前记录焦点元素、光标位置与对话滚动位置，重绘后恢复，
+  // 避免流式输出期间打断输入、丢失光标或强制拉回底部。
+  const snapshot = { focus: null, conversationScroll: null, taskId: state.activeTaskId, view: state.view };
+  const active = document.activeElement;
+  if (
+    active &&
+    active.id &&
+    appElement.contains(active) &&
+    ['TEXTAREA', 'INPUT', 'SELECT'].includes(active.tagName)
+  ) {
+    snapshot.focus = {
+      id: active.id,
+      selectionStart: typeof active.selectionStart === 'number' ? active.selectionStart : null,
+      selectionEnd: typeof active.selectionEnd === 'number' ? active.selectionEnd : null,
+      scrollTop: active.scrollTop || 0,
+    };
+  }
+  const scroll = document.querySelector('.conversation-scroll');
+  if (scroll) {
+    const distanceToBottom = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight;
+    snapshot.conversationScroll = {
+      atBottom: distanceToBottom < 48,
+      scrollTop: scroll.scrollTop,
+    };
+  }
+  return snapshot;
+}
+
+function restoreInteractionSnapshot(snapshot) {
+  if (!snapshot) return false;
+  let scrollRestored = false;
+  if (snapshot.focus) {
+    const element = document.getElementById(snapshot.focus.id);
+    if (element && !element.disabled && document.contains(element)) {
+      element.focus({ preventScroll: true });
+      if (snapshot.focus.selectionStart !== null && typeof element.setSelectionRange === 'function') {
+        try {
+          element.setSelectionRange(snapshot.focus.selectionStart, snapshot.focus.selectionEnd);
+          element.scrollTop = snapshot.focus.scrollTop;
+        } catch {
+          // 部分输入类型不支持选区，忽略
+        }
+      }
+    }
+  }
+  if (snapshot.conversationScroll && snapshot.taskId === state.activeTaskId && snapshot.view === state.view) {
+    const scroll = document.querySelector('.conversation-scroll');
+    if (scroll) {
+      scroll.scrollTop = snapshot.conversationScroll.atBottom
+        ? scroll.scrollHeight
+        : Math.min(snapshot.conversationScroll.scrollTop, scroll.scrollHeight);
+      scrollRestored = true;
+    }
+  }
+  return scrollRestored;
+}
+
 function render() {
   window.clearInterval(responseElapsedTimer);
   responseElapsedTimer = null;
+  const interactionSnapshot = captureInteractionSnapshot();
   if (accountSession.status === 'authenticated' && accountSession.user?.mustChangePassword) {
     appElement.innerHTML = `${renderAccountWindowTitlebar()}${renderPasswordChangeGate()}`;
     bindEvents();
@@ -938,9 +1016,12 @@ function render() {
     ${projectUI.dialog ? renderProjectDialog() : ''}
   `;
   bindEvents();
+  const scrollRestored = restoreInteractionSnapshot(interactionSnapshot);
   requestAnimationFrame(() => {
     const scroll = document.querySelector('.conversation-scroll');
-    if (scroll) scroll.scrollTop = getActiveTask()?.messages?.length ? scroll.scrollHeight : 0;
+    if (scroll && !scrollRestored) {
+      scroll.scrollTop = getActiveTask()?.messages?.length ? scroll.scrollHeight : 0;
+    }
     updateLiveResponseDurations();
     if (document.querySelector('[data-live-duration]')) {
       responseElapsedTimer = window.setInterval(updateLiveResponseDurations, 250);
@@ -948,10 +1029,30 @@ function render() {
   });
 }
 
+function desktopPlatform() {
+  return window.meteoDesktop?.platform || 'darwin';
+}
+
+function usesCustomWindowControls() {
+  // macOS 使用系统红绿灯（hiddenInset），Windows/Linux 需要自绘窗口控制按钮
+  return !['darwin', undefined].includes(desktopPlatform());
+}
+
+function renderWindowControls() {
+  if (!usesCustomWindowControls()) return '';
+  return `
+    <div class="window-controls" role="group" aria-label="窗口控制">
+      <button type="button" class="window-control-button" id="window-minimize" aria-label="最小化" title="最小化">${icon('windowMinimize')}</button>
+      <button type="button" class="window-control-button" id="window-maximize" aria-label="${state.windowMaximized ? '还原' : '最大化'}" title="${state.windowMaximized ? '还原' : '最大化'}">${icon(state.windowMaximized ? 'windowRestore' : 'windowMaximize')}</button>
+      <button type="button" class="window-control-button window-control-close" id="window-close" aria-label="关闭" title="关闭">${icon('windowClose')}</button>
+    </div>`;
+}
+
 function renderAccountWindowTitlebar() {
   return `
     <header class="window-titlebar account-window-titlebar" aria-label="MeteoMate 窗口标题栏">
       <span class="account-window-title">${escapeHtml(brand.chineseName)} ${escapeHtml(brand.name)}</span>
+      ${renderWindowControls()}
     </header>`;
 }
 
@@ -960,6 +1061,7 @@ function renderSettingsWindowTitlebar() {
     <header class="window-titlebar settings-window-titlebar" aria-label="MeteoMate 设置窗口标题栏">
       <div class="settings-titlebar-sidebar"></div>
       <div class="settings-titlebar-main"></div>
+      ${renderWindowControls()}
     </header>`;
 }
 
@@ -1039,6 +1141,7 @@ function renderWindowTitlebar() {
         ${title ? `<div class="window-titlebar-page-title">${icon(titleIcon)}<strong>${escapeHtml(title)}</strong></div>` : ''}
         <div class="window-titlebar-actions">${actions}${running ? `<button class="titlebar-action danger" id="cancel-task">${icon('stop')} 停止</button>` : ''}</div>
       </div>
+      ${renderWindowControls()}
     </header>`;
 }
 
@@ -1294,7 +1397,7 @@ function renderScenes() {
           .map(
             (scene) => `
           <button class="scene-card ${scene.gradient}" data-scene-id="${scene.id}">
-            <span class="scene-orb">${escapeHtml(scene.icon)}</span>
+            <span class="scene-orb">${sceneIcon(scene)}</span>
             <span class="scene-copy"><strong>${escapeHtml(scene.title)}</strong><small>${escapeHtml(scene.subtitle)}</small></span>
             <span class="scene-expert">${escapeHtml(getExpert(scene.expertId).name)}</span>
             <span class="scene-arrow">›</span>
@@ -1539,6 +1642,7 @@ function renderTaskView({ assistantMode = false } = {}) {
                 </section>`
               : ''
           }
+          ${renderQueuedPrompts(task)}
         </div>
         <div class="composer-dock">
           <div class="composer-shell">
@@ -1553,8 +1657,7 @@ function renderTaskView({ assistantMode = false } = {}) {
             ${renderTaskDraftContext(expert, isNewTask)}
             <textarea
               id="task-prompt"
-              placeholder="${promptPlaceholder}"
-              ${isRunning ? 'disabled' : ''}
+              placeholder="${isRunning ? '当前回复完成后将自动发送，也可以继续编辑' : promptPlaceholder}"
             >${escapeHtml(isNewTask ? state.draftPrompt || '' : task?.draftPrompt || '')}</textarea>
             <div class="composer-footer">
               <div class="composer-secondary-tools">
@@ -1592,20 +1695,12 @@ function renderTaskView({ assistantMode = false } = {}) {
                     ${modelUnavailable ? `<option>${modelPlaceholder}</option>` : modelOptions}
                   </select>
                 </label>
+                ${modelUnavailable ? `<button type="button" class="composer-model-fix" id="composer-open-model-settings" title="打开模型设置">去配置</button>` : ''}
                 <button
-                  class="composer-icon-action composer-voice-button composer-tooltip-control"
-                  id="composer-voice"
-                  type="button"
-                  aria-label="语音输入，功能即将提供"
-                  aria-disabled="true"
-                  data-tooltip="语音输入功能将在后续版本提供"
-                >${icon('voice')}</button>
-                <button
-                  class="primary-button send-icon-button"
+                  class="primary-button send-icon-button ${isRunning ? 'queue-mode' : ''}"
                   id="send-task"
-                  aria-label="${task?.sessionId ? '继续任务' : '开始执行'}，按 ${sendShortcut} 发送"
-                  title="按 ${sendShortcut} 发送"
-                  ${isRunning ? 'disabled' : ''}
+                  aria-label="${isRunning ? '排队发送，当前回复完成后自动执行' : `${task?.sessionId ? '继续任务' : '开始执行'}，按 ${sendShortcut} 发送`}"
+                  title="${isRunning ? '排队发送：当前回复完成后自动执行' : `按 ${sendShortcut} 发送`}"
                 >${icon('arrowUp')}</button>
               </div>
             </div>
@@ -1640,7 +1735,7 @@ function renderNewTaskWelcome(expert) {
       <div class="new-task-scene-list">
         ${scenes.map((scene) => `
           <button type="button" class="new-task-scene ${scene.id === selectedScene?.id ? 'active' : ''}" data-task-scene-id="${escapeHtml(scene.id)}">
-            <span class="new-task-scene-symbol">${escapeHtml(scene.icon)}</span>
+            <span class="new-task-scene-symbol">${sceneIcon(scene)}</span>
             <span><strong>${escapeHtml(scene.title)}</strong><small>${escapeHtml(scene.subtitle)}</small></span>
             ${scene.id === selectedScene?.id ? icon('check') : icon('chevron')}
           </button>`).join('')}
@@ -1654,7 +1749,12 @@ function renderTaskDraftContext(expert, isNewTask) {
   const scene = isNewTask ? catalog.scenes.find((entry) => entry.id === state.draftSceneId) : null;
   const expertSelected = isNewTask && state.selectedExpertId;
   const expertLabel = scene ? `场景：${scene.title}` : expertSelected ? `专家：${expert.name}` : '';
-  const fileReferences = getActiveTask()?.fileReferences || state.draftFileReferences || [];
+  const activeTask = getActiveTask();
+  const fileReferences = activeTask
+    ? Array.isArray(activeTask.queuedDraftFileReferences)
+      ? activeTask.queuedDraftFileReferences
+      : activeTask.fileReferences || []
+    : state.draftFileReferences || [];
   return `
     <div class="composer-draft-context">
       ${expertLabel ? `<button type="button" class="composer-draft-chip" data-clear-task-expert aria-label="移除${escapeHtml(expertLabel)}"><span>${escapeHtml(expertLabel)}</span><b>×</b></button>` : ''}
@@ -1705,6 +1805,31 @@ function renderComposerProjectMenu(project, task, isRunning) {
       </div>
     </div>
   `;
+}
+
+function renderQueuedPrompts(task) {
+  const queued = Array.isArray(task?.queuedPrompts) ? task.queuedPrompts : [];
+  if (!queued.length) return '';
+  const paused = task.status !== 'running';
+  return `
+    <section class="queued-prompt-stack" aria-label="排队消息">
+      ${queued
+        .map(
+          (item, index) => `
+        <div class="queued-prompt-card">
+          ${icon('queue')}
+          <div class="queued-prompt-copy">
+            <span>${escapeHtml(item.text)}</span>
+            <small>${paused ? '排队已暂停：可手动发送或移除' : `排队中 · 第 ${index + 1} 位，当前回复完成后自动发送`}</small>
+          </div>
+          <div class="queued-prompt-actions">
+            ${paused ? `<button type="button" class="queued-send" data-queue-send="${index}">发送</button>` : ''}
+            <button type="button" data-queue-cancel="${index}" aria-label="移除排队消息">移除</button>
+          </div>
+        </div>`
+        )
+        .join('')}
+    </section>`;
 }
 
 function renderConversationWelcome(expert) {
