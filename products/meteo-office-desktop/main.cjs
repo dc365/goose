@@ -15,6 +15,7 @@ const ProjectWorkspace = require('./capabilities/project-workspace.cjs');
 const SessionPlatformExtensions = require('./capabilities/session-platform-extensions.cjs');
 const ContextWindow = require('./harness/context-window');
 const CompletionCompat = require('./harness/completion-compat.cjs');
+const ExpertTeam = require('./harness/expert-team');
 
 const APP_ICON = path.join(__dirname, 'assets', 'icons', 'meteomate.png');
 const AUTO_COMPACT_THRESHOLD_FALLBACK = ContextWindow.normalizeAutoCompactThreshold(
@@ -690,6 +691,10 @@ class GooseAcpRuntime {
     this.sessionRecipeMap = new Map();
     this.sessionCompletionFallbackMap = new Map();
     this.turnTimingMap = new Map();
+    this.sessionTeamMemberMap = new Map();
+    this.teamMemberOutputMap = new Map();
+    this.teamTaskSessions = new Map();
+    this.cancelledTeamTasks = new Set();
     this.loadedSessions = new Set();
     this.autoCompactThreshold = AUTO_COMPACT_THRESHOLD_FALLBACK;
     this.status = {
@@ -823,17 +828,7 @@ class GooseAcpRuntime {
     return this.snapshot();
   }
 
-  async ensureSession(request) {
-    sendRuntimeProgress(request.taskId, 'preparing_session', {
-      modelId: request.modelId || '',
-      startedAt: request.submittedAt || null,
-    });
-    await this.initialize();
-    if (!this.client || !this.status.acpAvailable) {
-      throw new Error('ACP runtime is unavailable');
-    }
-
-    await runtimeServices().capabilityService?.prepareForRequest?.(request);
+  sessionExtensionsForRequest(request) {
     const enabledExtensions = [
       ...(request.allowFileTools
         ? [
@@ -849,8 +844,25 @@ class GooseAcpRuntime {
         : []),
       ...(runtimeServices().capabilityService?.extensionsForRequest(request) || []),
     ];
-    const sessionExtensionConfigs =
-      runtimeServices().capabilityService?.sessionExtensionsForRequest(request) || [];
+    return {
+      enabledExtensions,
+      sessionExtensionConfigs:
+        runtimeServices().capabilityService?.sessionExtensionsForRequest(request) || [],
+    };
+  }
+
+  async ensureSession(request) {
+    sendRuntimeProgress(request.taskId, 'preparing_session', {
+      modelId: request.modelId || '',
+      startedAt: request.submittedAt || null,
+    });
+    await this.initialize();
+    if (!this.client || !this.status.acpAvailable) {
+      throw new Error('ACP runtime is unavailable');
+    }
+
+    await runtimeServices().capabilityService?.prepareForRequest?.(request);
+    const { enabledExtensions, sessionExtensionConfigs } = this.sessionExtensionsForRequest(request);
     const capabilityMetrics = {
       connectorCount: enabledExtensions.length,
       toolCount: enabledExtensions.reduce(
@@ -1018,6 +1030,8 @@ class GooseAcpRuntime {
         type: 'session_capabilities',
         taskId: request.taskId,
         sessionId,
+        teamMemberId: request.teamMemberId || null,
+        teamMemberName: request.teamMemberName || null,
         runtime: 'acp',
         capabilityLoad,
       });
@@ -1074,6 +1088,361 @@ class GooseAcpRuntime {
     return null;
   }
 
+  rememberTeamSession(taskId, sessionId) {
+    const sessions = this.teamTaskSessions.get(taskId) || new Set();
+    sessions.add(sessionId);
+    this.teamTaskSessions.set(taskId, sessions);
+  }
+
+  async createTeamMemberSession(request, team, node, runId) {
+    const memberRequest = {
+      ...request,
+      sessionId: null,
+      completionContract: null,
+      completionRecipe: null,
+      expertName: node.expert.name,
+      expertInstruction: node.expert.instruction,
+      teamMemberId: node.id,
+      teamMemberName: node.expert.name,
+      teamRunId: runId,
+    };
+    const { enabledExtensions, sessionExtensionConfigs } = this.sessionExtensionsForRequest(memberRequest);
+    const response = await this.client.newSession({
+      cwd: request.workspace || os.homedir(),
+      mcpServers: [],
+      _meta: newSessionMeta(memberRequest, enabledExtensions),
+    });
+    const sessionId = String(response.sessionId);
+    const memberContext = {
+      taskId: request.taskId,
+      runId,
+      teamId: team.id,
+      nodeId: node.id,
+      expertId: node.expert.id,
+      name: node.expert.name,
+    };
+    this.loadedSessions.add(sessionId);
+    this.sessionTaskMap.set(sessionId, request.taskId);
+    this.sessionPermissionMap.set(sessionId, sessionPermissionContext(memberRequest));
+    this.sessionProviderMap.set(sessionId, request.providerId || '');
+    this.sessionRecipeMap.set(sessionId, false);
+    this.sessionCompletionFallbackMap.set(sessionId, false);
+    this.sessionTeamMemberMap.set(sessionId, memberContext);
+    this.teamMemberOutputMap.set(sessionId, '');
+    this.rememberTeamSession(request.taskId, sessionId);
+    await SessionPlatformExtensions.pruneSession({
+      client: this.client,
+      sessionId,
+      request: memberRequest,
+    });
+    await this.verifySessionCapabilities(
+      memberRequest,
+      sessionId,
+      enabledExtensions,
+      sessionExtensionConfigs,
+      response
+    );
+    if (request.modelId) {
+      await this.client.unstable_setSessionModel({ sessionId, modelId: request.modelId });
+      this.sessionModelMap.set(sessionId, request.modelId);
+    }
+    return { sessionId, memberRequest };
+  }
+
+  async runTeamMember(request, team, node, results, runId) {
+    sendRuntimeEvent({
+      type: 'team_member_started',
+      taskId: request.taskId,
+      runtime: 'acp',
+      runId,
+      teamMemberId: node.id,
+      teamMemberName: node.expert.name,
+      member: {
+        id: node.id,
+        expertId: node.expert.id,
+        name: node.expert.name,
+        avatar: node.expert.avatar || node.expert.name?.slice(0, 1) || '专',
+        objective: node.objective || node.expert.mission || node.expert.description || '',
+        dependsOn: node.dependsOn,
+      },
+      startedAt: Date.now(),
+    });
+    let sessionId = null;
+    try {
+      const session = await this.createTeamMemberSession(request, team, node, runId);
+      sessionId = session.sessionId;
+      sendRuntimeEvent({
+        type: 'team_member_started',
+        taskId: request.taskId,
+        runtime: 'acp',
+        runId,
+        teamMemberId: node.id,
+        memberSessionId: sessionId,
+        startedAt: Date.now(),
+      });
+      const prompt = [
+        ExpertTeam.memberPrompt({
+          team,
+          node,
+          userPrompt: request.prompt,
+          results,
+        }),
+        request.knowledgeContext?.prompt || '',
+        request.permissionProfileName
+          ? `当前权限策略：${request.permissionProfileName}。${request.permissionProfileDescription || ''}`
+          : '',
+        request.allowFileTools
+          ? permissionPromptInstruction(request)
+          : '当前未启用本地文件与命令工具。',
+      ].filter(Boolean).join('\n\n');
+      await this.client.prompt({
+        sessionId,
+        prompt: [{ type: 'text', text: prompt }],
+      });
+      const output = ExpertTeam.clipText(this.teamMemberOutputMap.get(sessionId), 12_000);
+      const result = {
+        id: node.id,
+        expertId: node.expert.id,
+        name: node.expert.name,
+        status: 'completed',
+        output: output || '成员已完成任务，但没有返回可显示的文本。',
+        sessionId,
+      };
+      sendRuntimeEvent({
+        type: 'team_member_completed',
+        taskId: request.taskId,
+        runtime: 'acp',
+        runId,
+        teamMemberId: node.id,
+        memberSessionId: sessionId,
+        summary: result.output,
+        completedAt: Date.now(),
+      });
+      return result;
+    } catch (error) {
+      const cancelled = this.cancelledTeamTasks.has(request.taskId);
+      const result = {
+        id: node.id,
+        expertId: node.expert.id,
+        name: node.expert.name,
+        status: cancelled ? 'cancelled' : 'failed',
+        output: '',
+        error: error?.message || String(error),
+        sessionId,
+      };
+      sendRuntimeEvent({
+        type: cancelled ? 'team_member_cancelled' : 'team_member_failed',
+        taskId: request.taskId,
+        runtime: 'acp',
+        runId,
+        teamMemberId: node.id,
+        memberSessionId: sessionId,
+        message: result.error,
+        completedAt: Date.now(),
+      });
+      return result;
+    } finally {
+      if (sessionId) this.teamMemberOutputMap.delete(sessionId);
+    }
+  }
+
+  async runTeamTurn(request, sessionId, team, runState) {
+    const results = new Map();
+    for (const wave of ExpertTeam.executionWaves(team)) {
+      if (this.cancelledTeamTasks.has(request.taskId)) return;
+      const runnable = [];
+      for (const node of wave) {
+        const blockedBy = node.dependsOn
+          .map((dependencyId) => results.get(dependencyId))
+          .filter((result) => result && result.status !== 'completed');
+        if (!blockedBy.length) {
+          runnable.push(node);
+          continue;
+        }
+        const result = {
+          id: node.id,
+          expertId: node.expert.id,
+          name: node.expert.name,
+          status: 'blocked',
+          output: '',
+          error: `上游成员未完成：${blockedBy.map((item) => item.name).join('、')}`,
+          sessionId: null,
+        };
+        results.set(node.id, result);
+        sendRuntimeEvent({
+          type: 'team_member_blocked',
+          taskId: request.taskId,
+          runtime: 'acp',
+          runId: runState.id,
+          teamMemberId: node.id,
+          message: result.error,
+          completedAt: Date.now(),
+        });
+      }
+      const completed = await Promise.all(
+        runnable.map((node) => this.runTeamMember(request, team, node, results, runState.id))
+      );
+      completed.forEach((result) => results.set(result.id, result));
+      if (
+        team.execution.failurePolicy === 'abort'
+        && completed.some((result) => result.status !== 'completed')
+      ) {
+        break;
+      }
+    }
+    if (this.cancelledTeamTasks.has(request.taskId)) return;
+    for (const node of team.nodes) {
+      if (results.has(node.id)) continue;
+      const result = {
+        id: node.id,
+        expertId: node.expert.id,
+        name: node.expert.name,
+        status: 'blocked',
+        output: '',
+        error: '专家团已按失败策略停止，当前成员未执行。',
+        sessionId: null,
+      };
+      results.set(node.id, result);
+      sendRuntimeEvent({
+        type: 'team_member_blocked',
+        taskId: request.taskId,
+        runtime: 'acp',
+        runId: runState.id,
+        teamMemberId: node.id,
+        message: result.error,
+        completedAt: Date.now(),
+      });
+    }
+
+    sendRuntimeEvent({
+      type: 'team_synthesis_started',
+      taskId: request.taskId,
+      sessionId,
+      runtime: 'acp',
+      runId: runState.id,
+      startedAt: Date.now(),
+    });
+    const requestedAt = Date.now();
+    const submittedAt = Number(request.submittedAt) || requestedAt;
+    this.turnTimingMap.set(request.taskId, {
+      submittedAt,
+      requestedAt,
+      firstEventAt: null,
+      modelId: request.modelId || '',
+    });
+    sendRuntimeProgress(request.taskId, 'model_requested', {
+      requestedAt,
+      startedAt: submittedAt,
+      preparationMs: Math.max(0, requestedAt - submittedAt),
+      modelId: request.modelId || '',
+      ...(request.runtimeCapabilityMetrics || {}),
+    });
+    const completionInstruction = this.sessionCompletionFallbackMap.get(sessionId)
+      ? CompletionCompat.fallbackInstruction(request.completionContract)
+      : '';
+    const prompt = [
+      ExpertTeam.synthesisPrompt({
+        team,
+        userPrompt: request.prompt,
+        results,
+        firstTurn: !request.sessionId,
+      }),
+      request.knowledgeContext?.prompt || '',
+      request.permissionProfileName
+        ? `当前权限策略：${request.permissionProfileName}。${request.permissionProfileDescription || ''}`
+        : '',
+      request.allowFileTools
+        ? permissionPromptInstruction(request)
+        : '当前未启用本地文件与命令工具。',
+      completionInstruction,
+    ].filter(Boolean).join('\n\n');
+    const response = await this.client.prompt({
+      sessionId,
+      prompt: [{ type: 'text', text: prompt }],
+    });
+    this.turnTimingMap.delete(request.taskId);
+    const failedCount = [...results.values()].filter((result) => result.status !== 'completed').length;
+    sendRuntimeEvent({
+      type: 'team_completed',
+      taskId: request.taskId,
+      sessionId,
+      runtime: 'acp',
+      runId: runState.id,
+      status: failedCount ? 'partial' : 'completed',
+      completedCount: results.size - failedCount,
+      failedCount,
+      completedAt: Date.now(),
+    });
+    sendRuntimeEvent({
+      type: 'turn_completed',
+      taskId: request.taskId,
+      sessionId,
+      runtime: 'acp',
+      stopReason: response.stopReason,
+      response: safeJson(response),
+    });
+    this.teamTaskSessions.delete(request.taskId);
+    this.cancelledTeamTasks.delete(request.taskId);
+  }
+
+  sendTeam(request, sessionId) {
+    const team = ExpertTeam.normalizeDefinition(request.team);
+    const runState = ExpertTeam.createRunState(team, {
+      id: request.runAttemptId || `team-run-${crypto.randomUUID()}`,
+    });
+    this.cancelledTeamTasks.delete(request.taskId);
+    this.rememberTeamSession(request.taskId, sessionId);
+    sendRuntimeEvent({
+      type: 'team_started',
+      taskId: request.taskId,
+      sessionId,
+      runtime: 'acp',
+      teamRun: runState,
+    });
+    sendRuntimeEvent({
+      type: 'turn_started',
+      taskId: request.taskId,
+      sessionId,
+      runtime: 'acp',
+      requestedAt: Date.now(),
+      modelId: request.modelId || '',
+      ...(request.runtimeCapabilityMetrics || {}),
+    });
+    this.runTeamTurn(request, sessionId, team, runState)
+      .catch((error) => {
+        this.turnTimingMap.delete(request.taskId);
+        if (this.cancelledTeamTasks.has(request.taskId)) return;
+        sendRuntimeEvent({
+          type: 'team_failed',
+          taskId: request.taskId,
+          sessionId,
+          runtime: 'acp',
+          runId: runState.id,
+          message: error?.message || String(error),
+          completedAt: Date.now(),
+        });
+        sendRuntimeEvent({
+          type: 'turn_failed',
+          taskId: request.taskId,
+          sessionId,
+          runtime: 'acp',
+          message: error?.message || String(error),
+        });
+      })
+      .finally(() => {
+        this.teamTaskSessions.delete(request.taskId);
+        this.cancelledTeamTasks.delete(request.taskId);
+      });
+    return {
+      accepted: true,
+      runtime: 'acp',
+      sessionId,
+      capabilityHash: request.capabilityHash || null,
+      capabilityLoad: this.sessionCapabilityMap.get(sessionId) || null,
+      teamRunId: runState.id,
+    };
+  }
+
   async send(request) {
     const sessionId = await this.ensureSession(request);
     if (request.modelId && this.sessionModelMap.get(sessionId) !== request.modelId) {
@@ -1083,6 +1452,7 @@ class GooseAcpRuntime {
       });
       this.sessionModelMap.set(sessionId, request.modelId);
     }
+    if (ExpertTeam.isTeamRequest(request.team)) return this.sendTeam(request, sessionId);
     const firstTurn = !request.sessionId;
     const toolUseInstruction = '仅在完成用户明确任务确实需要时调用工具。对于问候、寒暄、能力介绍、一般知识问答或无需资料即可回答的问题，直接回复，不得扫描工作区、读取文件、更新任务列表或调用任何工具。';
     const completionInstruction = this.sessionCompletionFallbackMap.get(sessionId)
@@ -1171,15 +1541,31 @@ class GooseAcpRuntime {
   }
 
   async cancel({ taskId, sessionId }) {
-    if (!sessionId || !this.client) return false;
+    if (!this.client) return false;
+    const teamSessions = this.teamTaskSessions.get(taskId);
+    const sessionIds = new Set([
+      ...(teamSessions ? [...teamSessions] : []),
+      ...(sessionId ? [sessionId] : []),
+    ]);
+    if (!sessionIds.size) return false;
+    if (teamSessions) this.cancelledTeamTasks.add(taskId);
     for (const [key, pending] of pendingPermissions) {
-      if (pending.request.sessionId === sessionId) {
+      if (sessionIds.has(pending.request.sessionId)) {
         pendingPermissions.delete(key);
         pending.resolve({ outcome: { outcome: 'cancelled' } });
       }
     }
-    await this.client.cancel({ sessionId });
+    await Promise.allSettled([...sessionIds].map((id) => this.client.cancel({ sessionId: id })));
     this.turnTimingMap.delete(taskId);
+    if (teamSessions) {
+      sendRuntimeEvent({
+        type: 'team_cancelled',
+        taskId,
+        sessionId,
+        runtime: 'acp',
+        completedAt: Date.now(),
+      });
+    }
     sendRuntimeEvent({ type: 'turn_cancelled', taskId, sessionId, runtime: 'acp' });
     return true;
   }
@@ -1190,6 +1576,7 @@ class GooseAcpRuntime {
 
   requestPermission(request) {
     const taskId = this.sessionTaskMap.get(request.sessionId) || null;
+    const teamMember = this.sessionTeamMemberMap.get(request.sessionId) || null;
     const context = this.sessionPermissionMap.get(request.sessionId) || {
       permissionProfileId: 'analysis-readonly',
       workspace: os.homedir(),
@@ -1225,6 +1612,8 @@ class GooseAcpRuntime {
         type: 'permission_requested',
         taskId,
         sessionId: request.sessionId,
+        teamMemberId: teamMember?.nodeId || null,
+        teamMemberName: teamMember?.name || null,
         permissionId: key,
         toolCall: safeJson(request.toolCall),
         options: safeJson(request.options || []),
@@ -1237,6 +1626,7 @@ class GooseAcpRuntime {
     const pending = pendingPermissions.get(permissionId);
     if (!pending) return false;
     pendingPermissions.delete(permissionId);
+    const teamMember = this.sessionTeamMemberMap.get(pending.request.sessionId) || null;
     const protectedDesktopAction = ['inspect', 'interaction', 'sensitive'].includes(
       pending.assessment?.computerRisk
     );
@@ -1257,13 +1647,132 @@ class GooseAcpRuntime {
       type: 'permission_resolved',
       taskId: pending.taskId,
       sessionId: pending.request.sessionId,
+      teamMemberId: teamMember?.nodeId || null,
+      teamMemberName: teamMember?.name || null,
       permissionId,
       action: effectiveAction,
     });
     return true;
   }
 
+  handleTeamMemberSessionUpdate(notification, member) {
+    const update = notification.update || {};
+    const common = {
+      taskId: member.taskId,
+      sessionId: notification.sessionId,
+      memberSessionId: notification.sessionId,
+      runtime: 'acp',
+      runId: member.runId,
+      teamMemberId: member.nodeId,
+      teamMemberName: member.name,
+    };
+    switch (update.sessionUpdate) {
+      case 'agent_message_chunk': {
+        const text = contentText(update.content);
+        this.teamMemberOutputMap.set(
+          notification.sessionId,
+          `${this.teamMemberOutputMap.get(notification.sessionId) || ''}${text}`
+        );
+        const now = Date.now();
+        if (text && now - Number(member.progressAt || 0) >= 650) {
+          member.progressAt = now;
+          sendRuntimeEvent({
+            ...common,
+            type: 'team_member_progress',
+            detail: ExpertTeam.clipText(this.teamMemberOutputMap.get(notification.sessionId), 360),
+            at: now,
+          });
+        }
+        break;
+      }
+      case 'agent_thought_chunk': {
+        const detail = contentText(update.content);
+        if (detail) {
+          sendRuntimeEvent({
+            ...common,
+            type: 'team_member_progress',
+            detail: ExpertTeam.clipText(detail, 360),
+            at: Date.now(),
+          });
+        }
+        break;
+      }
+      case 'tool_call': {
+        const toolCall = runtimeToolIdentity(update);
+        sendRuntimeEvent({
+          ...common,
+          type: 'team_member_activity',
+          activity: {
+            id: update.toolCallId,
+            title: toolCall.toolName || update.title || update.name || '调用工具',
+            extensionName: toolCall.extensionName || null,
+            status: update.status || 'running',
+          },
+        });
+        break;
+      }
+      case 'tool_call_update': {
+        const toolCall = runtimeToolIdentity(update);
+        const artifacts = materializeAcpImageArtifacts([update.content, update.rawOutput], {
+          sessionId: notification.sessionId,
+          toolCallId: update.toolCallId,
+          extensionName: toolCall.extensionName,
+        });
+        artifacts.push(...OfficeArtifactCollector.collectOfficeArtifacts(
+          [update.content, update.rawOutput],
+          {
+            workspace: this.sessionPermissionMap.get(notification.sessionId)?.workspace,
+            sessionId: notification.sessionId,
+            toolCallId: update.toolCallId,
+            extensionName: toolCall.extensionName,
+          }
+        ));
+        sendRuntimeEvent({
+          ...common,
+          type: 'team_member_activity',
+          activity: {
+            id: update.toolCallId,
+            title: toolCall.toolName || update.title || '工具执行',
+            extensionName: toolCall.extensionName || null,
+            status: update.status || 'running',
+            detail: safeJson(sanitizeAcpPayload(update.rawOutput || update.content)),
+          },
+        });
+        artifacts.forEach((artifact) => {
+          sendRuntimeEvent({
+            ...common,
+            type: 'artifact_created',
+            toolCallId: update.toolCallId,
+            artifact: {
+              ...artifact,
+              metadata: {
+                ...(artifact.metadata || {}),
+                teamMemberId: member.nodeId,
+                teamMemberName: member.name,
+              },
+            },
+          });
+        });
+        break;
+      }
+      case 'usage_update':
+        sendRuntimeEvent({
+          ...common,
+          type: 'team_member_usage',
+          usage: safeJson(update),
+        });
+        break;
+      default:
+        break;
+    }
+  }
+
   handleSessionUpdate(notification) {
+    const teamMember = this.sessionTeamMemberMap.get(notification.sessionId);
+    if (teamMember) {
+      this.handleTeamMemberSessionUpdate(notification, teamMember);
+      return;
+    }
     const taskId = this.sessionTaskMap.get(notification.sessionId);
     if (!taskId) return;
     const update = notification.update || {};
@@ -1371,6 +1880,23 @@ class GooseAcpRuntime {
   }
 
   handleGooseUpdate(notification) {
+    const teamMember = this.sessionTeamMemberMap.get(notification.sessionId);
+    if (teamMember) {
+      const update = safeJson(notification.update);
+      if (update?.sessionUpdate === 'usage_update') {
+        sendRuntimeEvent({
+          type: 'team_member_usage',
+          taskId: teamMember.taskId,
+          sessionId: notification.sessionId,
+          memberSessionId: notification.sessionId,
+          runtime: 'acp',
+          runId: teamMember.runId,
+          teamMemberId: teamMember.nodeId,
+          usage: update,
+        });
+      }
+      return;
+    }
     const taskId = this.sessionTaskMap.get(notification.sessionId);
     if (!taskId) return;
     const update = safeJson(notification.update);
@@ -1626,6 +2152,10 @@ class GooseAcpRuntime {
     this.sessionRecipeMap.clear();
     this.sessionCompletionFallbackMap.clear();
     this.turnTimingMap.clear();
+    this.sessionTeamMemberMap.clear();
+    this.teamMemberOutputMap.clear();
+    this.teamTaskSessions.clear();
+    this.cancelledTeamTasks.clear();
     this.loadedSessions.clear();
 
     if (this.server && this.server.exitCode === null) {
@@ -1659,6 +2189,7 @@ function buildHeadlessPrompt(request) {
 }
 
 function runMockTask(request) {
+  if (ExpertTeam.isTeamRequest(request.team)) return runMockTeamTask(request);
   const taskId = request.taskId;
   let cancelled = false;
   const timers = [];
@@ -1695,10 +2226,150 @@ function runMockTask(request) {
   return { accepted: true, runtime: 'mock', sessionId: null };
 }
 
+function runMockTeamTask(request) {
+  const taskId = request.taskId;
+  const team = ExpertTeam.normalizeDefinition(request.team);
+  const teamRun = ExpertTeam.createRunState(team, {
+    id: request.runAttemptId || `team-run-${crypto.randomUUID()}`,
+  });
+  let cancelled = false;
+  const timers = [];
+  let delay = 160;
+  const schedule = (callback, wait = 0) => {
+    delay += wait;
+    const timer = setTimeout(() => {
+      if (!cancelled) callback();
+    }, delay);
+    timers.push(timer);
+  };
+
+  sendRuntimeEvent({
+    type: 'team_started',
+    taskId,
+    runtime: 'mock',
+    sessionId: null,
+    teamRun,
+  });
+  sendRuntimeEvent({ type: 'turn_started', taskId, runtime: 'mock', sessionId: null });
+  for (const wave of ExpertTeam.executionWaves(team)) {
+    wave.forEach((node) => {
+      schedule(() => sendRuntimeEvent({
+        type: 'team_member_started',
+        taskId,
+        runtime: 'mock',
+        runId: teamRun.id,
+        teamMemberId: node.id,
+        member: {
+          id: node.id,
+          expertId: node.expert.id,
+          name: node.expert.name,
+          avatar: node.expert.avatar || node.expert.name?.slice(0, 1) || '专',
+          objective: node.objective,
+          dependsOn: node.dependsOn,
+        },
+        startedAt: Date.now(),
+      }));
+    });
+    delay += 480;
+    wave.forEach((node) => {
+      schedule(() => sendRuntimeEvent({
+        type: 'team_member_completed',
+        taskId,
+        runtime: 'mock',
+        runId: teamRun.id,
+        teamMemberId: node.id,
+        summary: `${node.expert.name}已完成“${node.objective || '专业分析'}”的演示交接。`,
+        completedAt: Date.now(),
+      }));
+    });
+    delay += 120;
+  }
+  schedule(() => sendRuntimeEvent({
+    type: 'team_synthesis_started',
+    taskId,
+    runtime: 'mock',
+    runId: teamRun.id,
+    startedAt: Date.now(),
+  }));
+  schedule(() => sendRuntimeEvent({
+    type: 'assistant_message_delta',
+    taskId,
+    runtime: 'mock',
+    text: `## ${team.name}演示结果\n\n${team.nodes.map((node) => `- **${node.expert.name}**：已完成独立分析并向负责人交接。`).join('\n')}\n\n负责人已汇总各成员结果。当前为演示模式，配置 Goose Provider 后将执行真实的独立 Agent 会话。\n`,
+  }), 320);
+  schedule(() => {
+    sendRuntimeEvent({
+      type: 'team_completed',
+      taskId,
+      runtime: 'mock',
+      runId: teamRun.id,
+      status: 'completed',
+      completedCount: team.nodes.length,
+      failedCount: 0,
+      completedAt: Date.now(),
+    });
+    sendRuntimeEvent({ type: 'turn_completed', taskId, runtime: 'mock', sessionId: null });
+    activeHeadlessRuns.delete(taskId);
+  }, 260);
+
+  activeHeadlessRuns.set(taskId, {
+    cancel() {
+      cancelled = true;
+      timers.forEach(clearTimeout);
+      sendRuntimeEvent({
+        type: 'team_cancelled',
+        taskId,
+        runtime: 'mock',
+        runId: teamRun.id,
+        completedAt: Date.now(),
+      });
+      sendRuntimeEvent({ type: 'turn_cancelled', taskId, runtime: 'mock', sessionId: null });
+      activeHeadlessRuns.delete(taskId);
+    },
+  });
+  return { accepted: true, runtime: 'mock', sessionId: null, teamRunId: teamRun.id };
+}
+
 async function runHeadlessTask(request) {
   await acpRuntime.initialize();
   const binary = acpRuntime.binary || (await resolveGooseBinary());
   if (!binary || process.env.METEOMATE_MOCK === '1') return runMockTask(request);
+
+  if (ExpertTeam.isTeamRequest(request.team)) {
+    const team = ExpertTeam.normalizeDefinition(request.team);
+    const teamRun = ExpertTeam.createRunState(team, {
+      id: request.runAttemptId || `team-run-${crypto.randomUUID()}`,
+    });
+    sendRuntimeEvent({
+      type: 'team_started',
+      taskId: request.taskId,
+      runtime: 'headless',
+      sessionId: null,
+      teamRun,
+    });
+    sendRuntimeEvent({
+      type: 'turn_started',
+      taskId: request.taskId,
+      runtime: 'headless',
+      sessionId: null,
+    });
+    const message = 'ACP 多会话运行时不可用，已停止专家团任务；Headless 模式不会伪装成多 Agent 协作。';
+    sendRuntimeEvent({
+      type: 'team_failed',
+      taskId: request.taskId,
+      runtime: 'headless',
+      runId: teamRun.id,
+      message,
+      completedAt: Date.now(),
+    });
+    sendRuntimeEvent({
+      type: 'turn_failed',
+      taskId: request.taskId,
+      runtime: 'headless',
+      message,
+    });
+    return { accepted: true, runtime: 'headless', sessionId: null, teamRunId: teamRun.id };
+  }
 
   if (request.allowFileTools) {
     sendRuntimeEvent({

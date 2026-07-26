@@ -109,6 +109,21 @@
         return { ...record };
       }
     });
+    const teamRun = task?.teamRun && typeof task.teamRun === 'object'
+      ? {
+          ...task.teamRun,
+          status: ['running', 'synthesizing'].includes(task.teamRun.status)
+            ? 'interrupted'
+            : task.teamRun.status,
+          phase: ['dispatching', 'executing', 'members', 'synthesizing'].includes(task.teamRun.phase)
+            ? 'interrupted'
+            : task.teamRun.phase,
+          members: (Array.isArray(task.teamRun.members) ? task.teamRun.members : []).map((member) => ({
+            ...member,
+            status: ['pending', 'running'].includes(member.status) ? 'interrupted' : member.status,
+          })),
+        }
+      : null;
 
     return Task.normalizeTask({
       ...task,
@@ -117,6 +132,7 @@
       activities,
       artifacts,
       evidence,
+      teamRun,
       plan: Array.isArray(task?.plan) && task.plan.length ? task.plan : clonePlan(planFactory),
       pendingPermissions: [],
     });

@@ -296,6 +296,7 @@
       project: Project.projectSnapshot(normalizedProject),
       expert: {
         id: expert.id || null,
+        kind: expert.kind || 'Expert',
         name: expert.name || '',
         version: expert.version || '1.0.0',
         revision: Number(expert.revision || 1),
@@ -314,6 +315,11 @@
         toolSelections: Shared.deepClone(expert.toolSelections || {}),
         inputSchema: expert.inputSchema || null,
         outputSchema: expert.outputSchema || null,
+        members: Shared.deepClone(expert.members || []),
+        nodes: Shared.deepClone(expert.nodes || []),
+        orchestrator: expert.orchestrator || null,
+        execution: Shared.deepClone(expert.execution || null),
+        memberSnapshots: Shared.deepClone(expert.memberSnapshots || []),
       },
       capabilities: Shared.deepClone(capabilities),
       meteorologicalContext: Shared.deepClone(normalizedProject.spec.meteorologicalContext),
@@ -362,6 +368,13 @@
       knowledgeSourceIds: Shared.uniqueStrings(snapshot.assets.knowledgeSources),
       meteorologicalContext: snapshot.meteorologicalContext,
       expectedOutputs: snapshot.task.expectedOutputs,
+      expertTeam: snapshot.expert.kind === 'team'
+        ? {
+            id: snapshot.expert.id,
+            orchestrator: snapshot.expert.orchestrator,
+            nodes: Shared.deepClone(snapshot.expert.nodes),
+          }
+        : null,
       completionContract: Shared.deepClone(snapshot.completionContract),
     };
   }

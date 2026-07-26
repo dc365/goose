@@ -39,6 +39,7 @@ const harnessAssets = [
   'harness/context-window.js',
   'harness/project.js',
   'harness/task-state-machine.js',
+  'harness/expert-team.js',
   'harness/capability-resolver.js',
   'harness/policy-engine.js',
   'harness/context-compiler.js',
@@ -57,6 +58,7 @@ for (const asset of [
   'styles-app.css',
   'styles-account.css',
   'styles-connectors.css',
+  'styles-team.css',
   'capabilities/browser-connector.js',
   'capabilities/computer-connector.js',
   'capabilities/office-connector.js',
@@ -118,9 +120,20 @@ for (const expert of context.window.METEOMATE_EXPERTS) {
 
 for (const team of context.window.METEOMATE_TEAMS) {
   assert.ok(team.mission);
+  assert.equal(team.kind, 'team');
+  assert.equal(team.orchestrator, 'meteomate-team-lead');
+  assert.match(team.version, /^\d+\.\d+\.\d+$/);
   assert.ok(Array.isArray(team.inputs) && team.inputs.length >= 2);
   assert.ok(Array.isArray(team.outputs) && team.outputs.length >= 2);
   assert.ok(Array.isArray(team.workflow) && team.workflow.length === 3);
+  assert.ok(Array.isArray(team.nodes) && team.nodes.length >= 2);
+  assert.equal(team.execution.strategy, 'dag');
+  for (const node of team.nodes) {
+    assert.ok(node.id);
+    assert.ok(node.objective);
+    assert.ok(context.window.METEOMATE_EXPERTS.some((expert) => expert.id === node.expert));
+    assert.ok(Array.isArray(node.dependsOn));
+  }
 }
 
 const mainSource = fs.readFileSync(path.join(root, 'main.cjs'), 'utf8');
@@ -142,10 +155,15 @@ assert.deepEqual(
   [{ type: 'image', data: 'cG5n', mimeType: 'image/png' }]
 );
 assert.ok(mainSource.includes("type: 'artifact_created'"));
+assert.ok(mainSource.includes("type: 'team_member_started'"));
+assert.ok(mainSource.includes('async runTeamTurn('));
 assert.ok(mainSource.includes('sanitizeAcpPayload(update.content)'));
 assert.ok(rendererActionsSource.includes("case 'artifact_created'"));
+assert.ok(rendererActionsSource.includes("case 'team_synthesis_started'"));
 assert.ok(rendererActionsSource.includes('assistant.artifactIds ='));
 assert.ok(rendererSource.includes('function renderMessageArtifacts(message, task)'));
+assert.ok(rendererSource.includes('function renderTeamCollaborationBar(task, expert)'));
+assert.ok(rendererSource.includes("'专家协作中'"));
 assert.ok(rendererSource.includes('class="message-artifact-gallery"'));
 assert.ok(responseStylesSource.includes('.message-artifact-image img'));
 const capabilityRenderSource = fs.readFileSync(path.join(root, 'capability-center/render.js'), 'utf8');

@@ -1430,6 +1430,8 @@ function navigate(view) {
     knowledgeUI.testResult = null;
   }
   if (view === 'task-new') {
+    teamUI.expanded = false;
+    teamUI.selectedMemberId = null;
     state.selectedExpertId = null;
     state.activeProjectId = null;
     state.activeTaskId = null;
@@ -1548,6 +1550,8 @@ async function persistModelSettings() {
 function openExpert(expertId, prompt = '') {
   if (!expertId) return;
   catalogUI.detailExpertId = null;
+  teamUI.expanded = false;
+  teamUI.selectedMemberId = null;
   state.selectedExpertId = expertId;
   state.draftSceneId = catalog.scenes.find((scene) => scene.expertId === expertId)?.id || null;
   state.draftTaskMode = catalog.scenes.find((scene) => scene.id === state.draftSceneId)?.group || 'forecast';
@@ -2649,6 +2653,7 @@ async function executeAutomationById(automationId, source = 'manual') {
       modelId,
       submittedAt: response.startedAt,
       transcript: [],
+      team: teamDefinitionForTask(task, getTaskExpert(task)),
     });
     task.runtimeMode = result.runtime;
     if (result.sessionId) task.sessionId = result.sessionId;
@@ -2748,6 +2753,19 @@ function selectTaskProject(projectId) {
 }
 
 function bindTaskComposerMenus() {
+  document.querySelectorAll('[data-team-toggle]').forEach((element) => {
+    element.addEventListener('click', () => {
+      teamUI.expanded = !teamUI.expanded;
+      render();
+    });
+  });
+  document.querySelectorAll('[data-team-member-id]').forEach((element) => {
+    element.addEventListener('click', () => {
+      teamUI.selectedMemberId = element.dataset.teamMemberId;
+      teamUI.expanded = true;
+      render();
+    });
+  });
   const moreTrigger = document.getElementById('composer-more');
   const morePopover = document.getElementById('composer-more-popover');
   const projectTrigger = document.getElementById('choose-workspace');
@@ -2808,6 +2826,7 @@ function createTask(expert, prompt, permissionProfileId, providerId, modelId) {
   const assistantTask = expert.id === primaryAssistant.id;
   const project = assistantTask ? getAssistantProject() : getActiveProject();
   const now = Date.now();
+  const frozenExpert = expertSnapshot(expert);
   const permissionProfile =
     catalog.permissionProfiles[permissionProfileId] || catalog.permissionProfiles['analysis-readonly'];
   const task = {
@@ -2816,7 +2835,9 @@ function createTask(expert, prompt, permissionProfileId, providerId, modelId) {
     title: assistantTask ? primaryAssistant.name : truncate(prompt, 34),
     expertId: expert.id,
     expertName: expert.name,
-    expertSnapshot: expertSnapshot(expert),
+    expertSnapshot: frozenExpert,
+    teamDefinition: frozenExpert.kind === 'team' ? teamDefinitionForExpert(frozenExpert) : null,
+    teamRun: null,
     sceneId: assistantTask ? null : state.draftSceneId || null,
     projectId: project?.id || null,
     workspace: project?.workspace || '',
@@ -3100,6 +3121,7 @@ async function sendTaskMessage(options = {}) {
   const modelId = modelSelection?.modelId ?? existing?.modelId ?? modelSettings.modelId ?? '';
   const task =
     existing || createTask(expert, prompt, permissionProfileId, providerId, modelId);
+  const teamDefinition = teamDefinitionForTask(task, getTaskExpert(task));
   const previousTranscript = transcriptForRuntime(task);
   if (Array.isArray(task.queuedDraftFileReferences)) {
     task.fileReferences = [...task.queuedDraftFileReferences];
@@ -3163,6 +3185,7 @@ async function sendTaskMessage(options = {}) {
       submittedAt: response.startedAt,
       fileReferences: submittedFileReferences,
       transcript: previousTranscript,
+      team: teamDefinition,
     });
     task.runtimeMode = result.runtime;
     if (result.sessionId) task.sessionId = result.sessionId;
@@ -3367,6 +3390,51 @@ function retryIncompleteCompletion(task, assistant, completion) {
   return true;
 }
 
+function ensureTeamRunMember(task, event) {
+  if (!task.teamRun) {
+    const team = teamDefinitionForTask(task, getTaskExpert(task));
+    if (team) task.teamRun = window.MeteoMateHarness.ExpertTeam.createRunState(team);
+  }
+  if (!task.teamRun) return null;
+  const memberId = event.teamMemberId || event.member?.id;
+  let member = task.teamRun.members.find((candidate) => candidate.id === memberId);
+  if (!member && event.member) {
+    member = {
+      ...structuredClone(event.member),
+      status: 'pending',
+      sessionId: null,
+      startedAt: null,
+      completedAt: null,
+      summary: '',
+      detail: '',
+      error: '',
+      activities: [],
+    };
+    task.teamRun.members.push(member);
+  }
+  return member || null;
+}
+
+function updateTeamRunMember(task, event, patch) {
+  const member = ensureTeamRunMember(task, event);
+  if (!member) return null;
+  Object.assign(member, patch, {
+    sessionId: event.memberSessionId || event.sessionId || patch.sessionId || member.sessionId || null,
+  });
+  return member;
+}
+
+function interruptActiveTeamMembers(task, status, detail = '') {
+  if (!task.teamRun) return;
+  task.teamRun.members.forEach((member) => {
+    if (['pending', 'running'].includes(member.status)) {
+      member.status = status;
+      member.completedAt = Date.now();
+      if (detail) member.error = detail;
+    }
+  });
+}
+
 function handleRuntimeEvent(event) {
   if (event.type === 'runtime_status') {
     state.runtime = { ...state.runtime, ...event.status };
@@ -3378,10 +3446,130 @@ function handleRuntimeEvent(event) {
   const task = state.tasks.find((candidate) => candidate.id === event.taskId);
   if (!task) return;
 
-  if (event.sessionId) task.sessionId = event.sessionId;
+  if (event.sessionId && !event.teamMemberId) task.sessionId = event.sessionId;
   if (event.runtime) task.runtimeMode = event.runtime;
 
   switch (event.type) {
+    case 'team_started':
+      task.teamRun = structuredClone(event.teamRun);
+      task.teamRun.status = 'running';
+      task.teamRun.phase = 'dispatching';
+      teamUI.selectedMemberId = task.teamRun.members[0]?.id || null;
+      addActivity(task, {
+        id: `team-run-${task.teamRun.id}`,
+        type: 'info',
+        title: '专家团已就位',
+        detail: `${task.teamRun.members.length} 位专家将按依赖关系协作，最后由负责人统一交付。`,
+        status: 'running',
+      });
+      break;
+
+    case 'team_member_started':
+      updateTeamRunMember(task, event, {
+        status: 'running',
+        startedAt: event.startedAt || Date.now(),
+      });
+      if (task.teamRun) task.teamRun.phase = 'executing';
+      break;
+
+    case 'team_member_progress':
+      updateTeamRunMember(task, event, {
+        status: 'running',
+        detail: event.detail || '',
+      });
+      break;
+
+    case 'team_member_activity': {
+      const member = updateTeamRunMember(task, event, {
+        status: 'running',
+        detail: event.activity?.title || '',
+      });
+      if (member && event.activity) {
+        const activities = Array.isArray(member.activities) ? member.activities : [];
+        const index = activities.findIndex((activity) => activity.id === event.activity.id);
+        if (index >= 0) activities[index] = { ...activities[index], ...event.activity };
+        else activities.push(structuredClone(event.activity));
+        member.activities = activities.slice(-6);
+      }
+      break;
+    }
+
+    case 'team_member_usage':
+      updateTeamRunMember(task, event, { usage: event.usage || null });
+      break;
+
+    case 'team_member_completed':
+      updateTeamRunMember(task, event, {
+        status: 'completed',
+        summary: event.summary || '',
+        detail: '',
+        completedAt: event.completedAt || Date.now(),
+      });
+      break;
+
+    case 'team_member_failed':
+    case 'team_member_cancelled':
+    case 'team_member_blocked': {
+      const status = event.type.replace('team_member_', '');
+      updateTeamRunMember(task, event, {
+        status,
+        error: event.message || '',
+        detail: '',
+        completedAt: event.completedAt || Date.now(),
+      });
+      break;
+    }
+
+    case 'team_synthesis_started':
+      if (task.teamRun) {
+        task.teamRun.status = 'running';
+        task.teamRun.phase = 'synthesizing';
+      }
+      break;
+
+    case 'team_completed':
+      if (task.teamRun) {
+        task.teamRun.status = event.status || 'completed';
+        task.teamRun.phase = 'completed';
+        task.teamRun.completedAt = event.completedAt || Date.now();
+        task.teamRun.completedCount = event.completedCount;
+        task.teamRun.failedCount = event.failedCount;
+      }
+      updateActivity(task, `team-run-${task.teamRun?.id}`, {
+        status: event.status === 'partial' ? 'interrupted' : 'completed',
+        detail: event.failedCount
+          ? `${event.completedCount || 0} 位成员完成，${event.failedCount} 位失败或受阻；负责人已交付可用部分。`
+          : `${event.completedCount || task.teamRun?.members.length || 0} 位成员已完成，负责人已汇总交付。`,
+      });
+      break;
+
+    case 'team_failed':
+      if (task.teamRun) {
+        task.teamRun.status = 'failed';
+        task.teamRun.phase = 'failed';
+        task.teamRun.error = event.message || '';
+        task.teamRun.completedAt = event.completedAt || Date.now();
+      }
+      interruptActiveTeamMembers(task, 'interrupted', event.message || '');
+      updateActivity(task, `team-run-${task.teamRun?.id}`, {
+        status: 'failed',
+        detail: event.message || '专家团执行失败。',
+      });
+      break;
+
+    case 'team_cancelled':
+      if (task.teamRun) {
+        task.teamRun.status = 'cancelled';
+        task.teamRun.phase = 'cancelled';
+        task.teamRun.completedAt = event.completedAt || Date.now();
+      }
+      interruptActiveTeamMembers(task, 'cancelled');
+      updateActivity(task, `team-run-${task.teamRun?.id}`, {
+        status: 'failed',
+        detail: '专家团任务已停止。',
+      });
+      break;
+
     case 'runtime_progress': {
       const assistant = ensureStreamingAssistant(task);
       assistant.runtimeProgress = {
@@ -3414,6 +3602,10 @@ function handleRuntimeEvent(event) {
       break;
 
     case 'session_capabilities': {
+      if (event.teamMemberId) {
+        updateTeamRunMember(task, event, { capabilityLoad: event.capabilityLoad || null });
+        break;
+      }
       task.capabilityLoad = event.capabilityLoad || null;
       const loaded = event.capabilityLoad?.status === 'loaded';
       if (loaded && event.capabilityLoad.capabilityHash) {
@@ -3540,18 +3732,20 @@ function handleRuntimeEvent(event) {
       break;
 
     case 'permission_requested':
-      if (!advanceAssistantResponsePhase(task, 'responding')) break;
+      if (!event.teamMemberId && !advanceAssistantResponsePhase(task, 'responding')) break;
       task.pendingPermissions.push({
         id: event.permissionId,
         toolCall: event.toolCall,
         options: event.options,
         allowAlways: event.allowAlways !== false,
+        teamMemberId: event.teamMemberId || null,
+        teamMemberName: event.teamMemberName || null,
         createdAt: Date.now(),
       });
       addActivity(task, {
         id: `permission-${event.permissionId}`,
         type: 'permission',
-        title: '等待用户审批',
+        title: event.teamMemberName ? `${event.teamMemberName}等待审批` : '等待用户审批',
         detail: event.toolCall?.title || event.toolCall?.name || '高风险工具操作',
         status: 'waiting',
       });
@@ -3650,6 +3844,12 @@ function handleRuntimeEvent(event) {
 
     case 'turn_cancelled': {
       task.status = 'cancelled';
+      if (task.teamRun && !['completed', 'failed', 'cancelled'].includes(task.teamRun.status)) {
+        task.teamRun.status = 'cancelled';
+        task.teamRun.phase = 'cancelled';
+        task.teamRun.completedAt = Date.now();
+        interruptActiveTeamMembers(task, 'cancelled');
+      }
       const assistant = currentStreamingAssistant(task);
       if (assistant) {
         if (!assistant.text.trim()) assistant.text = '任务已由用户停止。';
@@ -3674,6 +3874,13 @@ function handleRuntimeEvent(event) {
       const assistant = currentStreamingAssistant(task);
       if (!assistant) break;
       task.status = 'failed';
+      if (task.teamRun && !['completed', 'failed', 'cancelled'].includes(task.teamRun.status)) {
+        task.teamRun.status = 'failed';
+        task.teamRun.phase = 'failed';
+        task.teamRun.error = event.message || '';
+        task.teamRun.completedAt = Date.now();
+        interruptActiveTeamMembers(task, 'interrupted', event.message || '');
+      }
       const technicalFailure = /ACP|Headless|runtime/i.test(event.message || '');
       const failureMessage = technicalFailure
         ? '服务暂时不可用，请稍后重试。'

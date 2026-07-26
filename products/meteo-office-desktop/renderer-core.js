@@ -346,6 +346,10 @@ const projectUI = {
 const catalogUI = {
   detailExpertId: null,
 };
+const teamUI = {
+  expanded: false,
+  selectedMemberId: null,
+};
 const automationUI = {
   tab: 'schedules',
   editor: null,
@@ -626,8 +630,72 @@ function getSelectedExpert() {
   return getExpert(state.selectedExpertId || catalog.experts[0].id);
 }
 
+function mergeTeamToolSelections(experts) {
+  const merged = new Map();
+  experts.forEach((expert) => {
+    Object.entries(expert.toolSelections || {}).forEach(([connectorId, toolNames]) => {
+      const current = merged.get(connectorId) || [];
+      merged.set(connectorId, [...new Set([...current, ...(Array.isArray(toolNames) ? toolNames : [])])]);
+    });
+  });
+  return Object.fromEntries(merged);
+}
+
+function teamDefinitionForExpert(expert) {
+  if (expert?.kind !== 'team') return null;
+  const frozenMembers = Array.isArray(expert.memberSnapshots) && expert.memberSnapshots.length
+    ? expert.memberSnapshots
+    : allExperts().filter((item) => item.kind !== 'team' && item.kind !== 'assistant');
+  return window.MeteoMateHarness.ExpertTeam.normalizeDefinition(expert, frozenMembers);
+}
+
 function expertSnapshot(expert) {
-  return structuredClone(normalizeExpertForRuntime(expert, expert?.source?.type || 'system'));
+  const snapshot = structuredClone(normalizeExpertForRuntime(expert, expert?.source?.type || 'system'));
+  if (snapshot.kind !== 'team') return snapshot;
+  const definition = teamDefinitionForExpert(snapshot);
+  const memberSnapshots = definition.nodes.map((node) =>
+    structuredClone(normalizeExpertForRuntime(node.expert, node.expert.source?.type || 'system'))
+  );
+  const requiredSkills = [...new Set([
+    ...(snapshot.requiredSkills || []),
+    ...memberSnapshots.flatMap((member) => member.requiredSkills || []),
+  ])];
+  const recommendedSkills = [...new Set([
+    ...(snapshot.recommendedSkills || []),
+    ...memberSnapshots.flatMap((member) => member.recommendedSkills || []),
+  ])].filter((id) => !requiredSkills.includes(id));
+  const requiredConnectors = [...new Set([
+    ...(snapshot.requiredConnectors || []),
+    ...memberSnapshots.flatMap((member) => member.requiredConnectors || []),
+  ])];
+  const recommendedConnectors = [...new Set([
+    ...(snapshot.recommendedConnectors || []),
+    ...memberSnapshots.flatMap((member) => member.recommendedConnectors || []),
+  ])].filter((id) => !requiredConnectors.includes(id));
+  return {
+    ...snapshot,
+    members: definition.nodes.map((node) => node.expert.id),
+    nodes: definition.nodes.map((node) => ({
+      id: node.id,
+      expert: node.expert.id,
+      dependsOn: [...node.dependsOn],
+      objective: node.objective,
+    })),
+    orchestrator: definition.orchestrator,
+    execution: structuredClone(definition.execution),
+    memberSnapshots,
+    requiredSkills,
+    recommendedSkills,
+    requiredConnectors,
+    recommendedConnectors,
+    toolSelections: mergeTeamToolSelections([snapshot, ...memberSnapshots]),
+  };
+}
+
+function teamDefinitionForTask(task, expert = getTaskExpert(task)) {
+  if (expert?.kind !== 'team') return null;
+  if (task?.teamDefinition?.nodes?.length) return structuredClone(task.teamDefinition);
+  return teamDefinitionForExpert(expert);
 }
 
 function getTaskExpert(task) {
@@ -1195,7 +1263,7 @@ function updateLiveResponseDurations() {
       element.textContent = formatDuration(Math.max(0, Date.now() - startedAt));
     }
   });
-  document.querySelectorAll('.response-awaiting.waiting_model').forEach((element) => {
+  document.querySelectorAll('.response-awaiting.waiting_model:not(.team-awaiting)').forEach((element) => {
     const startedAt = Number(element.dataset.startedAt);
     if (!Number.isFinite(startedAt) || startedAt <= 0) return;
     const slow = Date.now() - startedAt >= 8000;
@@ -1543,6 +1611,102 @@ function renderCapabilityCard(item, tab) {
   `;
 }
 
+function teamMemberStatusText(status) {
+  return {
+    pending: '待分派',
+    running: '执行中',
+    completed: '已完成',
+    failed: '失败',
+    blocked: '上游受阻',
+    cancelled: '已停止',
+    interrupted: '已中断',
+  }[status] || status || '待分派';
+}
+
+function renderTeamStatusIndicator(status) {
+  const iconName = status === 'completed'
+    ? 'check'
+    : ['failed', 'cancelled'].includes(status)
+      ? 'close'
+      : ['blocked', 'interrupted'].includes(status)
+        ? 'warning'
+        : status === 'running'
+          ? 'refresh'
+          : 'queue';
+  return `<span class="team-status-indicator ${escapeHtml(status || 'pending')}" aria-hidden="true">${icon(iconName)}</span>`;
+}
+
+function renderTeamCollaborationBar(task, expert) {
+  if (expert?.kind !== 'team') return '';
+  const definition = task
+    ? teamDefinitionForTask(task, expert)
+    : teamDefinitionForExpert(expert);
+  if (!definition) return '';
+  const run = task?.teamRun || window.MeteoMateHarness.ExpertTeam.createRunState(definition);
+  const selectedMemberId = teamUI.selectedMemberId || run.members[0]?.id;
+  const selectedMember = run.members.find((member) => member.id === selectedMemberId) || run.members[0];
+  const memberNames = new Map(run.members.map((member) => [member.id, member.name]));
+  const leadStatus = ['completed', 'partial'].includes(run.status)
+    ? 'completed'
+    : ['failed', 'cancelled', 'interrupted'].includes(run.status)
+      ? run.status
+      : run.phase === 'synthesizing'
+        ? 'running'
+        : task?.status === 'running'
+          ? 'running'
+          : 'pending';
+  const leadDetail = run.phase === 'synthesizing'
+    ? '正在汇总交付'
+    : run.phase === 'executing'
+      ? '正在协调成员'
+      : ['completed', 'partial'].includes(run.status)
+        ? '负责人 · 已交付'
+        : '负责人 · 统一交付';
+
+  return `
+    <section class="team-collaboration" aria-label="${escapeHtml(definition.name)}协作状态">
+      <div class="team-chip-row">
+        <button type="button" class="team-chip team-lead-chip ${leadStatus}" data-team-toggle aria-expanded="${teamUI.expanded}">
+          <span class="avatar avatar-${expert.avatar.codePointAt(0) % 6}">${escapeHtml(expert.avatar)}</span>
+          <span class="team-chip-copy"><strong>交付负责人</strong><small>${escapeHtml(leadDetail)}</small></span>
+          ${renderTeamStatusIndicator(leadStatus)}
+        </button>
+        ${run.members.map((member) => `
+          <button
+            type="button"
+            class="team-chip team-member-chip ${escapeHtml(member.status)} ${selectedMember?.id === member.id && teamUI.expanded ? 'selected' : ''}"
+            data-team-member-id="${escapeHtml(member.id)}"
+            aria-pressed="${selectedMember?.id === member.id && teamUI.expanded}"
+            title="${escapeHtml(member.objective || member.name)}"
+          >
+            <span class="avatar avatar-${member.avatar.codePointAt(0) % 6}">${escapeHtml(member.avatar)}</span>
+            <span class="team-chip-copy"><strong>${escapeHtml(member.name)}</strong><small>${escapeHtml(teamMemberStatusText(member.status))}</small></span>
+            ${renderTeamStatusIndicator(member.status)}
+          </button>
+        `).join('')}
+        <button type="button" class="team-expand-button ${teamUI.expanded ? 'expanded' : ''}" data-team-toggle aria-label="${teamUI.expanded ? '收起' : '展开'}专家团详情" aria-expanded="${teamUI.expanded}">
+          ${icon('down')}
+        </button>
+      </div>
+      ${teamUI.expanded && selectedMember ? `
+        <article class="team-member-detail">
+          <header>
+            <span class="avatar avatar-${selectedMember.avatar.codePointAt(0) % 6}">${escapeHtml(selectedMember.avatar)}</span>
+            <span><strong>${escapeHtml(selectedMember.name)}</strong><small>${escapeHtml(teamMemberStatusText(selectedMember.status))}${selectedMember.sessionId ? ` · 独立会话 ${escapeHtml(String(selectedMember.sessionId).slice(0, 8))}` : ''}</small></span>
+            ${renderTeamStatusIndicator(selectedMember.status)}
+          </header>
+          <p>${escapeHtml(selectedMember.objective || '完成分配的专业分析并向负责人交接。')}</p>
+          ${selectedMember.dependsOn?.length ? `<div class="team-dependencies"><span>等待交接</span>${selectedMember.dependsOn.map((id) => `<b>${escapeHtml(memberNames.get(id) || id)}</b>`).join('')}</div>` : ''}
+          ${selectedMember.detail ? `<div class="team-member-update"><span>当前进展</span><p>${escapeHtml(truncate(selectedMember.detail, 300))}</p></div>` : ''}
+          ${selectedMember.summary ? `<div class="team-member-update completed"><span>交接摘要</span><p>${escapeHtml(truncate(selectedMember.summary, 520))}</p></div>` : ''}
+          ${selectedMember.error ? `<div class="team-member-update failed"><span>阻塞原因</span><p>${escapeHtml(truncate(selectedMember.error, 360))}</p></div>` : ''}
+          ${selectedMember.activities?.length ? `<div class="team-member-activities">${selectedMember.activities.slice(-3).map((activity) => `<span>${icon('tool')}<b>${escapeHtml(activity.title || '工具执行')}</b><small>${escapeHtml(teamMemberStatusText(activity.status))}</small></span>`).join('')}</div>` : ''}
+        </article>
+      ` : ''}
+    </section>
+  `;
+}
+
 function renderTaskView({ assistantMode = false } = {}) {
   const task = getActiveTask();
   const isNewTask = !assistantMode && !task;
@@ -1645,6 +1809,7 @@ function renderTaskView({ assistantMode = false } = {}) {
           ${renderQueuedPrompts(task)}
         </div>
         <div class="composer-dock">
+          ${assistantMode ? '' : renderTeamCollaborationBar(task, expert)}
           <div class="composer-shell">
             <section class="composer-trigger-palette" id="composer-trigger-palette" aria-label="输入快捷菜单" hidden>
               <header>
@@ -1965,6 +2130,32 @@ function resolveResponsePhase(message, task) {
 
 function responseAwaitingState(message, task, responsePhase) {
   const progress = message?.runtimeProgress || {};
+  const activeTeamRun = task?.teamRun;
+  if (
+    activeTeamRun
+    && ['running', 'synthesizing'].includes(activeTeamRun.status)
+    && ['dispatching', 'executing', 'members', 'synthesizing'].includes(activeTeamRun.phase)
+  ) {
+    const completed = activeTeamRun.members.filter((member) => member.status === 'completed').length;
+    const running = activeTeamRun.members.filter((member) => member.status === 'running');
+    return activeTeamRun.phase === 'synthesizing'
+      ? {
+          label: '负责人正在汇总',
+          detail: `整合 ${completed} 位专家的交接结果`,
+          startedAt: activeTeamRun.startedAt,
+          modelLabel: '',
+          mode: 'team-awaiting',
+        }
+      : {
+          label: '专家协作中',
+          detail: running.length
+            ? `${running.map((member) => member.name).join('、')}正在执行`
+            : '正在按依赖关系分派任务',
+          startedAt: activeTeamRun.startedAt,
+          modelLabel: '',
+          mode: 'team-awaiting',
+        };
+  }
   const preparingLabels = {
     preparing_context: '整理任务与资料',
     preparing_runtime: '连接运行服务',
@@ -2007,7 +2198,7 @@ function responseAwaitingState(message, task, responsePhase) {
 function renderResponseAwaiting(message, task, responsePhase) {
   const status = responseAwaitingState(message, task, responsePhase);
   return `
-    <div class="response-awaiting ${responsePhase}" role="status" aria-live="polite" data-started-at="${status.startedAt || ''}">
+    <div class="response-awaiting ${responsePhase} ${status.mode || ''}" role="status" aria-live="polite" data-started-at="${status.startedAt || ''}">
       <span class="response-awaiting-status">
         <strong data-response-awaiting-label>${escapeHtml(status.label)}</strong>
         <small data-response-awaiting-detail data-model-label="${escapeHtml(status.modelLabel)}">${escapeHtml(status.detail)}</small>
@@ -2154,6 +2345,7 @@ function renderPermissionCard(permission) {
     : permission.toolCall?.kind || '需要用户确认';
   return `
     <article class="permission-card">
+      ${permission.teamMemberName ? `<span class="permission-team-member">${icon('users')}${escapeHtml(permission.teamMemberName)}发起</span>` : ''}
       <strong>${escapeHtml(title)}</strong>
       <pre>${escapeHtml(truncate(detail, 240))}</pre>
       <div class="permission-actions">

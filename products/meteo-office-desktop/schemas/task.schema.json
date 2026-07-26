@@ -15,6 +15,17 @@
     "projectId": { "type": ["string", "null"] },
     "expertId": { "type": ["string", "null"] },
     "expertSnapshot": { "$ref": "expert.schema.json" },
+    "teamDefinition": { "type": ["object", "null"] },
+    "teamRun": {
+      "type": ["object", "null"],
+      "properties": {
+        "id": { "type": "string" },
+        "teamId": { "type": "string" },
+        "status": { "enum": ["running", "synthesizing", "completed", "partial", "failed", "cancelled", "interrupted"] },
+        "phase": { "enum": ["dispatching", "executing", "members", "synthesizing", "completed", "failed", "cancelled", "interrupted"] },
+        "members": { "type": "array", "items": { "type": "object" } }
+      }
+    },
     "capabilityMode": { "enum": ["inherit", "custom"] },
     "connectorIds": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
     "toolSelections": {

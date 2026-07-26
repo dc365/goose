@@ -475,5 +475,39 @@ const recoveredState = StateStore.normalizeStoredState({
 });
 assert.deepEqual(recoveredState.tasks[0].messages.map((message) => message.id), ['u1', 'a1']);
 
+const recoveredTeamState = StateStore.normalizeStoredState({
+  projects: [],
+  tasks: [{
+    id: 'interrupted-team-task',
+    title: '中断的专家团',
+    status: 'running',
+    teamRun: {
+      id: 'team-run-1',
+      teamId: 'forecast-team',
+      status: 'running',
+      phase: 'executing',
+      members: [
+        { id: 'analysis', status: 'completed' },
+        { id: 'rain', status: 'running' },
+        { id: 'convection', status: 'pending' },
+      ],
+    },
+    messages: [{ id: 'u1', role: 'user', text: '联合研判', status: 'completed' }],
+  }],
+}, {
+  initialState: { projects: [], tasks: [] },
+  createDefaultPlan,
+});
+assert.equal(recoveredTeamState.tasks[0].teamRun.status, 'interrupted');
+assert.equal(recoveredTeamState.tasks[0].teamRun.phase, 'interrupted');
+assert.deepEqual(
+  recoveredTeamState.tasks[0].teamRun.members.map((member) => member.status),
+  ['completed', 'interrupted', 'interrupted']
+);
+assert.equal(
+  EventNormalizer.normalizeRuntimeEvent({ type: 'team_member_completed', teamMemberId: 'analysis' }).type,
+  'team.member.completed'
+);
+
 assert.equal(Shared.contentHash({ b: 2, a: 1 }), Shared.contentHash({ a: 1, b: 2 }));
 console.log('MeteoMate harness tests passed.');
