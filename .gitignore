@@ -98,5 +98,6 @@ gooseselftest/
 
 # MeteoMate desktop build and icon intermediates
 /products/meteo-office-desktop/dist/
+/products/meteo-office-desktop/services/skillhub/data/
 /products/meteo-office-desktop/assets/icons/MeteoMate.iconset/
 /products/meteo-office-desktop/assets/icons/meteomate-source.png

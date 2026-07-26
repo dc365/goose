@@ -18,6 +18,7 @@ const state = {
   toastTimer: null,
 };
 
+const adminSessionKey = 'meteomate.management.session.v1';
 const roleLabels = { viewer: '使用者', publisher: 'Skill 发布者', admin: '管理员' };
 const skillStatusLabels = { published: '已发布', draft: '草稿', pending_review: '待审核', deprecated: '已弃用' };
 const expertStatusLabels = { enabled: '已启用', draft: '草稿', disabled: '已停用', archived: '已归档' };
@@ -164,7 +165,29 @@ function setSubmitting(form, busy, text) {
   button.textContent = busy ? text : button.dataset.label;
 }
 
+function readAdminSession() {
+  try {
+    return window.sessionStorage.getItem(adminSessionKey) || '';
+  } catch {
+    return '';
+  }
+}
+
+function persistAdminSession() {
+  if (!state.token) return;
+  try {
+    window.sessionStorage.setItem(adminSessionKey, state.token);
+  } catch {}
+}
+
+function clearAdminSession() {
+  try {
+    window.sessionStorage.removeItem(adminSessionKey);
+  } catch {}
+}
+
 function showLogin(message = '') {
+  clearAdminSession();
   state.token = '';
   state.user = null;
   state.users = [];
@@ -187,6 +210,17 @@ function showLogin(message = '') {
   document.getElementById('login-username').focus();
 }
 
+function showFirstPasswordChange(user) {
+  elements.adminShell.hidden = true;
+  elements.loginShell.hidden = false;
+  document.getElementById('skip-link').href = '#first-password-form';
+  document.getElementById('first-username').value = user.username;
+  elements.loginForm.hidden = true;
+  elements.firstPasswordForm.hidden = false;
+  setError(elements.firstPasswordError);
+  document.getElementById('first-current-password').focus();
+}
+
 async function handleLogin(event) {
   event.preventDefault();
   const username = document.getElementById('login-username').value.trim();
@@ -207,11 +241,9 @@ async function handleLogin(event) {
     }
     state.token = result.sessionToken;
     state.user = result.user;
+    persistAdminSession();
     if (result.user.mustChangePassword) {
-      document.getElementById('first-username').value = result.user.username;
-      elements.loginForm.hidden = true;
-      elements.firstPasswordForm.hidden = false;
-      document.getElementById('first-current-password').focus();
+      showFirstPasswordChange(result.user);
       return;
     }
     await enterAdmin();
@@ -243,6 +275,7 @@ async function handleFirstPassword(event) {
 }
 
 async function enterAdmin() {
+  persistAdminSession();
   elements.loginShell.hidden = true;
   elements.adminShell.hidden = false;
   document.getElementById('skip-link').href = '#main-content';
@@ -256,6 +289,27 @@ async function enterAdmin() {
   await loadGovernance();
   await loadUsers();
   await loadPolicies();
+}
+
+async function restoreAdminSession() {
+  const token = readAdminSession();
+  if (!token) {
+    showLogin();
+    return;
+  }
+  state.token = token;
+  try {
+    const result = await api('/v1/me', { keepSession: true });
+    if (!result.authenticated || result.user?.role !== 'admin') throw new Error('管理员会话已失效');
+    state.user = result.user;
+    if (result.user.mustChangePassword) {
+      showFirstPasswordChange(result.user);
+      return;
+    }
+    await enterAdmin();
+  } catch {
+    showLogin('管理员会话已失效，请重新登录。');
+  }
 }
 
 async function logout() {
@@ -860,20 +914,20 @@ function buildExpertForm(expert = null) {
   const form = element('form', 'drawer-form expert-editor-form');
   form.noValidate = true;
   form.innerHTML = `
+    <div class="expert-editor-intro">
+      <span class="expert-editor-intro-mark">专</span>
+      <span><strong>${expert ? '调整专家职责与能力组合' : '创建一位可复用的气象专家'}</strong><small>先定义这位专家解决什么问题，再从已发布 Skill 中选择能力。运行参数放在高级设置中。</small></span>
+    </div>
     <details class="expert-form-section" open>
-      <summary>基础资料</summary>
+      <summary>专家档案</summary>
       <div class="expert-form-section-content">
         <div class="field-row">
           <label class="field"><span>专家名称</span><input name="name" maxlength="120" required /></label>
-          <label class="field"><span>专家 ID</span><input name="id" pattern="[a-z0-9][a-z0-9._-]{2,127}" required /></label>
-        </div>
-        <div class="field-row">
-          <label class="field"><span>版本</span><input name="version" maxlength="64" required /></label>
           <label class="field"><span>头像文字</span><input name="avatar" maxlength="8" placeholder="形" /></label>
         </div>
-        <div class="expert-editor-grid">
-          <label class="field"><span>可见范围</span><select name="visibility"><option value="organization">组织</option><option value="public">系统公开</option><option value="private">私有</option></select></label>
+        <div class="field-row">
           <label class="field"><span>分类</span><input name="category" placeholder="天气分析" /></label>
+          <label class="field"><span>可见范围</span><select name="visibility"><option value="organization">组织</option><option value="public">系统公开</option><option value="private">私有</option></select></label>
         </div>
         <label class="field"><span>简短说明</span><textarea name="description" placeholder="说明这位专家擅长解决什么问题"></textarea></label>
         <label class="field"><span>核心使命</span><textarea name="mission" placeholder="定义稳定、可验证的交付目标"></textarea></label>
@@ -881,7 +935,7 @@ function buildExpertForm(expert = null) {
       </div>
     </details>
     <details class="expert-form-section" open>
-      <summary>指令与工作方法</summary>
+      <summary>工作方式</summary>
       <div class="expert-form-section-content">
         <label class="field"><span>专家指令</span><textarea class="expert-instruction-input" name="instruction" required placeholder="定义职责、判断原则、工具使用与完成标准"></textarea></label>
         <label class="field"><span>方法论，每行一项</span><textarea name="methodology"></textarea></label>
@@ -897,23 +951,36 @@ function buildExpertForm(expert = null) {
         <label class="field"><span>常用提示，每行一项</span><textarea name="prompts"></textarea></label>
       </div>
     </details>
+    <details class="expert-form-section" open>
+      <summary>Skill 能力组合</summary>
+      <div class="expert-form-section-content">
+        <div class="expert-skill-picker" data-expert-skill-picker>
+          <header>
+            <span><strong>选择已发布 Skill</strong><small>必需能力会随专家强制加载；推荐能力由任务场景按需使用。</small></span>
+            <span class="expert-skill-count" data-expert-skill-count>已选 0</span>
+          </header>
+          <label class="expert-skill-search">
+            <span aria-hidden="true">⌕</span>
+            <input type="search" data-expert-skill-search placeholder="搜索 Skill 名称、分类或说明" />
+          </label>
+          <div class="expert-skill-list" data-expert-skill-list></div>
+          <input type="hidden" name="requiredSkills" />
+          <input type="hidden" name="recommendedSkills" />
+        </div>
+      </div>
+    </details>
     <details class="expert-form-section">
-      <summary>Skill 与工具范围</summary>
+      <summary>高级设置</summary>
       <div class="expert-form-section-content">
         <div class="field-row">
-          <label class="field"><span>必需 Skill ID</span><textarea name="requiredSkills" placeholder="每行一个"></textarea></label>
-          <label class="field"><span>推荐 Skill ID</span><textarea name="recommendedSkills" placeholder="每行一个"></textarea></label>
+          <label class="field"><span>专家 ID</span><input name="id" pattern="[a-z0-9][a-z0-9._-]{2,127}" required readonly /><small>创建时自动生成，保存后保持稳定。</small></label>
+          <label class="field"><span>版本</span><input name="version" maxlength="64" required /><small>专家定义发生兼容性变化时再升级版本。</small></label>
         </div>
         <div class="field-row">
           <label class="field"><span>必需工具服务 ID</span><textarea name="requiredConnectors" placeholder="每行一个"></textarea></label>
           <label class="field"><span>推荐工具服务 ID</span><textarea name="recommendedConnectors" placeholder="每行一个"></textarea></label>
         </div>
         <label class="field"><span>具体工具范围</span><textarea name="toolSelections" placeholder="每行格式：服务ID: 工具一, 工具二"></textarea><small>未列出的已选工具服务默认允许其全部工具。</small></label>
-      </div>
-    </details>
-    <details class="expert-form-section">
-      <summary>运行与数据契约</summary>
-      <div class="expert-form-section-content">
         <div class="expert-editor-grid">
           <label class="field"><span>权限策略</span><input name="permissionProfile" /></label>
           <label class="field"><span>工作模式</span><select name="defaultWorkMode"><option value="execute">执行</option><option value="plan">规划</option><option value="ask">问答</option></select></label>
@@ -928,6 +995,7 @@ function buildExpertForm(expert = null) {
   `;
   form.querySelector('[data-cancel]').addEventListener('click', closeDrawer);
   const defaults = expert || {
+    id: generatedExpertID(),
     version: '1.0.0',
     status: 'draft',
     visibility: 'organization',
@@ -939,14 +1007,144 @@ function buildExpertForm(expert = null) {
     if (defaults[name] !== undefined) form.elements[name].value = defaults[name];
   }
   form.elements.tags.value = Array.isArray(defaults.tags) ? defaults.tags.join(', ') : '';
-  for (const name of ['methodology', 'workflow', 'limitations', 'inputs', 'outputs', 'prompts', 'requiredSkills', 'recommendedSkills', 'requiredConnectors', 'recommendedConnectors']) {
+  for (const name of ['methodology', 'workflow', 'limitations', 'inputs', 'outputs', 'prompts', 'requiredConnectors', 'recommendedConnectors']) {
     form.elements[name].value = listValue(defaults[name]);
   }
+  initializeExpertSkillPicker(form, defaults.requiredSkills, defaults.recommendedSkills);
   form.elements.toolSelections.value = toolSelectionValue(defaults.toolSelections);
   form.elements.inputSchema.value = schemaValue(defaults.inputSchema);
   form.elements.outputSchema.value = schemaValue(defaults.outputSchema);
-  if (expert) form.elements.id.disabled = true;
   return form;
+}
+
+function generatedExpertID() {
+  const now = new Date();
+  const date = [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, '0'),
+    String(now.getDate()).padStart(2, '0'),
+  ].join('');
+  const time = [
+    String(now.getHours()).padStart(2, '0'),
+    String(now.getMinutes()).padStart(2, '0'),
+    String(now.getSeconds()).padStart(2, '0'),
+  ].join('');
+  return `expert-${date}-${time}`;
+}
+
+function initializeExpertSkillPicker(form, requiredValues = [], recommendedValues = []) {
+  const picker = form.querySelector('[data-expert-skill-picker]');
+  const list = picker.querySelector('[data-expert-skill-list]');
+  const search = picker.querySelector('[data-expert-skill-search]');
+  const count = picker.querySelector('[data-expert-skill-count]');
+  const assignments = new Map();
+  for (const skillID of requiredValues || []) assignments.set(skillID, 'required');
+  for (const skillID of recommendedValues || []) {
+    if (!assignments.has(skillID)) assignments.set(skillID, 'recommended');
+  }
+
+  const published = state.skills
+    .filter((skill) => skill.status === 'published' && skill.latestVersion)
+    .map((skill) => ({ ...skill, available: true }));
+  const known = new Set(published.map((skill) => skill.id));
+  for (const skillID of assignments.keys()) {
+    if (!known.has(skillID)) {
+      published.push({
+        id: skillID,
+        name: skillID,
+        summary: '该 Skill 当前未发布，请移除或先到 Skill 管理完成发布。',
+        categories: [],
+        available: false,
+      });
+    }
+  }
+
+  const sync = () => {
+    const required = [];
+    const recommended = [];
+    for (const [skillID, mode] of assignments) {
+      if (mode === 'required') required.push(skillID);
+      if (mode === 'recommended') recommended.push(skillID);
+    }
+    form.elements.requiredSkills.value = required.join('\n');
+    form.elements.recommendedSkills.value = recommended.join('\n');
+    const total = required.length + recommended.length;
+    count.textContent = total ? `已选 ${total} · 必需 ${required.length} · 推荐 ${recommended.length}` : '已选 0';
+  };
+
+  const render = () => {
+    const query = search.value.trim().toLowerCase();
+    const visible = published
+      .filter((skill) => {
+        const searchable = [
+          skill.name,
+          skill.id,
+          skill.summary,
+          ...(skill.categories || []),
+          ...(skill.tags || []),
+        ].join(' ').toLowerCase();
+        return !query || searchable.includes(query);
+      })
+      .sort((left, right) => {
+        const leftSelected = assignments.has(left.id) ? 0 : 1;
+        const rightSelected = assignments.has(right.id) ? 0 : 1;
+        return leftSelected - rightSelected || left.name.localeCompare(right.name, 'zh-CN');
+      });
+    list.replaceChildren();
+    if (!visible.length) {
+      list.append(textElement('p', published.length ? '没有匹配的 Skill。' : '还没有已发布的 Skill，请先到 Skill 管理上传并发布。', 'expert-skill-empty'));
+      return;
+    }
+    for (const skill of visible) {
+      const mode = assignments.get(skill.id) || '';
+      const row = element('div', `expert-skill-row${mode ? ' selected' : ''}${skill.available ? '' : ' unavailable'}`);
+      const identity = element('div', 'expert-skill-identity');
+      identity.append(textElement('span', skill.icon || initial(skill.name), 'expert-skill-avatar'));
+      const copy = element('span', 'expert-skill-copy');
+      copy.append(textElement('strong', skill.name), textElement('small', skill.summary || '暂无说明'));
+      const metadata = element('span', 'expert-skill-meta');
+      metadata.append(
+        textElement('span', skill.id),
+        textElement('span', skill.available ? (skill.categories?.[0] || '未分类') : '当前不可用'),
+        ...(skill.latestVersion ? [textElement('span', `v${skill.latestVersion}`)] : []),
+      );
+      copy.append(metadata);
+      identity.append(copy);
+      const choices = element('div', 'expert-skill-choices');
+      if (!skill.available) {
+        const remove = textElement('button', '移除', 'expert-skill-choice remove');
+        remove.type = 'button';
+        remove.addEventListener('click', () => {
+          assignments.delete(skill.id);
+          sync();
+          render();
+        });
+        choices.append(remove);
+      } else {
+        for (const choice of [
+          { value: 'required', label: '必需' },
+          { value: 'recommended', label: '推荐' },
+        ]) {
+          const button = textElement('button', choice.label, `expert-skill-choice${mode === choice.value ? ` active ${choice.value}` : ''}`);
+          button.type = 'button';
+          button.setAttribute('aria-pressed', String(mode === choice.value));
+          button.addEventListener('click', () => {
+            if (assignments.get(skill.id) === choice.value) assignments.delete(skill.id);
+            else assignments.set(skill.id, choice.value);
+            sync();
+            render();
+          });
+          choices.append(button);
+        }
+      }
+      row.append(identity, choices);
+      list.append(row);
+    }
+  };
+
+  search.addEventListener('input', render);
+  sync();
+  render();
 }
 
 function expertFormPayload(form, expert) {
@@ -2643,4 +2841,4 @@ document.getElementById('drawer-backdrop').addEventListener('click', closeDrawer
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && !elements.drawerLayer.hidden) closeDrawer();
 });
-document.getElementById('login-username').focus();
+restoreAdminSession();

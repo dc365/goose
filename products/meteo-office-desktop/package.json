@@ -7,7 +7,7 @@
   "main": "capabilities/main-wrapper.cjs",
   "scripts": {
     "start": "electron .",
-    "skillhub:start": "cd services/skillhub && go run ./cmd/skillhub -addr 127.0.0.1:8088 -data ./data -seed-dir ../../bundled-skills",
+    "skillhub:start": "cd services/skillhub && go run ./cmd/skillhub -addr 127.0.0.1:8088 -data ./data -seed-dir ../../bundled-skills -expert-seed ./seeds/experts.json",
     "runtime:prepare": "npm run runtime:prepare:browser && npm run runtime:prepare:computer && npm run runtime:prepare:office",
     "runtime:prepare:browser": "node scripts/prepare-browser-runtime.cjs",
     "runtime:prepare:computer": "node scripts/prepare-computer-runtime.cjs",

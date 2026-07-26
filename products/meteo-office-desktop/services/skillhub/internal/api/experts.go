@@ -117,6 +117,9 @@ func (s *Server) createExpert(w http.ResponseWriter, r *http.Request) {
 		if state.Experts[expert.ID] != nil {
 			return errConflict("Expert ID already exists")
 		}
+		if err := validateExpertSkills(state, expert); err != nil {
+			return apiError{http.StatusBadRequest, err.Error()}
+		}
 		state.Experts[expert.ID] = expert
 		state.ExpertRevisions[store.ExpertRevisionKey(expert.ID, expert.Revision)] = expertRevision(expert, actor)
 		return nil
@@ -156,6 +159,9 @@ func (s *Server) updateExpert(w http.ResponseWriter, r *http.Request) {
 		input.Expert.ID = expertID
 		next, err := prepareExpert(input.Expert, current, actor, time.Now().UTC())
 		if err != nil {
+			return apiError{http.StatusBadRequest, err.Error()}
+		}
+		if err := validateExpertSkills(state, next); err != nil {
 			return apiError{http.StatusBadRequest, err.Error()}
 		}
 		state.Experts[expertID] = next

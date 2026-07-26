@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="light" />
-    <title>MeteoMate SkillHub 管理</title>
+    <title>MeteoMate 管理后台</title>
     <link rel="icon" href="/admin/assets/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/admin/assets/admin.css" />
     <script src="/admin/assets/admin.js" defer></script>
@@ -15,17 +15,17 @@
     <main class="login-shell" id="login-shell">
       <section class="login-context" aria-labelledby="login-title">
         <div class="product-mark" aria-hidden="true">MM</div>
-        <p class="eyebrow">气象智伴 · SkillHub</p>
-        <h1 id="login-title">SkillHub 管理控制台</h1>
-        <p class="login-context-copy">集中管理组织专家、Skill、版本发布、用户策略和安全审计。</p>
+        <p class="eyebrow">气象智伴 · 管理后台</p>
+        <h1 id="login-title">MeteoMate 管理后台</h1>
+        <p class="login-context-copy">统一管理专家能力、Skill 资产、内容运营、组织用户、策略下发和安全审计。</p>
         <div class="boundary-note">
           <span class="boundary-symbol" aria-hidden="true">内</span>
-          <span><strong>仅连接当前内网服务</strong><small>管理员会话只保存在当前浏览器页面内，关闭页面后自动清除。</small></span>
+          <span><strong>连接当前 MeteoMate 管理服务</strong><small>管理员会话只保存在当前浏览器页面内，关闭页面后自动清除。</small></span>
         </div>
       </section>
       <section class="login-panel">
         <div class="login-card">
-          <header><p class="section-label">管理员入口</p><h2>登录管理后台</h2><p>使用 SkillHub 管理员用户名和密码</p></header>
+          <header><p class="section-label">管理员入口</p><h2>登录管理后台</h2><p>使用 MeteoMate 管理员账号登录</p></header>
           <form id="login-form" novalidate>
             <label class="field"><span>用户名</span><input id="login-username" name="username" autocomplete="username" required /></label>
             <label class="field"><span>密码</span><input id="login-password" name="password" type="password" autocomplete="current-password" required /></label>
@@ -47,17 +47,23 @@
 
     <div class="admin-shell" id="admin-shell" hidden>
       <aside class="admin-sidebar">
-        <div class="brand-lockup"><span class="brand-mark" aria-hidden="true">MM</span><span><strong>MeteoMate</strong><small>SkillHub 管理</small></span></div>
+        <div class="brand-lockup"><span class="brand-mark" aria-hidden="true">MM</span><span><strong>MeteoMate</strong><small>管理后台</small></span></div>
         <nav aria-label="管理导航">
-          <button class="nav-button active" data-view="skills"><span aria-hidden="true">技</span><span>Skill 管理</span></button>
-          <button class="nav-button" data-view="experts"><span aria-hidden="true">专</span><span>专家管理</span></button>
-          <button class="nav-button" data-view="operations"><span aria-hidden="true">荐</span><span>内容运营</span></button>
-          <button class="nav-button" data-view="governance"><span aria-hidden="true">治</span><span>安装治理</span></button>
-          <button class="nav-button" data-view="users"><span aria-hidden="true">人</span><span>用户管理</span></button>
-          <button class="nav-button" data-view="policies"><span aria-hidden="true">策</span><span>策略下发</span></button>
-          <button class="nav-button" data-view="audit"><span aria-hidden="true">录</span><span>审计记录</span></button>
+          <div class="nav-group">
+            <p class="nav-group-label">能力资产</p>
+            <button class="nav-button active" data-view="skills"><span aria-hidden="true">技</span><span>Skill 管理</span></button>
+            <button class="nav-button" data-view="experts"><span aria-hidden="true">专</span><span>专家管理</span></button>
+            <button class="nav-button" data-view="operations"><span aria-hidden="true">荐</span><span>内容运营</span></button>
+          </div>
+          <div class="nav-group">
+            <p class="nav-group-label">组织治理</p>
+            <button class="nav-button" data-view="governance"><span aria-hidden="true">治</span><span>安装治理</span></button>
+            <button class="nav-button" data-view="users"><span aria-hidden="true">人</span><span>用户管理</span></button>
+            <button class="nav-button" data-view="policies"><span aria-hidden="true">策</span><span>策略下发</span></button>
+            <button class="nav-button" data-view="audit"><span aria-hidden="true">录</span><span>审计记录</span></button>
+          </div>
         </nav>
-        <div class="service-state"><span class="state-dot"></span><span><strong>SkillHub 服务正常</strong><small id="service-origin"></small></span></div>
+        <div class="service-state"><span class="state-dot"></span><span><strong>管理服务正常</strong><small id="service-origin"></small></span></div>
       </aside>
 
       <main class="admin-main" id="main-content" tabindex="-1">

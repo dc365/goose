@@ -22,9 +22,10 @@ import (
 
 func main() {
 	var (
-		addr    = flag.String("addr", envOr("METEOMATE_SKILLHUB_ADDR", "127.0.0.1:8088"), "HTTP listen address")
-		dataDir = flag.String("data", envOr("METEOMATE_SKILLHUB_DATA", "./data"), "data directory")
-		seedDir = flag.String("seed-dir", os.Getenv("METEOMATE_SKILLHUB_SEED_DIR"), "optional bundled Skill directory")
+		addr       = flag.String("addr", envOr("METEOMATE_SKILLHUB_ADDR", "127.0.0.1:8088"), "HTTP listen address")
+		dataDir    = flag.String("data", envOr("METEOMATE_SKILLHUB_DATA", "./data"), "data directory")
+		seedDir    = flag.String("seed-dir", os.Getenv("METEOMATE_SKILLHUB_SEED_DIR"), "optional bundled Skill directory")
+		expertSeed = flag.String("expert-seed", os.Getenv("METEOMATE_SKILLHUB_EXPERT_SEED"), "optional bundled Expert seed file")
 	)
 	flag.Parse()
 
@@ -65,6 +66,12 @@ func main() {
 		}
 		logger.Info("bundled Skills seeded", "directory", *seedDir)
 	}
+	if *expertSeed != "" {
+		if err := server.SeedExpertsFile(*expertSeed); err != nil {
+			fatalIf(err, "seed bundled experts")
+		}
+		logger.Info("bundled Experts seeded", "file", *expertSeed)
+	}
 
 	httpServer := &http.Server{
 		Addr:              *addr,
@@ -77,7 +84,7 @@ func main() {
 	}
 
 	go func() {
-		logger.Info("MeteoMate SkillHub listening", "addr", *addr, "data", root, "keyId", signer.KeyID())
+		logger.Info("MeteoMate management service listening", "addr", *addr, "data", root, "keyId", signer.KeyID())
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			fatalIf(err, "serve HTTP")
 		}

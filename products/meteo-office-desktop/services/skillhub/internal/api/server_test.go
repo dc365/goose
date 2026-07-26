@@ -388,7 +388,7 @@ func TestAdminConsoleSessionsAuditAndLoginRateLimit(t *testing.T) {
 	}
 	page, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK || !bytes.Contains(page, []byte("MeteoMate SkillHub")) || !bytes.Contains(page, []byte("Skill 管理")) || !bytes.Contains(page, []byte("上传 Skill")) || !bytes.Contains(page, []byte("内容运营")) || !bytes.Contains(page, []byte("推荐结果模拟器")) {
+	if resp.StatusCode != http.StatusOK || !bytes.Contains(page, []byte("MeteoMate 管理后台")) || !bytes.Contains(page, []byte("能力资产")) || !bytes.Contains(page, []byte("组织治理")) || !bytes.Contains(page, []byte("Skill 管理")) || !bytes.Contains(page, []byte("专家管理")) || !bytes.Contains(page, []byte("上传 Skill")) || !bytes.Contains(page, []byte("内容运营")) || !bytes.Contains(page, []byte("推荐结果模拟器")) || bytes.Contains(page, []byte("SkillHub 管理控制台")) {
 		t.Fatalf("admin console unavailable: %d %s", resp.StatusCode, page)
 	}
 	if !strings.Contains(resp.Header.Get("Content-Security-Policy"), "frame-ancestors 'none'") {
@@ -403,8 +403,11 @@ func TestAdminConsoleSessionsAuditAndLoginRateLimit(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/javascript") {
 		t.Fatalf("admin JavaScript unavailable: %d %s", resp.StatusCode, resp.Header.Get("Content-Type"))
 	}
-	if !bytes.Contains(script, []byte("/v1/packages/inspect")) || !bytes.Contains(script, []byte("includeDrafts=true")) || !bytes.Contains(script, []byte("changeSkillVersionStatus")) || !bytes.Contains(script, []byte("/v1/admin/recommendation-rules")) || !bytes.Contains(script, []byte("runRecommendationSimulation")) {
+	if !bytes.Contains(script, []byte("/v1/packages/inspect")) || !bytes.Contains(script, []byte("includeDrafts=true")) || !bytes.Contains(script, []byte("changeSkillVersionStatus")) || !bytes.Contains(script, []byte("/v1/admin/recommendation-rules")) || !bytes.Contains(script, []byte("runRecommendationSimulation")) || !bytes.Contains(script, []byte("initializeExpertSkillPicker")) || bytes.Contains(script, []byte("必需 Skill ID")) {
 		t.Fatalf("admin Skill lifecycle controls missing")
+	}
+	if !bytes.Contains(script, []byte("sessionStorage")) || !bytes.Contains(script, []byte("restoreAdminSession")) || !bytes.Contains(script, []byte("api('/v1/me'")) || bytes.Contains(script, []byte("localStorage")) {
+		t.Fatalf("admin session reload recovery missing")
 	}
 	resp, err = http.Get(server.URL + "/favicon.ico")
 	if err != nil {

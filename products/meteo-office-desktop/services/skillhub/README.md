@@ -1,6 +1,6 @@
-# MeteoMate SkillHub Server V1
+# MeteoMate Management Server
 
-A self-hosted Go service for publishing, discovering, recommending, signing, and downloading MeteoMate / Agent Skills packages.
+A self-hosted management service for MeteoMate Experts, Skills, content operations, installations, users, policies, and audit records. The SkillHub API remains the capability registry protocol used by the desktop client.
 
 The service is intentionally independent of Goose Core. It stores metadata in an atomically written JSON document and package bytes in content-addressed storage. This makes the first server version simple to deploy while keeping API and storage boundaries ready for PostgreSQL and object storage later.
 
@@ -37,6 +37,9 @@ Bundled seeding is idempotent only when the package digest is unchanged. A chang
 cd products/meteo-office-desktop
 npm run skillhub:start
 ```
+
+启动时会先导入 `../../bundled-skills`，再把 `seeds/experts.json` 中的 MeteoMate
+预置专家同步到后台。系统专家按版本更新；后台创建或编辑的组织/个人专家不会被覆盖。
 
 首次创建管理员时，先按下方方式配置启动环境变量。
 
