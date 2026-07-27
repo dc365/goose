@@ -143,10 +143,24 @@ const preloadSource = fs.readFileSync(path.join(root, 'preload.cjs'), 'utf8');
 const rendererSource = fs.readFileSync(path.join(root, 'renderer-core.js'), 'utf8');
 const rendererActionsSource = fs.readFileSync(path.join(root, 'renderer-actions.js'), 'utf8');
 const responseStylesSource = fs.readFileSync(path.join(root, 'styles/app-4.css'), 'utf8');
+const polishStylesSource = fs.readFileSync(path.join(root, 'styles-polish.css'), 'utf8');
+const computerPipSource = fs.readFileSync(
+  path.join(root, 'capabilities/computer-pip-controller.cjs'),
+  'utf8'
+);
+
+assert.match(
+  polishStylesSource,
+  /\.message-row\.assistant\s*\{[^}]*max-width:\s*1120px;[^}]*\}/s,
+);
+assert.match(
+  polishStylesSource,
+  /\.message-row\.assistant \.message-bubble\s*\{[^}]*width:\s*100%;[^}]*max-width:\s*none;[^}]*\}/s,
+);
 
 const acpImageContext = vm.createContext({});
 vm.runInContext(
-  `${extractNamedFunction(mainSource, 'collectAcpImages')}; this.collectAcpImages = collectAcpImages;`,
+  `${extractNamedFunction(computerPipSource, 'collectAcpImages')}; this.collectAcpImages = collectAcpImages;`,
   acpImageContext
 );
 assert.deepEqual(
@@ -277,7 +291,20 @@ assert.ok(rendererSource.includes('id="window-minimize"'));
 assert.ok(rendererSource.includes('id="window-maximize"'));
 assert.ok(rendererSource.includes('id="window-close"'));
 assert.ok(rendererSource.includes('renderQueuedPrompts(task)'));
-assert.ok(rendererSource.includes('queue-mode'));
+assert.ok(rendererSource.includes("id=\"${isRunning ? 'cancel-task' : 'send-task'}\""));
+assert.ok(rendererSource.includes("icon(isRunning ? 'stop' : 'arrowUp')"));
+assert.ok(rendererSource.includes("class=\"primary-button send-icon-button ${isRunning ? 'stop-mode' : ''}\""));
+assert.ok(!rendererSource.includes("id=\"cancel-task\">${icon('stop')} 停止"));
+assert.ok(rendererSource.includes('data-message-copy'));
+assert.ok(rendererSource.includes('data-message-edit'));
+assert.ok(rendererSource.includes('data-message-feedback="up"'));
+assert.ok(rendererSource.includes('data-message-feedback="down"'));
+assert.ok(rendererSource.includes('重新发送后，将从这条问题创建新的对话分支'));
+assert.ok(rendererActionsSource.includes('async function copyMessageText(button)'));
+assert.ok(rendererActionsSource.includes('async function resendEditedMessage(messageId, text)'));
+assert.ok(rendererActionsSource.includes('removedAssistantIds'));
+assert.ok(preloadSource.includes("clipboard:write-text"));
+assert.ok(mainSource.includes("ipcMain.handle('clipboard:write-text'"));
 assert.ok(rendererSource.includes('captureInteractionSnapshot()'));
 assert.ok(rendererActionsSource.includes('composerImeComposing'));
 assert.ok(rendererActionsSource.includes('flushQueuedTaskPrompts(task.id)'));
@@ -305,7 +332,7 @@ assert.ok(mainSource.includes('GOOSE_AUTO_COMPACT_THRESHOLD'));
 assert.ok(mainSource.includes('configuredAutoCompactThreshold'));
 assert.ok(mainSource.includes("type: 'context_compaction'"));
 assert.ok(rendererSource.includes('id="composer-model"'));
-assert.ok(rendererSource.includes('class="primary-button send-icon-button ${isRunning ? \'queue-mode\' : \'\'}"'));
+assert.ok(rendererSource.includes('class="primary-button send-icon-button ${isRunning ? \'stop-mode\' : \'\'}"'));
 assert.ok(rendererSource.includes("const sendShortcut = desktopSettings.preferences.sendOnEnter"));
 assert.ok(rendererSource.includes("id: 'meteomate-assistant'"));
 assert.ok(rendererSource.includes("name: 'MeteoMate 助理'"));

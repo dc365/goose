@@ -1,4 +1,14 @@
-const { app, BrowserWindow, dialog, ipcMain, shell, WebContentsView } = require('electron');
+const {
+  app,
+  BrowserWindow,
+  clipboard,
+  desktopCapturer,
+  dialog,
+  ipcMain,
+  screen,
+  shell,
+  WebContentsView,
+} = require('electron');
 const { spawn, spawnSync } = require('node:child_process');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
@@ -11,6 +21,7 @@ const { runtimeServices } = require('./capabilities/runtime-services.cjs');
 const WorkflowIo = require('./capabilities/workflow-io.cjs');
 const GooseRuntimeEnvironment = require('./capabilities/goose-runtime-environment.cjs');
 const PermissionPolicy = require('./capabilities/permission-policy.cjs');
+const ComputerPip = require('./capabilities/computer-pip-controller.cjs');
 const OfficeArtifactCollector = require('./capabilities/office-artifact-collector.cjs');
 const ArtifactPreview = require('./capabilities/artifact-preview.cjs');
 const ProjectWorkspace = require('./capabilities/project-workspace.cjs');
@@ -59,6 +70,7 @@ app.setName('MeteoMate');
 const activeHeadlessRuns = new Map();
 const pendingPermissions = new Map();
 let mainWindow = null;
+let computerPipController = null;
 const artifactPreviewEntries = new Map();
 let activeArtifactPreviewId = null;
 
@@ -272,6 +284,7 @@ async function navigateArtifactPreview(request = {}) {
 }
 
 function sendRuntimeEvent(payload) {
+  computerPipController?.handleRuntimeEvent(payload);
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('runtime:event', payload);
   }
@@ -628,21 +641,6 @@ const ACP_IMAGE_TYPES = Object.freeze({
 });
 const ACP_IMAGE_MAX_BYTES = 25 * 1024 * 1024;
 
-function collectAcpImages(value, images = []) {
-  if (!value) return images;
-  if (Array.isArray(value)) {
-    value.forEach((entry) => collectAcpImages(entry, images));
-    return images;
-  }
-  if (typeof value !== 'object') return images;
-  if (value.type === 'image' && typeof value.data === 'string' && typeof value.mimeType === 'string') {
-    images.push(value);
-    return images;
-  }
-  Object.values(value).forEach((entry) => collectAcpImages(entry, images));
-  return images;
-}
-
 function sanitizeAcpPayload(value, seen = new WeakMap()) {
   if (!value || typeof value !== 'object') return value;
   if (seen.has(value)) return seen.get(value);
@@ -684,7 +682,7 @@ function materializeAcpImageArtifacts(value, context = {}) {
   const artifacts = [];
   const seenHashes = new Set();
 
-  for (const image of collectAcpImages(value)) {
+  for (const image of ComputerPip.collectAcpImages(value)) {
     const decoded = decodeAcpImage(image);
     if (!decoded) continue;
     const contentHash = crypto.createHash('sha256').update(decoded.buffer).digest('hex');
@@ -755,10 +753,15 @@ function sessionPermissionContext(request) {
 
 function permissionPromptInstruction(request) {
   const workspace = request.workspace || '未选择';
+  const fullAccessDesktopApproval = '完全访问下，已允许的桌面操作无需再次请求审批；';
+  const interactiveDesktopApproval = '每次请求交互审批时说明目标应用、窗口和预期结果；';
   const desktopInstruction = Array.isArray(request.connectorIds) && request.connectorIds.includes('cua-desktop')
-    ? request.permissionProfileId === 'workspace-approval'
-      ? ' 使用桌面应用操作前，必须先通过 list_apps、list_windows 和 get_window_state 明确目标应用与窗口。完全访问下，已允许的桌面操作无需再次请求审批；仍不得操作终端、密码管理器、系统隐私设置或 MeteoMate 自身窗口。'
-      : ' 使用桌面应用操作前，必须先通过 list_apps、list_windows 和 get_window_state 明确目标应用与窗口；每次请求交互审批时说明目标应用、窗口和预期结果。不得操作终端、密码管理器、系统隐私设置或 MeteoMate 自身窗口。'
+    ? ComputerPip.computerUsePromptInstruction({
+      fullAccess: request.permissionProfileId === 'workspace-approval',
+      approval: request.permissionProfileId === 'workspace-approval'
+        ? fullAccessDesktopApproval
+        : interactiveDesktopApproval,
+    })
     : '';
   const officeInstruction = Array.isArray(request.connectorIds) && request.connectorIds.includes('office-artifacts')
     ? ' Office 二进制文件必须通过 office-artifacts 工具处理，所有路径使用当前项目内相对路径；创建或编辑后必须执行 artifact_render 和 artifact_validate，不得回退到 Shell 或任意脚本。'
@@ -881,6 +884,7 @@ class GooseAcpRuntime {
     this.sessionModelMap = new Map();
     this.sessionRecipeMap = new Map();
     this.sessionCompletionFallbackMap = new Map();
+    this.toolCallIdentityTracker = ComputerPip.createToolIdentityTracker();
     this.turnTimingMap = new Map();
     this.sessionTeamMemberMap = new Map();
     this.teamMemberOutputMap = new Map();
@@ -1806,6 +1810,7 @@ class GooseAcpRuntime {
         teamMemberId: teamMember?.nodeId || null,
         teamMemberName: teamMember?.name || null,
         permissionId: key,
+        toolCallId: request.toolCall?.toolCallId || request.toolCall?.id || null,
         toolCall: safeJson(request.toolCall),
         options: safeJson(request.options || []),
         allowAlways: !protectedDesktopAction,
@@ -1841,6 +1846,7 @@ class GooseAcpRuntime {
       teamMemberId: teamMember?.nodeId || null,
       teamMemberName: teamMember?.name || null,
       permissionId,
+      toolCallId: pending.request.toolCall?.toolCallId || pending.request.toolCall?.id || null,
       action: effectiveAction,
     });
     return true;
@@ -1889,21 +1895,31 @@ class GooseAcpRuntime {
         break;
       }
       case 'tool_call': {
-        const toolCall = runtimeToolIdentity(update);
+        const toolCall = this.toolCallIdentityTracker.resolve(
+          notification.sessionId,
+          update.toolCallId,
+          runtimeToolIdentity(update),
+        );
         sendRuntimeEvent({
           ...common,
           type: 'team_member_activity',
           activity: {
             id: update.toolCallId,
             title: toolCall.toolName || update.title || update.name || '调用工具',
+            toolName: toolCall.toolName || update.name || null,
             extensionName: toolCall.extensionName || null,
             status: update.status || 'running',
+            rawInput: safeJson(update.rawInput),
           },
         });
         break;
       }
       case 'tool_call_update': {
-        const toolCall = runtimeToolIdentity(update);
+        const toolCall = this.toolCallIdentityTracker.resolve(
+          notification.sessionId,
+          update.toolCallId,
+          runtimeToolIdentity(update),
+        );
         const artifacts = materializeAcpImageArtifacts([update.content, update.rawOutput], {
           sessionId: notification.sessionId,
           toolCallId: update.toolCallId,
@@ -1924,9 +1940,12 @@ class GooseAcpRuntime {
           activity: {
             id: update.toolCallId,
             title: toolCall.toolName || update.title || '工具执行',
+            toolName: toolCall.toolName || null,
             extensionName: toolCall.extensionName || null,
             status: update.status || 'running',
             detail: safeJson(sanitizeAcpPayload(update.rawOutput || update.content)),
+            rawOutput: safeJson(sanitizeAcpPayload(update.rawOutput)),
+            content: safeJson(sanitizeAcpPayload(update.content)),
           },
         });
         artifacts.forEach((artifact) => {
@@ -2002,7 +2021,11 @@ class GooseAcpRuntime {
         break;
       case 'tool_call':
         {
-          const toolCall = runtimeToolIdentity(update);
+          const toolCall = this.toolCallIdentityTracker.resolve(
+            notification.sessionId,
+            update.toolCallId,
+            runtimeToolIdentity(update),
+          );
         sendRuntimeEvent({
           ...common,
           type: 'tool_call_started',
@@ -2018,7 +2041,11 @@ class GooseAcpRuntime {
         }
       case 'tool_call_update':
         {
-          const toolCall = runtimeToolIdentity(update);
+          const toolCall = this.toolCallIdentityTracker.resolve(
+            notification.sessionId,
+            update.toolCallId,
+            runtimeToolIdentity(update),
+          );
           const artifacts = materializeAcpImageArtifacts([update.content, update.rawOutput], {
             sessionId: notification.sessionId,
             toolCallId: update.toolCallId,
@@ -2342,6 +2369,7 @@ class GooseAcpRuntime {
     this.sessionModelMap.clear();
     this.sessionRecipeMap.clear();
     this.sessionCompletionFallbackMap.clear();
+    this.toolCallIdentityTracker.clear();
     this.turnTimingMap.clear();
     this.sessionTeamMemberMap.clear();
     this.teamMemberOutputMap.clear();
@@ -2693,6 +2721,7 @@ function createWindow() {
   mainWindow.on('restore', sendWindowState);
   mainWindow.on('closed', () => {
     for (const entry of [...artifactPreviewEntries.values()]) destroyArtifactPreview(entry);
+    computerPipController?.close();
     mainWindow = null;
   });
 
@@ -2721,6 +2750,10 @@ ipcMain.handle('window:close', () => {
 });
 
 ipcMain.handle('window:is-maximized', () => Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isMaximized()));
+ipcMain.handle('clipboard:write-text', (_event, text) => {
+  clipboard.writeText(String(text || ''));
+  return true;
+});
 
 ipcMain.handle('runtime:status', async () => {
   await acpRuntime.initialize();
@@ -2963,10 +2996,21 @@ ipcMain.handle('runtime:permission', async (_event, request) => {
 app.whenReady().then(() => {
   if (process.platform === 'darwin') app.dock.setIcon(APP_ICON);
   createWindow();
+  computerPipController = ComputerPip.createComputerPipController({
+    app,
+    BrowserWindow,
+    desktopCapturer,
+    ipcMain,
+    screen,
+    productRoot: __dirname,
+    getMainWindow: () => mainWindow,
+    stopTask: (request) => acpRuntime.cancel(request),
+  });
   if (runtimeServices().profileContext?.hasActiveProfile()) void acpRuntime.initialize();
 });
 
 runtimeServices().profileContext?.onChange(() => {
+  computerPipController?.close();
   void acpRuntime.shutdown().then(() => {
     acpRuntime.refreshConfiguration();
     acpRuntime.emitStatus();
@@ -2986,5 +3030,6 @@ app.on('activate', () => {
 });
 
 app.on('before-quit', () => {
+  computerPipController?.close();
   void acpRuntime.shutdown();
 });

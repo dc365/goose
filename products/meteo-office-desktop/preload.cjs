@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld('meteoDesktop', {
   windowToggleMaximize: () => ipcRenderer.invoke('window:toggle-maximize'),
   windowClose: () => ipcRenderer.invoke('window:close'),
   windowIsMaximized: () => ipcRenderer.invoke('window:is-maximized'),
+  writeClipboardText: (text) => ipcRenderer.invoke('clipboard:write-text', text),
   onWindowStateChange: (callback) => {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on('window:state', listener);

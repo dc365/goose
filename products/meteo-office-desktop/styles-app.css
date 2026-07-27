@@ -555,21 +555,19 @@ body.platform-linux .window-titlebar {
   outline: none;
 }
 
-/* 运行中发送键进入排队语义 */
-.send-icon-button.queue-mode {
-  position: relative;
+/* 运行中发送键原位切换为停止 */
+.send-icon-button.stop-mode .icon svg rect {
+  fill: currentColor;
+  stroke: none;
 }
 
-.send-icon-button.queue-mode::after {
-  content: '';
-  position: absolute;
-  top: 5px;
-  right: 5px;
-  width: 7px;
-  height: 7px;
-  border: 1.5px solid var(--panel);
-  border-radius: 50%;
-  background: var(--warning);
+.send-icon-button.stop-mode:hover:not(:disabled),
+.send-icon-button.stop-mode:focus-visible {
+  background: #25292f;
+}
+
+.send-icon-button.stop-mode.stopping {
+  opacity: 0.66;
 }
 
 /* 排队消息 */

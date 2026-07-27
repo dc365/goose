@@ -353,6 +353,10 @@ const teamUI = {
   expanded: false,
   selectedMemberId: null,
 };
+const messageUI = {
+  editingTaskId: null,
+  editingMessageId: null,
+};
 const previewUI = {
   open: false,
   taskId: null,
@@ -999,6 +1003,10 @@ function icon(name) {
     model: '<svg viewBox="0 0 24 24"><path d="M12 3 4.5 7.2 12 11.5l7.5-4.3L12 3Z"/><path d="m4.5 12 7.5 4.3 7.5-4.3M4.5 16.8 12 21l7.5-4.2"/></svg>',
     settings: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6 1.7 1.7 0 0 0 10 3V2.8h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/></svg>',
     refresh: '<svg viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 9A7 7 0 0 1 18 6l2 2M18 15a7 7 0 0 1-11.9 3L4 16"/></svg>',
+    copy: '<svg viewBox="0 0 24 24"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>',
+    edit: '<svg viewBox="0 0 24 24"><path d="m14 5 5 5M4 20l3.5-.7L19 7.8a2 2 0 0 0-2.8-2.8L4.7 16.5 4 20Z"/></svg>',
+    thumbUp: '<svg viewBox="0 0 24 24"><path d="M7 10v10H3V10h4Zm0 9h10.2a2 2 0 0 0 1.9-1.4l1.7-5.3A2 2 0 0 0 18.9 10H14l.7-3.2A2.7 2.7 0 0 0 12 3.5L7 10v9Z"/></svg>',
+    thumbDown: '<svg viewBox="0 0 24 24"><path d="M7 14V4H3v10h4Zm0-9h10.2a2 2 0 0 1 1.9 1.4l1.7 5.3a2 2 0 0 1-1.9 2.3H14l.7 3.2A2.7 2.7 0 0 1 12 20.5L7 14V5Z"/></svg>',
     close: '<svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg>',
   };
   return `<span class="icon">${icons[name] || icons.more}</span>`;
@@ -1235,7 +1243,6 @@ function renderWindowTitlebar() {
     actions = `<button class="titlebar-action ${previewUI.open && previewUI.taskId === task.id ? 'active' : ''}" data-preview-latest>${icon('file')} 预览成果 <span>${task.artifacts.length}</span></button>`;
   }
 
-  const running = Boolean(task && task.status === 'running');
   return `
     <header class="window-titlebar ${state.sidebarCollapsed ? 'sidebar-collapsed' : ''}" aria-label="MeteoMate 窗口标题栏">
       <div class="window-titlebar-sidebar">
@@ -1246,7 +1253,7 @@ function renderWindowTitlebar() {
         ${backButton}
         ${navigation}
         ${title ? `<div class="window-titlebar-page-title">${icon(titleIcon)}<strong>${escapeHtml(title)}</strong></div>` : ''}
-        <div class="window-titlebar-actions">${actions}${running ? `<button class="titlebar-action danger" id="cancel-task">${icon('stop')} 停止</button>` : ''}</div>
+        <div class="window-titlebar-actions">${actions}</div>
       </div>
       ${renderWindowControls()}
     </header>`;
@@ -1970,7 +1977,7 @@ function renderTaskView({ assistantMode = false } = {}) {
             ${renderTaskDraftContext(expert, isNewTask)}
             <textarea
               id="task-prompt"
-              placeholder="${isRunning ? '当前回复完成后将自动发送，也可以继续编辑' : promptPlaceholder}"
+              placeholder="${isRunning ? '回复生成中，可继续输入下一条消息' : promptPlaceholder}"
             >${escapeHtml(isNewTask ? state.draftPrompt || '' : task?.draftPrompt || '')}</textarea>
             <div class="composer-footer">
               <div class="composer-secondary-tools">
@@ -2010,11 +2017,11 @@ function renderTaskView({ assistantMode = false } = {}) {
                 </label>
                 ${modelUnavailable ? `<button type="button" class="composer-model-fix" id="composer-open-model-settings" title="打开模型设置">去配置</button>` : ''}
                 <button
-                  class="primary-button send-icon-button ${isRunning ? 'queue-mode' : ''}"
-                  id="send-task"
-                  aria-label="${isRunning ? '排队发送，当前回复完成后自动执行' : `${task?.sessionId ? '继续任务' : '开始执行'}，按 ${sendShortcut} 发送`}"
-                  title="${isRunning ? '排队发送：当前回复完成后自动执行' : `按 ${sendShortcut} 发送`}"
-                >${icon('arrowUp')}</button>
+                  class="primary-button send-icon-button ${isRunning ? 'stop-mode' : ''}"
+                  id="${isRunning ? 'cancel-task' : 'send-task'}"
+                  aria-label="${isRunning ? '停止生成' : `${task?.sessionId ? '继续任务' : '开始执行'}，按 ${sendShortcut} 发送`}"
+                  title="${isRunning ? '停止生成' : `按 ${sendShortcut} 发送`}"
+                >${icon(isRunning ? 'stop' : 'arrowUp')}</button>
               </div>
             </div>
           </div>
@@ -2175,15 +2182,21 @@ function renderMessage(message, task) {
     : '';
   const showBubble = !pending || responsePhase === 'responding';
   const usage = message.role === 'assistant' && showBubble ? renderResponseUsage(message, task) : '';
+  const editing = message.role === 'user'
+    && messageUI.editingTaskId === task?.id
+    && messageUI.editingMessageId === message.id;
+  const actions = showBubble && !pending ? renderMessageActions(message, task) : '';
   return `
-    <article class="message-row ${message.role}">
+    <article class="message-row ${message.role} ${editing ? 'editing' : ''}" data-message-id="${escapeHtml(message.id)}">
       <div class="message-avatar">${message.role === 'user' ? '我' : 'M'}</div>
       <div class="message-content">
         <div class="message-meta"><strong>${message.role === 'user' ? '你' : brand.name}</strong><span>${formatTime(message.createdAt)}</span></div>
         ${process}
         ${
           showBubble
-            ? `<div class="message-bubble ${pending ? 'typing' : ''}">
+            ? editing
+              ? renderMessageEditor(message)
+              : `<div class="message-bubble ${pending ? 'typing' : ''}">
                 ${
                   pending
                     ? '<i></i><i></i><i></i>'
@@ -2195,9 +2208,80 @@ function renderMessage(message, task) {
             : ''
         }
         ${usage}
+        ${editing ? '' : actions}
       </div>
     </article>
   `;
+}
+
+function renderMessageEditor(message) {
+  return `
+    <form class="message-editor" data-message-edit-form="${escapeHtml(message.id)}">
+      <textarea
+        id="message-edit-${escapeHtml(message.id)}"
+        aria-label="编辑问题"
+        rows="3"
+      >${escapeHtml(message.text || '')}</textarea>
+      <div class="message-editor-actions">
+        <span>重新发送后，将从这条问题创建新的对话分支</span>
+        <button type="button" data-message-edit-cancel>取消</button>
+        <button type="submit" class="primary">重新发送</button>
+      </div>
+    </form>
+  `;
+}
+
+function renderMessageActions(message, task) {
+  const copyButton = `
+    <button
+      type="button"
+      class="message-action"
+      data-message-copy="${escapeHtml(message.id)}"
+      data-tooltip="复制"
+      aria-label="复制${message.role === 'user' ? '问题' : '答案'}"
+    >${icon('copy')}</button>`;
+  if (message.role === 'user') {
+    const canEdit = task?.status !== 'running';
+    return `
+      <div class="message-actions" aria-label="问题操作">
+        ${copyButton}
+        <button
+          type="button"
+          class="message-action"
+          data-message-edit="${escapeHtml(message.id)}"
+          data-tooltip="${canEdit ? '编辑并重新发送' : '回复完成后可编辑'}"
+          aria-label="${canEdit ? '编辑问题并重新发送' : '回复完成后可编辑问题'}"
+          ${canEdit ? '' : 'disabled'}
+        >${icon('edit')}</button>
+      </div>`;
+  }
+  if (message.status === 'streaming') {
+    return `<div class="message-actions" aria-label="答案操作">${copyButton}</div>`;
+  }
+  const feedback = message.feedback || '';
+  return `
+    <div class="message-actions" aria-label="答案操作">
+      ${copyButton}
+      <span class="message-action-divider" aria-hidden="true"></span>
+      <button
+        type="button"
+        class="message-action ${feedback === 'up' ? 'active' : ''}"
+        data-message-feedback="up"
+        data-message-id="${escapeHtml(message.id)}"
+        data-tooltip="${feedback === 'up' ? '取消点赞' : '这个回答有帮助'}"
+        aria-label="${feedback === 'up' ? '取消点赞' : '点赞'}"
+        aria-pressed="${feedback === 'up'}"
+      >${icon('thumbUp')}</button>
+      <button
+        type="button"
+        class="message-action ${feedback === 'down' ? 'active negative' : ''}"
+        data-message-feedback="down"
+        data-message-id="${escapeHtml(message.id)}"
+        data-tooltip="${feedback === 'down' ? '取消点踩' : '这个回答需要改进'}"
+        aria-label="${feedback === 'down' ? '取消点踩' : '点踩'}"
+        aria-pressed="${feedback === 'down'}"
+      >${icon('thumbDown')}</button>
+    </div>`;
 }
 
 function renderMessageArtifacts(message, task) {

@@ -872,7 +872,77 @@ function bindEvents() {
   });
 
   const cancelButton = document.getElementById('cancel-task');
-  if (cancelButton) cancelButton.addEventListener('click', cancelTask);
+  if (cancelButton) {
+    cancelButton.addEventListener('click', () => {
+      cancelButton.disabled = true;
+      cancelButton.classList.add('stopping');
+      cancelButton.setAttribute('aria-label', '正在停止');
+      cancelButton.title = '正在停止…';
+      void cancelTask();
+    });
+  }
+
+  document.querySelectorAll('[data-message-copy]').forEach((button) => {
+    button.addEventListener('click', () => void copyMessageText(button));
+  });
+
+  document.querySelectorAll('[data-message-edit]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const task = getActiveTask();
+      if (!task || task.status === 'running') return;
+      const message = task.messages.find((entry) => entry.id === button.dataset.messageEdit);
+      if (!message || message.role !== 'user') return;
+      messageUI.editingTaskId = task.id;
+      messageUI.editingMessageId = message.id;
+      render();
+      window.requestAnimationFrame(() => {
+        const editor = document.getElementById(`message-edit-${message.id}`);
+        editor?.focus();
+        editor?.setSelectionRange(editor.value.length, editor.value.length);
+      });
+    });
+  });
+
+  document.querySelectorAll('[data-message-edit-cancel]').forEach((button) => {
+    button.addEventListener('click', () => {
+      messageUI.editingTaskId = null;
+      messageUI.editingMessageId = null;
+      render();
+    });
+  });
+
+  document.querySelectorAll('[data-message-edit-form]').forEach((form) => {
+    const editor = form.querySelector('textarea');
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      void resendEditedMessage(form.dataset.messageEditForm, editor?.value || '');
+    });
+    editor?.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        messageUI.editingTaskId = null;
+        messageUI.editingMessageId = null;
+        render();
+      } else if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+        event.preventDefault();
+        form.requestSubmit();
+      }
+    });
+  });
+
+  document.querySelectorAll('[data-message-feedback]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const task = getActiveTask();
+      const message = task?.messages.find((entry) => entry.id === button.dataset.messageId);
+      if (!task || !message || message.role !== 'assistant' || message.status === 'streaming') return;
+      const feedback = button.dataset.messageFeedback;
+      message.feedback = message.feedback === feedback ? null : feedback;
+      message.feedbackUpdatedAt = Date.now();
+      task.updatedAt = Date.now();
+      saveState();
+      render();
+    });
+  });
 
   const prompt = document.getElementById('task-prompt');
   if (prompt) {
@@ -3556,6 +3626,82 @@ async function cancelTask() {
   const task = state.view === 'assistants' ? getAssistantTask() : getActiveTask();
   if (!task) return;
   await runtimeRouter.cancel(task);
+}
+
+async function copyMessageText(button) {
+  const task = getActiveTask();
+  const message = task?.messages.find((entry) => entry.id === button.dataset.messageCopy);
+  if (!message?.text) return;
+  try {
+    if (window.meteoDesktop?.writeClipboardText) {
+      await window.meteoDesktop.writeClipboardText(message.text);
+    } else {
+      await navigator.clipboard.writeText(message.text);
+    }
+    button.classList.add('copied');
+    button.dataset.tooltip = '已复制';
+    button.setAttribute('aria-label', '已复制');
+    window.setTimeout(() => {
+      if (!button.isConnected) return;
+      button.classList.remove('copied');
+      button.dataset.tooltip = '复制';
+      button.setAttribute('aria-label', `复制${message.role === 'user' ? '问题' : '答案'}`);
+    }, 1400);
+  } catch {
+    button.dataset.tooltip = '复制失败';
+    button.setAttribute('aria-label', '复制失败');
+  }
+}
+
+async function resendEditedMessage(messageId, text) {
+  const task = getActiveTask();
+  const prompt = String(text || '').trim();
+  const messageIndex = task?.messages.findIndex((message) => message.id === messageId) ?? -1;
+  const editor = document.getElementById(`message-edit-${messageId}`);
+  if (!task || task.status === 'running' || messageIndex < 0) return;
+  if (!prompt) {
+    editor?.focus();
+    editor?.classList.add('field-error');
+    return;
+  }
+
+  const removedMessages = task.messages.slice(messageIndex);
+  const removedAssistantIds = new Set(
+    removedMessages.filter((message) => message.role === 'assistant').map((message) => message.id)
+  );
+  const removedArtifactIds = new Set(
+    removedMessages.flatMap((message) => Array.isArray(message.artifactIds) ? message.artifactIds : [])
+  );
+  task.messages = task.messages.slice(0, messageIndex);
+  task.activities = (task.activities || []).filter(
+    (activity) => !activity.responseId || !removedAssistantIds.has(activity.responseId)
+  );
+  task.artifacts = (task.artifacts || []).filter(
+    (artifact) => !removedArtifactIds.has(artifact.id)
+      && !removedAssistantIds.has(artifact.metadata?.responseId)
+  );
+  if (Array.isArray(task.evidence)) {
+    task.evidence = task.evidence.filter(
+      (entry) => !entry.responseId || !removedAssistantIds.has(entry.responseId)
+    );
+  }
+  task.pendingPermissions = [];
+  task.teamRun = null;
+  task.sessionId = null;
+  task.runtimeMode = null;
+  task.sessionCapabilityHash = null;
+  task.capabilityLoad = null;
+  task.contextSnapshot = null;
+  task.contextState = { phase: 'idle', message: '' };
+  task.usage = null;
+  task.status = 'completed';
+  task.updatedAt = Date.now();
+  if (!task.messages.some((message) => message.role === 'user')) {
+    task.title = task.kind === 'assistant' ? primaryAssistant.name : truncate(prompt, 34);
+  }
+  messageUI.editingTaskId = null;
+  messageUI.editingMessageId = null;
+  await sendTaskMessage({ prompt });
 }
 
 async function resolvePermission(permissionId, action) {
