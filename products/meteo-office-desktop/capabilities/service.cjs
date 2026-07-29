@@ -13,6 +13,7 @@ const ComputerConnector = require('./computer-connector.js');
 const ComputerRuntime = require('./computer-runtime.cjs');
 const OfficeConnector = require('./office-connector.js');
 const OfficeRuntime = require('./office-runtime.cjs');
+const WeatherConnector = require('./weather-connector.js');
 const { compareSkillVersions } = require('./skill-version.cjs');
 
 const INSPECTION_TTL_MS = 20 * 60 * 1000;
@@ -101,6 +102,16 @@ function createCapabilityService({
     return workspace;
   }
 
+  function weatherWorkspace(request = {}) {
+    if (request.workspace && path.isAbsolute(request.workspace)) {
+      const workspace = path.resolve(request.workspace);
+      if (fs.existsSync(workspace) && fs.statSync(workspace).isDirectory()) return workspace;
+    }
+    const workspace = path.join(paths().root, 'weather-demo', 'workspace');
+    fs.mkdirSync(workspace, { recursive: true, mode: 0o700 });
+    return workspace;
+  }
+
   function materializeConnectorInput(input = {}, request = {}) {
     if (BrowserConnector.isBrowserConnector(input)) {
       const outputDir = path.join(paths().root, 'browser', 'artifacts');
@@ -122,6 +133,12 @@ function createCapabilityService({
         workspace: officeWorkspace(request),
       });
     }
+    if (WeatherConnector.isWeatherConnector(input)) {
+      return WeatherConnector.materialize(input, {
+        productRoot,
+        workspace: weatherWorkspace(request),
+      });
+    }
     return input;
   }
 
@@ -129,9 +146,28 @@ function createCapabilityService({
     if (BrowserConnector.isBrowserConnector(connector)) return [...BrowserConnector.SAFE_TOOLS];
     if (ComputerConnector.isComputerConnector(connector)) return [...ComputerConnector.SAFE_TOOLS];
     if (OfficeConnector.isOfficeConnector(connector)) return [...OfficeConnector.SAFE_TOOLS];
+    if (WeatherConnector.isWeatherConnector(connector)) {
+      return [...(WeatherConnector.PRESETS[connector.id]?.toolAllowlist || [])];
+    }
     return Array.isArray(connector.toolAllowlist)
       ? [...new Set(connector.toolAllowlist.map(String).filter(Boolean))]
       : null;
+  }
+
+  function ensureDemoWeatherConnectors() {
+    if (process.env.METEOMATE_DEMO !== '1' && process.env.METEOMATE_MOCK !== '1') return;
+    for (const preset of Object.values(WeatherConnector.PRESETS)) {
+      if (getRegistry().getConnector(preset.id)) continue;
+      const materialized = materializeConnectorInput({
+        ...preset,
+        enabled: true,
+        projectIds: [],
+      });
+      const { record, secrets } = ConnectorClient.normalizeConnector(materialized);
+      record.lastTest = ConnectorClient.normalizeLastTest(WeatherConnector.discoveryResult(preset.id));
+      record.secrets = encodeSecrets(secrets);
+      getRegistry().upsertConnector(record);
+    }
   }
 
   function connectorSelectedForRequest(connector, request = {}) {
@@ -675,6 +711,7 @@ function createCapabilityService({
   }
 
   function registrySnapshot() {
+    ensureDemoWeatherConnectors();
     const snapshot = getRegistry().snapshot();
     return {
       ...snapshot,
@@ -865,12 +902,15 @@ function createCapabilityService({
       : existing?.lastTest;
     const managedDesktopConnector = BrowserConnector.isBrowserConnector(preparedInput)
       || ComputerConnector.isComputerConnector(preparedInput)
-      || OfficeConnector.isOfficeConnector(preparedInput);
+      || OfficeConnector.isOfficeConnector(preparedInput)
+      || WeatherConnector.isWeatherConnector(preparedInput);
     if (managedDesktopConnector && preparedInput.enabled !== false && effectiveLastTest?.ok !== true) {
       const name = ComputerConnector.isComputerConnector(preparedInput)
         ? '桌面应用操作'
         : OfficeConnector.isOfficeConnector(preparedInput)
           ? 'Office 成果物'
+          : WeatherConnector.isWeatherConnector(preparedInput)
+            ? preparedInput.name
           : '浏览器操作';
       throw new Error(`启用${name}前，请先完成连接测试`);
     }
@@ -946,6 +986,9 @@ function createCapabilityService({
     }
     if (enabled && OfficeConnector.isOfficeConnector(record) && record.lastTest?.ok !== true) {
       throw new Error('启用 Office 成果物前，请先完成连接测试');
+    }
+    if (enabled && WeatherConnector.isWeatherConnector(record) && record.lastTest?.ok !== true) {
+      throw new Error(`启用${record.name}前，请先完成连接测试`);
     }
     record.enabled = Boolean(enabled);
     record.updatedAt = Date.now();

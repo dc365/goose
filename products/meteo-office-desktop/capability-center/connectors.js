@@ -12,6 +12,11 @@
   function managedRuntimeSummary(lastTest) {
     const runtime = lastTest?.result?.runtime;
     if (!runtime) return '';
+    if (runtime.source === 'bundled-weather-demo') {
+      return `产品内置离线气象 MCP ${runtime.serverVersion || ''} · 构造案例 ${runtime.caseId || ''} · 非实况`
+        .replace(/\s+·/g, ' ·')
+        .trim();
+    }
     if (runtime.driverVersion) {
       const source = {
         'bundled-runtime': '产品内置运行时',
@@ -117,12 +122,28 @@
     const source = binding || preset || {};
     const managedPreset = Boolean(preset);
     const computerPreset = preset?.connectorType === 'computer' || binding?.connectorType === 'computer';
+    const browserPreset = preset?.connectorType === 'browser' || binding?.connectorType === 'browser';
+    const weatherPreset = String(preset?.connectorType || binding?.connectorType || '').startsWith('weather')
+      || preset?.connectorType === 'gis-map'
+      || binding?.connectorType === 'gis-map';
+    const managedTitle = computerPreset
+      ? '启用桌面应用操作'
+      : browserPreset
+        ? '启用浏览器操作'
+        : `启用${source.name || item?.name || '内置工具服务'}`;
+    const managedDescription = computerPreset
+      ? '由 MeteoMate 托管 Cua Driver 内嵌进程、系统权限和安全工具范围；桌面交互仍经过 ACP 审批'
+      : browserPreset
+        ? '由 MeteoMate 托管 Playwright MCP 版本、隔离模式和安全工具范围'
+        : weatherPreset
+          ? '由 MeteoMate 托管离线构造数据、诊断口径、非官方水印和安全工具范围'
+          : '由 MeteoMate 托管运行时版本和安全工具范围';
     const toolAllowlist = binding?.toolAllowlist || preset?.toolAllowlist || null;
     const transport = requestedTransport || source.transport || 'stdio';
     let latestTest = binding?.lastTest || null;
-    modal(`<header class="capability-modal-header connector-modal-header"><div><span class="connector-modal-eyebrow">MCP TOOL SERVICE</span><h2>${binding ? '管理工具服务' : managedPreset ? `启用${computerPreset ? '桌面应用' : '浏览器'}操作` : '添加工具服务'}</h2><p>连接配置与项目授权保存在当前用户空间，凭据仅保留在本机。</p></div><button data-modal-close aria-label="关闭工具服务配置">×</button></header>
+    modal(`<header class="capability-modal-header connector-modal-header"><div><span class="connector-modal-eyebrow">MCP TOOL SERVICE</span><h2>${binding ? '管理工具服务' : managedPreset ? managedTitle : '添加工具服务'}</h2><p>连接配置与项目授权保存在当前用户空间，凭据仅保留在本机。</p></div><button data-modal-close aria-label="关闭工具服务配置">×</button></header>
       <div class="capability-modal-body connector-editor">
-        ${managedPreset ? `<div class="connector-test-result full success">由 MeteoMate 托管${computerPreset ? ' Cua Driver 内嵌进程、系统权限和安全工具范围；桌面交互仍经过 ACP 审批' : ' Playwright MCP 版本、隔离模式和安全工具范围'}；测试成功后会自动保存并启用，之后可调整项目范围。</div>` : ''}
+        ${managedPreset ? `<div class="connector-test-result full success">${escapeHtml(managedDescription)}；测试成功后会自动保存并启用，之后可调整项目范围。</div>` : ''}
         <section class="connector-editor-section">
           <div class="connector-section-heading"><div><span>01</span><h3>基本信息</h3></div><p>用于在任务和技能中识别这个工具服务。</p></div>
           <div class="connector-form-grid">

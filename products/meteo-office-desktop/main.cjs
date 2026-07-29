@@ -24,6 +24,7 @@ const PermissionPolicy = require('./capabilities/permission-policy.cjs');
 const ComputerPip = require('./capabilities/computer-pip-controller.cjs');
 const OfficeArtifactCollector = require('./capabilities/office-artifact-collector.cjs');
 const ArtifactPreview = require('./capabilities/artifact-preview.cjs');
+const WeatherConnector = require('./capabilities/weather-connector.js');
 const ProjectWorkspace = require('./capabilities/project-workspace.cjs');
 const SessionPlatformExtensions = require('./capabilities/session-platform-extensions.cjs');
 const ContextWindow = require('./harness/context-window');
@@ -2412,13 +2413,30 @@ function runMockTask(request) {
   const taskId = request.taskId;
   let cancelled = false;
   const timers = [];
-  const chunks = [
-    '## MeteoMate 演示模式\n\n当前尚未调用真实 Goose 模型。\n\n',
-    `**已选择专家：** ${request.expertName}\n\n`,
-    request.workspace ? `**项目工作区：** \`${request.workspace}\`\n\n` : '**项目工作区：** 未选择\n\n',
-    '### 建议执行计划\n\n1. 核验资料时次与数据来源\n2. 调用气象数据和诊断工具\n3. 生成结构化结论与证据链\n4. 通过 Artifact Service 生成 DOCX、PPTX、XLSX 或 PDF 成果物\n\n',
-    '> 请先完成 Goose Provider 配置，或接入 `weather-data-mcp`、`weather-diagnosis-mcp` 与 `artifact-mcp`。\n',
-  ];
+  const demoWorkspace = request.workspace && path.isAbsolute(request.workspace)
+    ? request.workspace
+    : path.join(app.getPath('userData'), 'demo-workspace');
+  let artifacts = [];
+  let artifactError = '';
+  try {
+    artifacts = WeatherConnector.createDemoArtifacts(demoWorkspace);
+  } catch (error) {
+    artifactError = String(error?.message || error);
+  }
+  const response = WeatherConnector.buildDemoResponse({
+    prompt: request.prompt,
+    expertName: request.expertName,
+    workspace: demoWorkspace,
+    artifacts,
+  }).replace('## MeteoMate 可运行演示 · 构造案例', '## MeteoMate 演示模式 · 可运行构造案例');
+  const firstBreak = response.indexOf('\n\n### ', Math.floor(response.length / 3));
+  const secondBreak = response.indexOf('\n\n### ', Math.floor(response.length * 0.7));
+  const chunks = firstBreak > 0 && secondBreak > firstBreak
+    ? [response.slice(0, firstBreak), response.slice(firstBreak, secondBreak), response.slice(secondBreak)]
+    : [response];
+  if (artifactError) {
+    chunks.push(`\n\n> 演示成果物写入失败：${artifactError}\n`);
+  }
 
   sendRuntimeEvent({ type: 'turn_started', taskId, runtime: 'mock', sessionId: null });
   chunks.forEach((chunk, index) => {
@@ -2426,6 +2444,13 @@ function runMockTask(request) {
       if (cancelled) return;
       sendRuntimeEvent({ type: 'assistant_message_delta', taskId, runtime: 'mock', text: chunk });
       if (index === chunks.length - 1) {
+        artifacts.forEach((artifact) => sendRuntimeEvent({
+          type: 'artifact_created',
+          taskId,
+          runtime: 'mock',
+          toolCallId: 'meteomate-weather-demo',
+          artifact,
+        }));
         sendRuntimeEvent({ type: 'turn_completed', taskId, runtime: 'mock', sessionId: null });
         activeHeadlessRuns.delete(taskId);
       }
@@ -2448,6 +2473,15 @@ function runMockTask(request) {
 function runMockTeamTask(request) {
   const taskId = request.taskId;
   const team = ExpertTeam.normalizeDefinition(request.team);
+  const demoWorkspace = request.workspace && path.isAbsolute(request.workspace)
+    ? request.workspace
+    : path.join(app.getPath('userData'), 'demo-workspace');
+  let artifacts = [];
+  try {
+    artifacts = WeatherConnector.createDemoArtifacts(demoWorkspace);
+  } catch {
+    artifacts = [];
+  }
   const teamRun = ExpertTeam.createRunState(team, {
     id: request.runAttemptId || `team-run-${crypto.randomUUID()}`,
   });
@@ -2497,7 +2531,7 @@ function runMockTeamTask(request) {
         runtime: 'mock',
         runId: teamRun.id,
         teamMemberId: node.id,
-        summary: `${node.expert.name}已完成“${node.objective || '专业分析'}”的演示交接。`,
+        summary: WeatherConnector.teamMemberSummary(node.expert.id),
         completedAt: Date.now(),
       }));
     });
@@ -2514,9 +2548,21 @@ function runMockTeamTask(request) {
     type: 'assistant_message_delta',
     taskId,
     runtime: 'mock',
-    text: `## ${team.name}演示结果\n\n${team.nodes.map((node) => `- **${node.expert.name}**：已完成独立分析并向负责人交接。`).join('\n')}\n\n负责人已汇总各成员结果。当前为演示模式，配置 Goose Provider 后将执行真实的独立 Agent 会话。\n`,
+    text: WeatherConnector.buildDemoResponse({
+      prompt: request.prompt,
+      expertName: team.name,
+      workspace: demoWorkspace,
+      artifacts,
+    }).replace('## MeteoMate 可运行演示 · 构造案例', `## ${team.name} · 演示模式联合研判`),
   }), 320);
   schedule(() => {
+    artifacts.forEach((artifact) => sendRuntimeEvent({
+      type: 'artifact_created',
+      taskId,
+      runtime: 'mock',
+      toolCallId: 'meteomate-weather-demo-team',
+      artifact,
+    }));
     sendRuntimeEvent({
       type: 'team_completed',
       taskId,
