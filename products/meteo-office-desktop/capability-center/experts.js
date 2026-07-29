@@ -157,6 +157,9 @@
     const latest = new Map();
     for (const workflow of [...list(state.workflowVersions), ...list(state.workflows)]) {
       if (workflow?.metadata?.status !== 'published') continue;
+      if (list(workflow.spec?.nodes).some((node) =>
+        node?.type === 'expert' || node?.capability?.kind === 'Expert'
+      )) continue;
       const reference = `${workflow.metadata.id}@${workflow.metadata.version}`;
       if (latest.has(reference)) continue;
       latest.set(reference, {

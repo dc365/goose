@@ -12,6 +12,83 @@ const validation = Workflow.validateWorkflow(template);
 assert.equal(validation.valid, true);
 assert.equal(validation.definition.spec.nodes.length, 9);
 assert.ok(Workflow.executionWaves(template).some((wave) => wave.length === 2));
+assert.equal(template.spec.nodes.some((node) =>
+  node.type === 'expert' || node.capability?.kind === 'Expert'
+), false);
+
+const qualityReviewVariables = Workflow.availableVariables(template, 'quality-review');
+assert.deepEqual(
+  qualityReviewVariables.find((group) => group.sourceId === 'input').variables,
+  [
+    {
+      name: 'region',
+      label: '预报区域',
+      type: 'String',
+      reference: '${input.region}',
+    },
+    {
+      name: 'forecastDate',
+      label: '预报日期',
+      type: 'String',
+      reference: '${input.forecastDate}',
+    },
+  ],
+);
+assert.deepEqual(
+  qualityReviewVariables
+    .filter((group) => group.sourceId !== 'input')
+    .map((group) => group.sourceId),
+  ['data-check', 'situation', 'heavy-rain', 'convection'],
+);
+assert.ok(
+  qualityReviewVariables
+    .find((group) => group.sourceId === 'heavy-rain')
+    .variables
+    .some((variable) =>
+      variable.reference === '${nodes.heavy-rain.outputs.text}'
+      && variable.type === 'String'
+    ),
+);
+
+const legacyExpertWorkflow = {
+  metadata: {
+    id: 'legacy-expert-workflow',
+    name: '旧专家节点',
+    version: '1.0.0',
+    status: 'published',
+  },
+  spec: {
+    nodes: [
+      { id: 'input', type: 'input', name: '输入' },
+      {
+        id: 'analysis',
+        type: 'expert',
+        name: '专家研判',
+        description: '研判强降水风险。',
+        capability: { kind: 'Expert', id: 'heavy-rain-expert' },
+      },
+      { id: 'output', type: 'output', name: '输出' },
+    ],
+    edges: [
+      { from: 'input.success', to: 'analysis.input' },
+      { from: 'analysis.success', to: 'output.input' },
+    ],
+  },
+};
+const migratedLegacyWorkflow = Workflow.normalizeWorkflow(legacyExpertWorkflow);
+const migratedAnalysisNode = migratedLegacyWorkflow.spec.nodes.find((node) => node.id === 'analysis');
+assert.equal(migratedAnalysisNode.type, 'llm');
+assert.equal(migratedAnalysisNode.capability, null);
+assert.equal(migratedAnalysisNode.config.prompt, '研判强降水风险。');
+assert.equal(migratedLegacyWorkflow.metadata.status, 'draft');
+const preservedLegacySnapshot = Workflow.normalizeWorkflow(legacyExpertWorkflow, {
+  preserveDigest: true,
+  migrateLegacyExperts: false,
+});
+assert.equal(preservedLegacySnapshot.spec.nodes.find((node) => node.id === 'analysis').type, 'expert');
+assert.equal(preservedLegacySnapshot.metadata.status, 'published');
+assert.ok(Workflow.validateWorkflow(legacyExpertWorkflow).errors
+  .some((error) => error.includes('不能调用专家')));
 
 const published = Workflow.publishWorkflow(template, {
   now: 1_700_000_000_000,
@@ -24,8 +101,19 @@ assert.ok(published.digest);
 const structuralRun = Workflow.createStructuralRun(published, {
   id: 'workflow-run-test',
   startedAt: 1_700_000_000_100,
+  inputs: {
+    region: '福州',
+    forecastDate: '2026-07-29',
+  },
 });
 assert.equal(structuralRun.status, 'waiting_approval');
+assert.deepEqual(
+  structuralRun.nodeRuns.find((nodeRun) => nodeRun.nodeId === 'input').inputs,
+  {
+    region: '福州',
+    forecastDate: '2026-07-29',
+  },
+);
 assert.equal(
   structuralRun.nodeRuns.find((nodeRun) => nodeRun.nodeId === 'approval').status,
   'waiting_approval',
@@ -143,10 +231,10 @@ const team = {
     { id: 'review', expert: 'writing-expert', dependsOn: ['analysis'] },
   ],
 };
-const teamWorkflow = ExpertTeam.toWorkflowDefinition(team);
-assert.equal(Workflow.validateWorkflow(teamWorkflow).valid, true);
-assert.match(teamWorkflow.spec.nodes.at(-1).outputs.summary, /nodes\.review\.outputs\.result/);
-assert.doesNotMatch(teamWorkflow.spec.nodes.at(-1).outputs.summary, /team-output/);
+assert.throws(
+  () => ExpertTeam.toWorkflowDefinition(team),
+  /专家团不再转换为工作流/
+);
 
 const automation = Automation.normalizeAutomation({
   id: 'daily-product',
@@ -164,7 +252,11 @@ assert.equal(
   Automation.workflowCapabilityReference(automation),
   `${published.metadata.id}@${published.metadata.version}`,
 );
-assert.equal(Workflow.validateWorkflow(Automation.toWorkflowDefinition(automation)).valid, true);
+const automationWorkflow = Automation.toWorkflowDefinition(automation);
+assert.equal(Workflow.validateWorkflow(automationWorkflow).valid, true);
+assert.equal(automationWorkflow.spec.nodes.some((node) =>
+  node.type === 'expert' || node.capability?.kind === 'Expert'
+), false);
 
 const expert = {
   id: 'heavy-rain-expert',
@@ -203,6 +295,25 @@ assert.equal(resolved.ready, true);
 assert.deepEqual(resolved.workflows.map((workflow) => workflow.id), [published.metadata.id]);
 assert.deepEqual(resolved.toolSelections['office-artifacts'], ['artifact_create']);
 assert.deepEqual(resolved.workflowPermissionProfiles, ['artifact-approval']);
+
+const expertDependingOnLegacyWorkflow = {
+  id: 'legacy-workflow-user',
+  requiredWorkflows: ['legacy-expert-workflow@1.0.0'],
+};
+const legacyWorkflowCapabilities = CapabilityResolver.resolveCapabilities({
+  project,
+  expert: expertDependingOnLegacyWorkflow,
+  task: {},
+  catalog: {
+    workflows: [preservedLegacySnapshot],
+    experts: [expertDependingOnLegacyWorkflow, expert],
+    connectors: [],
+  },
+});
+assert.equal(legacyWorkflowCapabilities.ready, false);
+assert.ok(legacyWorkflowCapabilities.missing.some((item) =>
+  item.reason === 'expert-node-unsupported'
+));
 
 const missingWorkflowConnector = CapabilityResolver.resolveCapabilities({
   project,

@@ -10,6 +10,11 @@
     selectedWorkflowId: null,
     selectedNodeId: null,
     selectedRunId: null,
+    selectedRunNodeId: null,
+    inspectorTab: 'settings',
+    variableTargetId: null,
+    runDrawerOpen: false,
+    runDrawerTab: 'input',
     editingMetadata: false,
     paletteOpen: false,
     connectingFrom: null,
@@ -37,7 +42,10 @@
     current.workflows = current.workflows.map((workflow) => Harness.normalizeWorkflow(workflow));
     current.workflowVersions = current.workflowVersions.map((workflow) =>
       window.MeteoMateHarness.Shared.deepFreeze(
-        Harness.normalizeWorkflow(workflow, { preserveDigest: true })
+        Harness.normalizeWorkflow(workflow, {
+          preserveDigest: true,
+          migrateLegacyExperts: false,
+        })
       )
     );
     current.workflowRuns = current.workflowRuns.slice(0, 120).map((run) => {
@@ -67,6 +75,9 @@
       ...versions(),
       ...workflows().filter((item) => item.metadata.status === 'published'),
     ]) {
+      if (workflow.spec?.nodes?.some((node) =>
+        node.type === 'expert' || node.capability?.kind === 'Expert'
+      )) continue;
       const key = `${workflow.metadata.id}@${workflow.metadata.version}`;
       if (!catalog.has(key)) catalog.set(key, workflow);
     }
@@ -191,6 +202,12 @@
     if (!workflow) return;
     ui.selectedWorkflowId = workflow.metadata.id;
     ui.selectedNodeId = null;
+    ui.selectedRunId = null;
+    ui.selectedRunNodeId = null;
+    ui.inspectorTab = 'settings';
+    ui.variableTargetId = null;
+    ui.runDrawerOpen = false;
+    ui.runDrawerTab = 'input';
     ui.mode = workflow.spec.ui?.defaultMode || 'canvas';
     ui.screen = 'editor';
     ui.paletteOpen = false;
@@ -225,6 +242,8 @@
     ui.screen = 'library';
     ui.selectedNodeId = null;
     ui.selectedRunId = null;
+    ui.selectedRunNodeId = null;
+    ui.runDrawerOpen = false;
     ui.paletteOpen = false;
     ui.connectingFrom = null;
     ui.contextMenu = null;
@@ -299,9 +318,6 @@
   }
 
   function defaultNode(type, index) {
-    const expert = typeof allExperts === 'function'
-      ? allExperts().find((item) => item.kind !== 'team')
-      : null;
     const workflow = selectedWorkflow();
     const childWorkflow = publishedWorkflowCatalog()
       .find((item) => item.metadata.id !== workflow?.metadata.id);
@@ -315,7 +331,6 @@
     const labels = {
       input: '业务输入',
       trigger: '触发器',
-      expert: '专家任务',
       llm: '大模型',
       classifier: '问题分类',
       extractor: '参数提取',
@@ -335,17 +350,15 @@
       delay: '延时等待',
       output: '交付结果',
     };
-    const capability = type === 'expert'
-      ? { kind: 'Expert', id: expert?.id || '', version: expert?.version || '' }
-      : type === 'tool'
-        ? { kind: 'Tool', connectorId: 'local-workspace', toolName: '' }
-        : type === 'workflow'
-          ? {
-              kind: 'Workflow',
-              id: childWorkflow?.metadata.id || '',
-              version: childWorkflow?.metadata.version || '',
-            }
-          : null;
+    const capability = type === 'tool'
+      ? { kind: 'Tool', connectorId: 'local-workspace', toolName: '' }
+      : type === 'workflow'
+        ? {
+            kind: 'Workflow',
+            id: childWorkflow?.metadata.id || '',
+            version: childWorkflow?.metadata.version || '',
+          }
+        : null;
     const configs = {
       trigger: { mode: 'manual' },
       llm: { model: '', prompt: '' },
@@ -602,19 +615,49 @@
     }
   }
 
-  function runStructuralTest() {
+  function openRunDrawer(runId = '') {
+    const workflow = selectedWorkflow();
+    if (!workflow) return;
+    const run = runs().find((item) =>
+      item.id === runId && item.workflowId === workflow.metadata.id
+    );
+    ui.selectedRunId = run?.id || null;
+    ui.selectedRunNodeId = run?.nodeRuns?.find((item) => item.status === 'waiting_approval')?.nodeId
+      || [...(run?.nodeRuns || [])].reverse().find((item) => item.status === 'completed')?.nodeId
+      || run?.nodeRuns?.[0]?.nodeId
+      || null;
+    ui.runDrawerTab = run ? 'result' : 'input';
+    ui.runDrawerOpen = true;
+    ui.selectedNodeId = null;
+    render();
+  }
+
+  function closeRunDrawer() {
+    ui.runDrawerOpen = false;
+    ui.selectedRunNodeId = null;
+    render();
+  }
+
+  function runStructuralTest(inputs = {}) {
     const workflow = selectedWorkflow();
     if (!workflow) return;
     try {
       const run = Harness.createStructuralRun(workflow, {
         id: `workflow-run-${Date.now()}`,
         source: 'structural-test',
+        inputs,
         catalog: publishedWorkflowCatalog(),
       });
       state.workflowRuns.unshift(run);
       state.workflowRuns = state.workflowRuns.slice(0, 120);
       ui.selectedRunId = run.id;
-      ui.screen = 'run';
+      ui.selectedRunNodeId = run.nodeRuns.find((item) => item.status === 'waiting_approval')?.nodeId
+        || [...run.nodeRuns].reverse().find((item) => item.status === 'completed')?.nodeId
+        || run.nodeRuns[0]?.nodeId
+        || null;
+      ui.runDrawerOpen = true;
+      ui.runDrawerTab = 'result';
+      ui.screen = 'editor';
       ui.error = '';
       ui.message = run.status === 'waiting_approval'
         ? '结构试跑等待审批'
@@ -648,6 +691,9 @@
           : run.status === 'waiting_approval'
             ? '已进入驳回分支，等待下一项审批'
             : '已沿驳回分支完成结构试跑';
+      ui.selectedRunNodeId = run.nodeRuns.find((item) => item.status === 'waiting_approval')?.nodeId
+        || [...run.nodeRuns].reverse().find((item) => item.status === 'completed')?.nodeId
+        || ui.selectedRunNodeId;
       ui.error = '';
     } catch (error) {
       ui.error = error?.message || '审批处理失败';
@@ -727,6 +773,7 @@
       ui.paletteOpen = false;
       ui.connectingFrom = null;
       ui.contextMenu = null;
+      ui.runDrawerOpen = false;
     }
   }
 
@@ -756,6 +803,8 @@
     removeEdge,
     setViewport,
     publishSelected,
+    openRunDrawer,
+    closeRunDrawer,
     runStructuralTest,
     approveSelectedRun,
     importWorkflow,

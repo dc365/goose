@@ -3110,6 +3110,9 @@ function publishedAutomationWorkflowOptions() {
   const options = new Map();
   for (const workflow of [...(state.workflowVersions || []), ...(state.workflows || [])]) {
     if (workflow?.metadata?.status !== 'published') continue;
+    if ((workflow.spec?.nodes || []).some((node) =>
+      node?.type === 'expert' || node?.capability?.kind === 'Expert'
+    )) continue;
     const reference = `${workflow.metadata.id}@${workflow.metadata.version}`;
     if (!options.has(reference)) options.set(reference, workflow);
   }

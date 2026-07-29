@@ -89,6 +89,7 @@
       recursive: '存在递归依赖',
       unpinned: '未固定发布版本',
       'version-mismatch': '版本不匹配',
+      'expert-node-unsupported': '含不受支持的专家节点',
     };
     const label = labels[item.type] || '能力';
     const reason = reasons[item.reason];
@@ -305,9 +306,12 @@
           addToolRequirement(connectorId, toolName);
         }
         if (node.type === 'expert' || node.capability?.kind === 'Expert') {
-          const expertId = String(node.capability?.id || '').trim();
-          const expertVersion = String(node.capability?.version || '').trim();
-          if (expertId) includeExpertDependencies(expertId, expertVersion);
+          addMissing({
+            type: 'workflow',
+            id: `${key}:${node.id || 'expert-node'}`,
+            required: true,
+            reason: 'expert-node-unsupported',
+          });
         }
         if (node.type === 'workflow' || node.capability?.kind === 'Workflow') {
           const childId = String(node.capability?.id || '').trim();

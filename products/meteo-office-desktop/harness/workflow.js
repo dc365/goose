@@ -11,7 +11,6 @@
   const NODE_TYPES = Object.freeze([
     'input',
     'trigger',
-    'expert',
     'llm',
     'classifier',
     'extractor',
@@ -79,16 +78,23 @@
     };
   }
 
-  function normalizeNode(node = {}, index = 0) {
+  function normalizeNode(node = {}, index = 0, options = {}) {
     const requestedType = String(node.type || '').trim();
-    const type = requestedType || 'expert';
+    const hasLegacyExpertReference = requestedType === 'expert' || node.capability?.kind === 'Expert';
+    const migrateLegacyExpert = hasLegacyExpertReference && options.migrateLegacyExpert !== false;
+    const type = migrateLegacyExpert ? 'llm' : (requestedType || 'llm');
     const id = idValue(node.id, `${type}-${index + 1}`);
+    const description = String(node.description || '').trim();
+    const config = Shared.deepClone(object(node.config));
+    if (migrateLegacyExpert && !String(config.prompt || '').trim()) {
+      config.prompt = description || '请根据上游输入完成此步骤，并返回可供下游节点引用的结构化结果。';
+    }
     return {
       id,
       type,
       name: String(node.name || node.title || id).trim(),
-      description: String(node.description || '').trim(),
-      capability: normalizeCapability(node.capability),
+      description,
+      capability: migrateLegacyExpert ? null : normalizeCapability(node.capability),
       skills: list(node.skills)
         .map((item) => typeof item === 'string'
           ? { id: item, version: '' }
@@ -96,7 +102,7 @@
         .filter((item) => item.id),
       inputs: Shared.deepClone(object(node.inputs)),
       outputs: Shared.deepClone(object(node.outputs)),
-      config: Shared.deepClone(object(node.config)),
+      config,
       retry: {
         maxAttempts: Shared.clampNumber(node.retry?.maxAttempts, 1, 5, 1),
         delaySeconds: Shared.clampNumber(node.retry?.delaySeconds, 0, 300, 0),
@@ -154,6 +160,11 @@
   function normalizeWorkflow(workflow = {}, options = {}) {
     const metadata = object(workflow.metadata);
     const spec = object(workflow.spec);
+    const sourceNodes = list(spec.nodes || workflow.nodes);
+    const hasLegacyExpertNodes = sourceNodes.some((node) =>
+      node?.type === 'expert' || node?.capability?.kind === 'Expert'
+    );
+    const migrateLegacyExperts = options.migrateLegacyExperts !== false;
     const now = options.now || Date.now();
     const normalized = {
       apiVersion: workflow.apiVersion || 'meteomate.ai/v1alpha1',
@@ -168,9 +179,11 @@
         visibility: ['private', 'organization', 'public'].includes(metadata.visibility)
           ? metadata.visibility
           : 'private',
-        status: ['draft', 'published', 'disabled', 'archived'].includes(metadata.status)
-          ? metadata.status
-          : 'draft',
+        status: hasLegacyExpertNodes && migrateLegacyExperts
+          ? 'draft'
+          : ['draft', 'published', 'disabled', 'archived'].includes(metadata.status)
+            ? metadata.status
+            : 'draft',
         revision: Math.max(1, Number(metadata.revision || workflow.revision) || 1),
       },
       spec: {
@@ -183,7 +196,9 @@
           failurePolicy: spec.policy?.failurePolicy === 'continue' ? 'continue' : 'abort',
           maxWorkflowDepth: Shared.clampNumber(spec.policy?.maxWorkflowDepth, 1, 5, 3),
         },
-        nodes: list(spec.nodes || workflow.nodes).map(normalizeNode),
+        nodes: sourceNodes.map((node, index) =>
+          normalizeNode(node, index, { migrateLegacyExpert: migrateLegacyExperts })
+        ),
         edges: list(spec.edges || workflow.edges).map(normalizeEdge),
         ui: {
           defaultMode: spec.ui?.defaultMode === 'steps' ? 'steps' : 'canvas',
@@ -249,6 +264,121 @@
   function variableReferences(value) {
     const serialized = JSON.stringify(value || {});
     return [...serialized.matchAll(/\$\{([^}]+)\}/g)].map((match) => match[1]);
+  }
+
+  function schemaTypeLabel(schema) {
+    const value = schema && typeof schema === 'object' ? schema.type : schema;
+    return {
+      string: 'String',
+      number: 'Number',
+      integer: 'Integer',
+      boolean: 'Boolean',
+      array: 'Array',
+      object: 'Object',
+      null: 'Null',
+    }[String(value || '').toLowerCase()] || 'Any';
+  }
+
+  function nodeOutputFields(node, options = {}) {
+    const defaults = {
+      llm: { text: 'string', result: 'object' },
+      classifier: { class: 'string', confidence: 'number' },
+      extractor: {},
+      knowledge: { records: 'array', text: 'string' },
+      document: { text: 'string', metadata: 'object' },
+      tool: { result: 'object', artifact: 'object' },
+      http: { body: 'object', status: 'integer', headers: 'object' },
+      code: { result: 'object' },
+      workflow: {},
+      condition: { result: 'boolean' },
+      iteration: { items: 'array' },
+      join: { results: 'array' },
+      transform: { result: 'object' },
+      assign: { result: 'object' },
+      approval: { decision: 'string' },
+      template: { text: 'string' },
+      delay: { completedAt: 'string' },
+    };
+    const fields = new Map();
+    const addShape = (shape) => {
+      const source = object(shape);
+      const properties = source.type === 'object' && source.properties
+        ? object(source.properties)
+        : source;
+      for (const [name, schema] of Object.entries(properties)) {
+        if (!name || ['type', 'required', 'additionalProperties'].includes(name)) continue;
+        fields.set(name, {
+          name,
+          label: String(schema?.title || name),
+          type: schemaTypeLabel(schema),
+        });
+      }
+    };
+    addShape(defaults[node.type]);
+    if (node.type === 'extractor' && node.config?.schema) {
+      try {
+        addShape(JSON.parse(node.config.schema));
+      } catch {}
+    }
+    if (node.type === 'workflow') {
+      const child = workflowCatalog(options).find((workflow) =>
+        workflow.metadata.id === node.capability?.id
+        && workflow.metadata.version === node.capability?.version
+      );
+      if (child) addShape(child.spec.outputSchema);
+    }
+    for (const [name, value] of Object.entries(object(node.outputs))) {
+      fields.set(name, {
+        name,
+        label: name,
+        type: value && typeof value === 'object' ? schemaTypeLabel(value) : 'Any',
+      });
+    }
+    return [...fields.values()];
+  }
+
+  function availableVariables(workflow, nodeId, options = {}) {
+    const { definition, nodeIndex, incoming } = graph(workflow);
+    if (!nodeIndex.has(nodeId)) return [];
+    const groups = [];
+    const inputFields = Object.entries(object(definition.spec.inputSchema?.properties))
+      .map(([name, schema]) => ({
+        name,
+        label: String(schema?.title || name),
+        type: schemaTypeLabel(schema),
+        reference: `\${input.${name}}`,
+      }));
+    if (inputFields.length) {
+      groups.push({
+        sourceId: 'input',
+        sourceName: '工作流输入',
+        sourceType: 'input',
+        variables: inputFields,
+      });
+    }
+    const ancestorIds = new Set();
+    const pending = incoming.get(nodeId).map((edge) => edge.from.nodeId);
+    while (pending.length) {
+      const currentId = pending.shift();
+      if (!currentId || ancestorIds.has(currentId)) continue;
+      ancestorIds.add(currentId);
+      for (const edge of incoming.get(currentId) || []) pending.push(edge.from.nodeId);
+    }
+    for (const node of definition.spec.nodes) {
+      if (!ancestorIds.has(node.id) || ['input', 'trigger'].includes(node.type)) continue;
+      const variables = nodeOutputFields(node, options).map((field) => ({
+        ...field,
+        reference: `\${nodes.${node.id}.outputs.${field.name}}`,
+      }));
+      if (!variables.length) continue;
+      groups.push({
+        sourceId: node.id,
+        sourceName: node.name,
+        sourceType: node.type,
+        variables,
+      });
+    }
+    return groups;
   }
 
   function workflowCatalog(options = {}) {
@@ -320,9 +450,15 @@
   }
 
   function validateWorkflow(workflow, options = {}) {
+    const rawNodes = list(object(workflow?.spec).nodes || workflow?.nodes);
     const definition = normalizeWorkflow(workflow);
     const errors = [];
     const warnings = [];
+    for (const node of rawNodes) {
+      if (node?.type === 'expert' || node?.capability?.kind === 'Expert') {
+        errors.push(`节点“${node?.name || node?.id || '未命名'}”不能调用专家；请改用 LLM、Skill、工具或子工作流节点`);
+      }
+    }
     if (definition.apiVersion !== 'meteomate.ai/v1alpha1') {
       errors.push(`不支持的工作流版本：${definition.apiVersion}`);
     }
@@ -344,11 +480,8 @@
       nodeIds.add(node.id);
       nodeIndex.set(node.id, node);
       if (!NODE_TYPES.includes(node.type)) errors.push(`节点“${node.name}”类型不受支持`);
-      if (['expert', 'tool', 'workflow'].includes(node.type) && !node.capability) {
+      if (['tool', 'workflow'].includes(node.type) && !node.capability) {
         errors.push(`节点“${node.name}”缺少能力引用`);
-      }
-      if (node.type === 'expert' && node.capability?.kind !== 'Expert') {
-        errors.push(`节点“${node.name}”必须引用 Expert 能力`);
       }
       if (node.type === 'tool' && node.capability?.kind !== 'Tool') {
         errors.push(`节点“${node.name}”必须引用 Tool 能力`);
@@ -356,7 +489,6 @@
       if (node.type === 'workflow' && node.capability?.kind !== 'Workflow') {
         errors.push(`节点“${node.name}”必须引用 Workflow 能力`);
       }
-      if (node.type === 'expert' && !node.capability?.id) errors.push(`节点“${node.name}”缺少专家 ID`);
       if (node.type === 'workflow' && !node.capability?.id) errors.push(`节点“${node.name}”缺少工作流 ID`);
       if (node.type === 'tool' && (!node.capability?.connectorId || !node.capability?.toolName)) {
         errors.push(`节点“${node.name}”缺少工具服务或工具名称`);
@@ -595,6 +727,15 @@
         if (!nodeRun || ['completed', 'skipped'].includes(nodeRun.status)) continue;
         nodeRun.attempt = Math.max(1, Number(nodeRun.attempt) || 0);
         nodeRun.startedAt = nodeRun.startedAt || cursor;
+        nodeRun.inputs = node.type === 'input'
+          ? Shared.deepClone(run.inputs)
+          : {
+              references: variableReferences({
+                inputs: node.inputs,
+                outputs: node.outputs,
+                config: node.config,
+              }),
+            };
         if (node.type === 'approval') {
           nodeRun.status = 'waiting_approval';
           nodeRun.finishedAt = null;
@@ -711,76 +852,8 @@
     return advanceStructuralRun(workflow, run, input);
   }
 
-  function legacyTeamToWorkflow(team = {}) {
-    const nodes = list(team.nodes).map((node, index) => normalizeNode({
-      id: node.id || node.expert,
-      type: 'expert',
-      name: node.name || node.objective || node.expert,
-      description: node.objective || '',
-      capability: {
-        kind: 'Expert',
-        id: typeof node.expert === 'object' ? node.expert.id : node.expert,
-        version: typeof node.expert === 'object' ? node.expert.version : '',
-      },
-      position: { x: index * 240, y: 120 },
-    }, index));
-    const edges = [];
-    const roots = list(team.nodes).filter((node) => !list(node.dependsOn).length);
-    for (const node of list(team.nodes)) {
-      for (const dependencyId of list(node.dependsOn)) {
-        edges.push(normalizeEdge({
-          id: `${dependencyId}-${node.id}`,
-          from: `${dependencyId}.success`,
-          to: `${node.id}.input`,
-        }, edges.length));
-      }
-    }
-    nodes.unshift(normalizeNode({
-      id: 'team-input',
-      type: 'input',
-      name: '团队输入',
-      position: { x: -240, y: 120 },
-    }));
-    roots.forEach((node) => edges.push(normalizeEdge({
-      from: 'team-input.success',
-      to: `${node.id}.input`,
-    }, edges.length)));
-    const leaves = nodes
-      .filter((node) => node.type === 'expert')
-      .filter((node) => !edges.some((edge) => edge.from.nodeId === node.id));
-    nodes.push(normalizeNode({
-      id: 'team-output',
-      type: 'output',
-      name: '汇总交付',
-      outputs: {
-        summary: leaves[0] ? `\${nodes.${leaves[0].id}.outputs.result}` : '',
-        results: leaves.map((node) => `\${nodes.${node.id}.outputs.result}`),
-      },
-      position: { x: Math.max(1, nodes.length) * 240, y: 120 },
-    }, nodes.length));
-    leaves.forEach((node) => edges.push(normalizeEdge({
-      from: `${node.id}.success`,
-      to: 'team-output.input',
-    }, edges.length)));
-    return normalizeWorkflow({
-      metadata: {
-        id: `team-${idValue(team.id || team.name, 'legacy')}`,
-        name: team.name || '历史专家团',
-        version: team.version || '1.0.0',
-        description: team.mission || team.description || '',
-        status: 'published',
-      },
-      spec: {
-        inputSchema: { type: 'object' },
-        outputSchema: { type: 'object' },
-        policy: {
-          maxParallel: team.execution?.maxParallel || 3,
-          failurePolicy: team.execution?.failurePolicy || 'continue',
-        },
-        nodes,
-        edges,
-      },
-    });
+  function legacyTeamToWorkflow() {
+    throw new Error('专家团不再转换为工作流：专家团保留多 Agent 协作语义，工作流不能调用专家');
   }
 
   function legacyAutomationToWorkflow(automation = {}) {
@@ -806,12 +879,12 @@
           },
           {
             id: 'scheduled-task',
-            type: 'expert',
+            type: 'llm',
             name: automation.name || '定时任务',
             description: template.prompt || '',
-            capability: { kind: 'Expert', id: template.expertId || '' },
             skills: list(template.skillIds),
             inputs: { prompt: template.prompt || '' },
+            config: { prompt: template.prompt || '' },
           },
           {
             id: 'finish',
@@ -829,12 +902,12 @@
   }
 
   function createHeavyRainTemplate() {
-    const expertNode = (id, name, expertId, x, y, description) => ({
+    const modelNode = (id, name, x, y, description) => ({
       id,
-      type: 'expert',
+      type: 'llm',
       name,
       description,
-      capability: { kind: 'Expert', id: expertId, version: '1.0.0' },
+      config: { prompt: description },
       position: { x, y },
     });
     return normalizeWorkflow({
@@ -842,7 +915,7 @@
         id: 'daily-heavy-rain-product',
         name: '每日短临强降水产品',
         version: '0.1.0',
-        description: '资料检查、专家并行研判、质量审核、人工审批和多格式交付。',
+        description: '资料检查、并行智能研判、质量审核、人工审批和多格式交付。',
         tags: ['短临', '强降水', '业务产品'],
       },
       spec: {
@@ -873,11 +946,11 @@
             description: '预报区域、时次和需要使用的资料。',
             position: { x: 40, y: 180 },
           },
-          expertNode('data-check', '资料检查', 'data-expert', 280, 180, '检查雷达、实况和数值预报资料完整性。'),
-          expertNode('situation', '形势分析', 'synoptic-expert', 520, 180, '识别影响系统和未来演变。'),
-          expertNode('heavy-rain', '强降水研判', 'heavy-rain-expert', 760, 80, '评估落区、强度、持续时间和证据。'),
-          expertNode('convection', '强对流研判', 'convection-expert', 760, 280, '评估触发条件、风险类型和影响。'),
-          expertNode('quality-review', '汇总与 QA', 'writing-expert', 1000, 180, '汇总结论，核对证据、事实和业务表达。'),
+          modelNode('data-check', '资料检查', 280, 180, '检查雷达、实况和数值预报资料完整性。'),
+          modelNode('situation', '形势分析', 520, 180, '识别影响系统和未来演变。'),
+          modelNode('heavy-rain', '强降水研判', 760, 80, '评估落区、强度、持续时间和证据。'),
+          modelNode('convection', '强对流研判', 760, 280, '评估触发条件、风险类型和影响。'),
+          modelNode('quality-review', '汇总与 QA', 1000, 180, '汇总结论，核对证据、事实和业务表达。'),
           {
             id: 'approval',
             type: 'approval',
@@ -933,6 +1006,7 @@
     normalizeEdge,
     normalizeWorkflow,
     validateWorkflow,
+    availableVariables,
     publishWorkflow,
     executionWaves,
     createRun,

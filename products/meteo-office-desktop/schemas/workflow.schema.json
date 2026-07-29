@@ -50,13 +50,13 @@
             "required": ["id", "type", "name", "inputs", "outputs", "config", "retry", "timeoutSeconds", "onError", "position"],
             "properties": {
               "id": { "type": "string", "pattern": "^[a-zA-Z0-9._-]+$" },
-              "type": { "enum": ["input", "trigger", "expert", "llm", "classifier", "extractor", "knowledge", "document", "tool", "http", "code", "workflow", "condition", "iteration", "join", "transform", "assign", "approval", "template", "delay", "output"] },
+              "type": { "enum": ["input", "trigger", "llm", "classifier", "extractor", "knowledge", "document", "tool", "http", "code", "workflow", "condition", "iteration", "join", "transform", "assign", "approval", "template", "delay", "output"] },
               "name": { "type": "string", "minLength": 1, "maxLength": 120 },
               "description": { "type": "string", "maxLength": 2048 },
               "capability": {
                 "type": ["object", "null"],
                 "properties": {
-                  "kind": { "enum": ["Expert", "Tool", "Workflow"] },
+                  "kind": { "enum": ["Tool", "Workflow"] },
                   "id": { "type": "string", "maxLength": 200 },
                   "version": { "type": "string", "maxLength": 80 },
                   "connectorId": { "type": "string", "maxLength": 200 },

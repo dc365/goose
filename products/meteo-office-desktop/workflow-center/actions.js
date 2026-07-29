@@ -4,13 +4,6 @@
   const api = root.MeteoMateWorkflowCenter;
 
   function readCapability(node) {
-    if (node.type === 'expert') {
-      const expertId = document.getElementById('workflow-node-expert')?.value || '';
-      const expert = typeof allExperts === 'function'
-        ? allExperts().find((item) => item.id === expertId)
-        : null;
-      return { kind: 'Expert', id: expertId, version: expert?.version || '' };
-    }
     if (node.type === 'tool') {
       return {
         kind: 'Tool',
@@ -84,11 +77,12 @@
     const nodeId = event.currentTarget.dataset.nodeId;
     const node = api.selectedWorkflow()?.spec.nodes.find((item) => item.id === nodeId);
     if (!node) return;
+    const supportsSkills = ['llm', 'classifier', 'extractor'].includes(node.type);
     api.updateNode(nodeId, {
       name: document.getElementById('workflow-node-name')?.value.trim() || node.name,
       description: document.getElementById('workflow-node-description')?.value.trim() || '',
       capability: readCapability(node),
-      skills: node.type === 'expert'
+      skills: supportsSkills
         ? [...document.querySelectorAll('input[name="workflow-node-skills"]:checked')].map((input) => ({
             id: input.value,
             version: input.dataset.skillVersion || '',
@@ -103,6 +97,20 @@
       onError: document.getElementById('workflow-node-on-error')?.value === 'continue' ? 'continue' : 'abort',
     });
     render();
+  }
+
+  function commitPendingNodeForm() {
+    const form = document.getElementById('workflow-node-form');
+    if (form?.dataset.dirty === 'true') form.requestSubmit();
+  }
+
+  function markNodeFormDirty(form) {
+    form.dataset.dirty = 'true';
+    const state = document.querySelector('.workflow-save-state');
+    if (!state) return;
+    state.classList.add('dirty');
+    const copy = state.querySelector('span');
+    if (copy) copy.textContent = '节点有未保存修改';
   }
 
   function updateCanvasTransform() {
@@ -339,6 +347,7 @@
       const fromPort = portElement?.dataset.workflowPort
         || (node?.type === 'approval' ? 'approved' : 'success');
       api.ui.selectedNodeId = nodeId || null;
+      if (nodeId) api.ui.inspectorTab = 'settings';
       api.ui.paletteOpen = false;
       api.ui.contextMenu = {
         x: Math.max(8, Math.min(localX, availableWidth - 338)),
@@ -431,6 +440,8 @@
         if (!['Enter', ' '].includes(event.key)) return;
         event.preventDefault();
         api.ui.selectedNodeId = nodeElement.dataset.workflowNode;
+        api.ui.inspectorTab = 'settings';
+        api.ui.runDrawerOpen = false;
         render();
       });
     });
@@ -496,6 +507,7 @@
     });
     document.querySelectorAll('[data-workflow-mode]').forEach((element) => {
       element.addEventListener('click', () => {
+        commitPendingNodeForm();
         api.ui.mode = element.dataset.workflowMode === 'canvas' ? 'canvas' : 'steps';
         api.ui.contextMenu = null;
         const workflow = api.selectedWorkflow();
@@ -517,7 +529,10 @@
           element._didDrag = false;
           return;
         }
+        commitPendingNodeForm();
         api.ui.selectedNodeId = element.dataset.workflowNode;
+        api.ui.inspectorTab = 'settings';
+        api.ui.runDrawerOpen = false;
         render();
       });
     });
@@ -585,7 +600,11 @@
             : api.ui.connectingFrom;
           api.connectNodes(source.nodeId, targetNodeId, source.port);
         }
-        else api.ui.selectedNodeId = targetNodeId;
+        else {
+          api.ui.selectedNodeId = targetNodeId;
+          api.ui.inspectorTab = 'settings';
+          api.ui.runDrawerOpen = false;
+        }
         render();
       });
     });
@@ -597,6 +616,19 @@
           event.preventDefault();
           api.ui.editingMetadata = false;
           render();
+          return;
+        }
+        if (api.ui.runDrawerOpen) {
+          event.preventDefault();
+          api.closeRunDrawer();
+          return;
+        }
+        const variablePicker = document.querySelector('[data-workflow-variable-picker]');
+        if (variablePicker && !variablePicker.hidden) {
+          event.preventDefault();
+          variablePicker.hidden = true;
+          document.querySelector('[data-workflow-toggle-variables]')
+            ?.setAttribute('aria-expanded', 'false');
           return;
         }
         if (!api.ui.connectingFrom) return;
@@ -616,7 +648,17 @@
     });
     document.querySelectorAll('[data-workflow-close-inspector]').forEach((element) => {
       element.addEventListener('click', () => {
+        commitPendingNodeForm();
         api.ui.selectedNodeId = null;
+        render();
+      });
+    });
+    document.querySelectorAll('[data-workflow-inspector-tab]').forEach((element) => {
+      element.addEventListener('click', () => {
+        commitPendingNodeForm();
+        api.ui.inspectorTab = element.dataset.workflowInspectorTab === 'last-run'
+          ? 'last-run'
+          : 'settings';
         render();
       });
     });
@@ -626,7 +668,65 @@
         render();
       });
     });
-    document.getElementById('workflow-node-form')?.addEventListener('submit', saveNode);
+    const nodeForm = document.getElementById('workflow-node-form');
+    nodeForm?.addEventListener('submit', saveNode);
+    const markDirty = (event) => {
+      if (event.target.closest('[data-workflow-variable-picker]')) return;
+      markNodeFormDirty(nodeForm);
+    };
+    nodeForm?.addEventListener('input', markDirty);
+    nodeForm?.addEventListener('change', markDirty);
+    document.querySelectorAll('[data-workflow-variable-field]').forEach((element) => {
+      element.addEventListener('focus', () => {
+        api.ui.variableTargetId = element.id;
+      });
+    });
+    document.querySelectorAll('[data-workflow-toggle-variables]').forEach((element) => {
+      element.addEventListener('click', () => {
+        const picker = document.querySelector('[data-workflow-variable-picker]');
+        if (!picker) return;
+        picker.hidden = !picker.hidden;
+        element.setAttribute('aria-expanded', String(!picker.hidden));
+        if (!api.ui.variableTargetId) {
+          api.ui.variableTargetId = element.dataset.defaultTarget || '';
+        }
+        if (!picker.hidden) picker.querySelector('[data-workflow-variable-search]')?.focus();
+      });
+    });
+    document.querySelectorAll('[data-workflow-variable-search]').forEach((input) => {
+      input.addEventListener('input', () => {
+        const query = input.value.trim().toLowerCase();
+        document.querySelectorAll('[data-workflow-variable-group]').forEach((group) => {
+          let visible = 0;
+          group.querySelectorAll('[data-workflow-insert-variable]').forEach((option) => {
+            option.hidden = Boolean(query) && !option.dataset.variableSearch.includes(query);
+            if (!option.hidden) visible += 1;
+          });
+          group.hidden = visible === 0;
+        });
+      });
+    });
+    document.querySelectorAll('[data-workflow-insert-variable]').forEach((element) => {
+      element.addEventListener('click', () => {
+        const toggle = document.querySelector('[data-workflow-toggle-variables]');
+        const targetId = api.ui.variableTargetId || toggle?.dataset.defaultTarget || '';
+        const target = document.getElementById(targetId);
+        if (!target) {
+          api.ui.error = '请先将光标放到支持变量的输入框中';
+          render();
+          return;
+        }
+        const reference = element.dataset.workflowInsertVariable || '';
+        const start = Number.isInteger(target.selectionStart) ? target.selectionStart : target.value.length;
+        const end = Number.isInteger(target.selectionEnd) ? target.selectionEnd : start;
+        target.setRangeText(reference, start, end, 'end');
+        target.dispatchEvent(new Event('input', { bubbles: true }));
+        target.focus();
+        const picker = document.querySelector('[data-workflow-variable-picker]');
+        if (picker) picker.hidden = true;
+        toggle?.setAttribute('aria-expanded', 'false');
+      });
+    });
     document.getElementById('workflow-node-child')?.addEventListener('change', (event) => {
       const version = String(event.target.value || '').split('@').slice(1).join('@');
       const input = document.getElementById('workflow-node-version');
@@ -677,7 +777,58 @@
       element.addEventListener('click', api.redo);
     });
     document.querySelectorAll('[data-workflow-run]').forEach((element) => {
-      element.addEventListener('click', api.runStructuralTest);
+      element.addEventListener('click', () => {
+        commitPendingNodeForm();
+        api.openRunDrawer();
+      });
+    });
+    document.querySelectorAll('[data-workflow-open-run-drawer]').forEach((element) => {
+      element.addEventListener('click', () => {
+        api.openRunDrawer(element.dataset.workflowOpenRunDrawer || '');
+      });
+    });
+    document.querySelectorAll('[data-workflow-close-run-drawer]').forEach((element) => {
+      element.addEventListener('click', api.closeRunDrawer);
+    });
+    document.querySelectorAll('[data-workflow-run-tab]').forEach((element) => {
+      element.addEventListener('click', () => {
+        api.ui.runDrawerTab = element.dataset.workflowRunTab || 'input';
+        render();
+      });
+    });
+    document.querySelectorAll('[data-workflow-run-node]').forEach((element) => {
+      element.addEventListener('click', () => {
+        api.ui.selectedRunNodeId = element.dataset.workflowRunNode;
+        api.ui.runDrawerTab = 'detail';
+        render();
+      });
+    });
+    document.getElementById('workflow-run-input-form')?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      try {
+        const inputs = {};
+        document.querySelectorAll('[data-workflow-run-input]').forEach((input) => {
+          const name = input.dataset.workflowRunInput;
+          const type = input.dataset.inputType || 'string';
+          const value = input.value;
+          if (type === 'boolean') inputs[name] = value === 'true';
+          else if (type === 'number' || type === 'integer') inputs[name] = value === '' ? null : Number(value);
+          else if (type === 'array' || type === 'object') inputs[name] = value.trim()
+            ? JSON.parse(value)
+            : type === 'array' ? [] : {};
+          else inputs[name] = value;
+        });
+        api.runStructuralTest(inputs);
+      } catch (error) {
+        api.ui.error = `运行输入不是合法 JSON：${error.message}`;
+        render();
+      }
+    });
+    document.querySelectorAll('[data-copy-text]').forEach((element) => {
+      element.addEventListener('click', () => {
+        void navigator.clipboard.writeText(element.dataset.copyText || '');
+        element.textContent = '已复制';
+      });
     });
     document.querySelectorAll('[data-workflow-open-run]').forEach((element) => {
       element.addEventListener('click', () => {
@@ -715,6 +866,16 @@
         event.preventDefault();
         if (key === 'y' || event.shiftKey) api.redo();
         else api.undo();
+      });
+    }
+    if (!document._meteomateWorkflowRunShortcutBound) {
+      document._meteomateWorkflowRunShortcutBound = true;
+      document.addEventListener('keydown', (event) => {
+        if (!event.altKey || event.key.toLowerCase() !== 'r') return;
+        if (state.catalogTab !== 'workflows' || api.ui.screen !== 'editor') return;
+        if (event.target.closest?.('input, textarea, select, [contenteditable="true"]')) return;
+        event.preventDefault();
+        api.openRunDrawer();
       });
     }
     root.requestAnimationFrame(() => {

@@ -7,7 +7,6 @@
   const nodeMeta = Object.freeze({
     input: { label: '业务输入', mark: '入', tone: 'input' },
     trigger: { label: '触发器', mark: '启', tone: 'input' },
-    expert: { label: '专家任务', mark: '专', tone: 'expert' },
     llm: { label: '大模型', mark: '模', tone: 'model' },
     classifier: { label: '问题分类', mark: '分', tone: 'model' },
     extractor: { label: '参数提取', mark: '取', tone: 'model' },
@@ -30,7 +29,7 @@
 
   const nodeGroups = Object.freeze([
     ['开始', ['input', 'trigger']],
-    ['智能', ['expert', 'llm', 'classifier', 'extractor', 'knowledge']],
+    ['智能', ['llm', 'classifier', 'extractor', 'knowledge']],
     ['数据', ['document', 'transform', 'assign']],
     ['执行', ['tool', 'http', 'code', 'workflow']],
     ['逻辑', ['condition', 'iteration', 'join']],
@@ -58,6 +57,83 @@
       cancelled: '已取消',
       partial: '部分完成',
     }[status] || status;
+  }
+
+  function formatDuration(startedAt, finishedAt) {
+    if (!startedAt || !finishedAt) return '未完成';
+    const duration = Math.max(0, Number(finishedAt) - Number(startedAt));
+    return duration < 1000 ? `${duration} ms` : `${(duration / 1000).toFixed(2)} s`;
+  }
+
+  function formatJson(value) {
+    return JSON.stringify(value ?? {}, null, 2);
+  }
+
+  function defaultVariableTarget(node) {
+    return {
+      llm: 'workflow-node-prompt',
+      classifier: 'workflow-node-classifier-instruction',
+      extractor: 'workflow-node-extractor-instruction',
+      knowledge: 'workflow-node-query',
+      document: 'workflow-node-document-source',
+      http: 'workflow-node-http-body',
+      code: 'workflow-node-code-source',
+      condition: 'workflow-node-expression',
+      iteration: 'workflow-node-items',
+      transform: 'workflow-node-transform',
+      assign: 'workflow-node-assign',
+      template: 'workflow-node-template',
+    }[node.type] || '';
+  }
+
+  function renderVariablePicker(workflow, node) {
+    const groups = Harness.availableVariables(workflow, node.id, {
+      catalog: api.publishedWorkflowCatalog(),
+    });
+    if (!groups.length) return '';
+    return `
+      <section class="workflow-variable-section">
+        <div class="workflow-variable-intro">
+          <span><strong>输入变量</strong><small>只显示当前节点可访问的工作流输入和上游输出</small></span>
+          <button type="button" data-workflow-toggle-variables data-default-target="${escapeHtml(defaultVariableTarget(node))}">${icon('plus')} 插入变量</button>
+        </div>
+        <div class="workflow-variable-picker" data-workflow-variable-picker hidden>
+          <label class="workflow-variable-search">${icon('search')}<input data-workflow-variable-search placeholder="搜索来源或变量" autocomplete="off" /></label>
+          <div class="workflow-variable-groups">
+            ${groups.map((group) => {
+              const meta = nodeTypeMeta(group.sourceType);
+              return `<section data-workflow-variable-group>
+                <header><span class="workflow-node-mark ${meta.tone}">${meta.mark}</span><span><strong>${escapeHtml(group.sourceName)}</strong><small>${escapeHtml(group.sourceId)}</small></span></header>
+                ${group.variables.map((variable) => `<button type="button" data-workflow-insert-variable="${escapeHtml(variable.reference)}" data-variable-search="${escapeHtml(`${group.sourceName} ${group.sourceId} ${variable.label} ${variable.name} ${variable.type}`.toLowerCase())}"><span><strong>${escapeHtml(variable.label)}</strong><small>${escapeHtml(variable.name)}</small></span><em>${escapeHtml(variable.type)}</em></button>`).join('')}
+              </section>`;
+            }).join('')}
+          </div>
+        </div>
+      </section>
+    `;
+  }
+
+  function renderNodeLastRun(workflow, node) {
+    const run = workflowRuns(workflow.metadata.id)
+      .find((item) => item.nodeRuns.some((nodeRun) => nodeRun.nodeId === node.id));
+    const nodeRun = run?.nodeRuns.find((item) => item.nodeId === node.id);
+    if (!run || !nodeRun) {
+      return `<div class="workflow-node-run-empty"><span>${icon('play')}</span><strong>还没有节点运行记录</strong><p>先打开测试运行面板完成一次结构试跑，这里会保留输入、输出和相关事件。</p><button type="button" data-workflow-open-run-drawer>打开测试运行</button></div>`;
+    }
+    const events = run.events.filter((event) => !event.nodeId || event.nodeId === node.id);
+    return `
+      <div class="workflow-node-last-run">
+        <div class="workflow-node-run-metrics">
+          <span><small>状态</small><strong class="${escapeHtml(nodeRun.status)}">${statusLabel(nodeRun.status)}</strong></span>
+          <span><small>运行时间</small><strong>${formatDuration(nodeRun.startedAt, nodeRun.finishedAt)}</strong></span>
+          <span><small>尝试次数</small><strong>${nodeRun.attempt || 0}</strong></span>
+        </div>
+        <section><header><strong>输入</strong><button type="button" data-copy-text="${escapeHtml(formatJson(nodeRun.inputs))}" aria-label="复制节点输入">复制</button></header><pre>${escapeHtml(formatJson(nodeRun.inputs))}</pre></section>
+        <section><header><strong>输出</strong><button type="button" data-copy-text="${escapeHtml(formatJson(nodeRun.outputs))}" aria-label="复制节点输出">复制</button></header><pre>${escapeHtml(formatJson(nodeRun.outputs))}</pre></section>
+        <section class="workflow-node-run-events"><header><strong>相关事件</strong><small>${formatDateTime(run.startedAt)}</small></header>${events.map((event) => `<p><time>${formatTime(event.at)}</time><span>${escapeHtml(event.detail)}</span></p>`).join('') || '<p><span>没有额外事件</span></p>'}</section>
+        <button type="button" class="workflow-node-run-open" data-workflow-open-run-drawer="${escapeHtml(run.id)}">在运行记录中查看</button>
+      </div>
+    `;
   }
 
   function renderFeedback() {
@@ -118,7 +194,7 @@
     });
     const runs = workflowRuns(workflow.metadata.id);
     const lastRun = runs[0] || null;
-    const experts = workflow.spec.nodes.filter((node) => node.type === 'expert').length;
+    const edgeCount = workflow.spec.edges.length;
     return `
       <button type="button" class="workflow-row" data-workflow-open="${escapeHtml(workflow.metadata.id)}">
         <span class="workflow-row-mark">${workflow.metadata.tags?.includes('强降水') ? '雨' : '流'}</span>
@@ -128,7 +204,7 @@
         </span>
         <span class="workflow-row-metrics">
           <span><strong>${workflow.spec.nodes.length}</strong><small>节点</small></span>
-          <span><strong>${experts}</strong><small>专家</small></span>
+          <span><strong>${edgeCount}</strong><small>连线</small></span>
           <span><strong>${runs.length}</strong><small>运行</small></span>
         </span>
         <span class="workflow-row-last">${lastRun ? `<strong class="${escapeHtml(lastRun.status)}">${statusLabel(lastRun.status)}</strong><small>${formatDateTime(lastRun.startedAt)}</small>` : '<strong>尚未运行</strong><small>先进行结构试跑</small>'}</span>
@@ -178,7 +254,6 @@
     return {
       input: '声明运行参数',
       trigger: '手动、定时或事件启动',
-      expert: '调用专家与 Skill',
       llm: '提示词与模型推理',
       classifier: '按意图或内容分类',
       extractor: '从文本提取结构参数',
@@ -230,18 +305,12 @@
             </button>
           `;
         }).join('')}
-        <button type="button" class="workflow-add-step" data-workflow-add-node="expert">${icon('plus')} 添加下一步</button>
+        <button type="button" class="workflow-add-step" data-workflow-add-node="llm">${icon('plus')} 添加下一步</button>
       </div>
     `;
   }
 
   function renderCapabilityLabel(node) {
-    if (node.type === 'expert') {
-      const expert = typeof allExperts === 'function'
-        ? allExperts().find((item) => item.id === node.capability?.id)
-        : null;
-      return expert ? `<strong>${escapeHtml(expert.name)}</strong><small>${node.skills.length} 个 Skill</small>` : '<strong>未选择专家</strong>';
-    }
     if (node.type === 'tool') {
       return `<strong>${escapeHtml(node.capability?.toolName || '未选择工具')}</strong><small>${escapeHtml(node.capability?.connectorId || '')}</small>`;
     }
@@ -348,40 +417,40 @@
       return `<section><h3>触发方式</h3><label><span>启动条件</span><select id="workflow-node-trigger-mode"><option value="manual" ${config.mode === 'manual' ? 'selected' : ''}>手动触发</option><option value="schedule" ${config.mode === 'schedule' ? 'selected' : ''}>定时触发</option><option value="event" ${config.mode === 'event' ? 'selected' : ''}>事件触发</option></select></label></section>`;
     }
     if (node.type === 'llm') {
-      return `<section><h3>模型推理</h3><label><span>模型</span><input id="workflow-node-model" value="${escapeHtml(config.model || '')}" placeholder="使用当前默认模型" /></label><label><span>提示词</span><textarea id="workflow-node-prompt" rows="5" placeholder="支持使用 \${input.xxx} 或 \${nodes.xxx.outputs.xxx}">${escapeHtml(config.prompt || '')}</textarea></label></section>`;
+      return `<section><h3>模型推理</h3><label><span>模型</span><input id="workflow-node-model" value="${escapeHtml(config.model || '')}" placeholder="使用当前默认模型" /></label><label><span>提示词</span><textarea id="workflow-node-prompt" data-workflow-variable-field rows="5" placeholder="输入提示词，或从变量选择器插入上游数据">${escapeHtml(config.prompt || '')}</textarea></label></section>`;
     }
     if (node.type === 'classifier') {
-      return `<section><h3>问题分类</h3><label><span>模型</span><input id="workflow-node-classifier-model" value="${escapeHtml(config.model || '')}" placeholder="使用当前默认模型" /></label><label><span>分类标签</span><textarea id="workflow-node-classes" rows="4" placeholder="每行一个分类，例如：强降水&#10;强对流&#10;其他">${escapeHtml(config.classes || '')}</textarea></label><label><span>分类说明</span><textarea id="workflow-node-classifier-instruction" rows="3">${escapeHtml(config.instruction || '')}</textarea></label></section>`;
+      return `<section><h3>问题分类</h3><label><span>模型</span><input id="workflow-node-classifier-model" value="${escapeHtml(config.model || '')}" placeholder="使用当前默认模型" /></label><label><span>分类标签</span><textarea id="workflow-node-classes" rows="4" placeholder="每行一个分类，例如：强降水&#10;强对流&#10;其他">${escapeHtml(config.classes || '')}</textarea></label><label><span>分类说明</span><textarea id="workflow-node-classifier-instruction" data-workflow-variable-field rows="3">${escapeHtml(config.instruction || '')}</textarea></label></section>`;
     }
     if (node.type === 'extractor') {
-      return `<section><h3>参数提取</h3><label><span>模型</span><input id="workflow-node-extractor-model" value="${escapeHtml(config.model || '')}" placeholder="使用当前默认模型" /></label><label><span>输出 Schema</span><textarea id="workflow-node-extractor-schema" class="workflow-code-field" rows="5" placeholder='{"region":"string","level":"number"}'>${escapeHtml(config.schema || '')}</textarea></label><label><span>提取说明</span><textarea id="workflow-node-extractor-instruction" rows="3">${escapeHtml(config.instruction || '')}</textarea></label></section>`;
+      return `<section><h3>参数提取</h3><label><span>模型</span><input id="workflow-node-extractor-model" value="${escapeHtml(config.model || '')}" placeholder="使用当前默认模型" /></label><label><span>输出 Schema</span><textarea id="workflow-node-extractor-schema" class="workflow-code-field" rows="5" placeholder='{"region":"string","level":"number"}'>${escapeHtml(config.schema || '')}</textarea></label><label><span>提取说明</span><textarea id="workflow-node-extractor-instruction" data-workflow-variable-field rows="3">${escapeHtml(config.instruction || '')}</textarea></label></section>`;
     }
     if (node.type === 'knowledge') {
-      return `<section><h3>知识检索</h3><label><span>资料源</span><input id="workflow-node-source-id" value="${escapeHtml(config.sourceId || '')}" placeholder="留空检索全部资料源" /></label><label><span>查询表达式</span><textarea id="workflow-node-query" rows="3">${escapeHtml(config.query || '')}</textarea></label></section>`;
+      return `<section><h3>知识检索</h3><label><span>资料源</span><input id="workflow-node-source-id" value="${escapeHtml(config.sourceId || '')}" placeholder="留空检索全部资料源" /></label><label><span>查询表达式</span><textarea id="workflow-node-query" data-workflow-variable-field rows="3">${escapeHtml(config.query || '')}</textarea></label></section>`;
     }
     if (node.type === 'document') {
-      return `<section><h3>文档提取</h3><label><span>文件变量</span><input id="workflow-node-document-source" value="${escapeHtml(config.source || '${input.files}')}" placeholder="\${input.files}" /></label><div class="workflow-inspector-note"><strong>通用文件输入</strong><p>运行时读取文档文本和元数据，后续节点通过该节点输出变量引用。</p></div></section>`;
+      return `<section><h3>文档提取</h3><label><span>文件变量</span><input id="workflow-node-document-source" data-workflow-variable-field value="${escapeHtml(config.source || '${input.files}')}" placeholder="\${input.files}" /></label><div class="workflow-inspector-note"><strong>通用文件输入</strong><p>运行时读取文档文本和元数据，后续节点通过该节点输出变量引用。</p></div></section>`;
     }
     if (node.type === 'http') {
-      return `<section><h3>HTTP 请求</h3><div class="workflow-inspector-grid"><label><span>方法</span><select id="workflow-node-http-method">${['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'].map((method) => `<option value="${method}" ${config.method === method ? 'selected' : ''}>${method}</option>`).join('')}</select></label><label><span>响应格式</span><select id="workflow-node-http-response"><option value="json" ${config.responseType === 'json' ? 'selected' : ''}>JSON</option><option value="text" ${config.responseType === 'text' ? 'selected' : ''}>文本</option><option value="binary" ${config.responseType === 'binary' ? 'selected' : ''}>二进制</option></select></label><label class="wide"><span>URL</span><input id="workflow-node-http-url" value="${escapeHtml(config.url || '')}" placeholder="https://api.example.com/weather" /></label></div><label><span>查询参数</span><textarea id="workflow-node-http-query" class="workflow-code-field" rows="3" placeholder='{"region":"\${input.region}"}'>${escapeHtml(config.query || '')}</textarea></label><label><span>请求头</span><textarea id="workflow-node-http-headers" class="workflow-code-field" rows="3" placeholder='{"Content-Type":"application/json"}'>${escapeHtml(config.headers || '')}</textarea></label><label><span>请求体</span><textarea id="workflow-node-http-body" class="workflow-code-field" rows="5" placeholder='{"message":"\${nodes.previous.outputs.text}"}'>${escapeHtml(config.body || '')}</textarea></label><div class="workflow-inspector-grid"><label><span>认证</span><select id="workflow-node-http-auth"><option value="none" ${config.authMode === 'none' ? 'selected' : ''}>无</option><option value="credential" ${config.authMode === 'credential' ? 'selected' : ''}>凭据引用</option></select></label><label><span>凭据 ID</span><input id="workflow-node-http-credential" value="${escapeHtml(config.credentialRef || '')}" placeholder="weather-api" /></label></div><div class="workflow-inspector-note"><strong>敏感凭据不写入 YAML</strong><p>这里只保存凭据引用 ID，令牌与密码由运行环境安全注入。</p></div></section>`;
+      return `<section><h3>HTTP 请求</h3><div class="workflow-inspector-grid"><label><span>方法</span><select id="workflow-node-http-method">${['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'].map((method) => `<option value="${method}" ${config.method === method ? 'selected' : ''}>${method}</option>`).join('')}</select></label><label><span>响应格式</span><select id="workflow-node-http-response"><option value="json" ${config.responseType === 'json' ? 'selected' : ''}>JSON</option><option value="text" ${config.responseType === 'text' ? 'selected' : ''}>文本</option><option value="binary" ${config.responseType === 'binary' ? 'selected' : ''}>二进制</option></select></label><label class="wide"><span>URL</span><input id="workflow-node-http-url" data-workflow-variable-field value="${escapeHtml(config.url || '')}" placeholder="https://api.example.com/weather" /></label></div><label><span>查询参数</span><textarea id="workflow-node-http-query" data-workflow-variable-field class="workflow-code-field" rows="3" placeholder='{"region":"\${input.region}"}'>${escapeHtml(config.query || '')}</textarea></label><label><span>请求头</span><textarea id="workflow-node-http-headers" data-workflow-variable-field class="workflow-code-field" rows="3" placeholder='{"Content-Type":"application/json"}'>${escapeHtml(config.headers || '')}</textarea></label><label><span>请求体</span><textarea id="workflow-node-http-body" data-workflow-variable-field class="workflow-code-field" rows="5" placeholder='{"message":"\${nodes.previous.outputs.text}"}'>${escapeHtml(config.body || '')}</textarea></label><div class="workflow-inspector-grid"><label><span>认证</span><select id="workflow-node-http-auth"><option value="none" ${config.authMode === 'none' ? 'selected' : ''}>无</option><option value="credential" ${config.authMode === 'credential' ? 'selected' : ''}>凭据引用</option></select></label><label><span>凭据 ID</span><input id="workflow-node-http-credential" value="${escapeHtml(config.credentialRef || '')}" placeholder="weather-api" /></label></div><div class="workflow-inspector-note"><strong>敏感凭据不写入 YAML</strong><p>这里只保存凭据引用 ID，令牌与密码由运行环境安全注入。</p></div></section>`;
     }
     if (node.type === 'code') {
-      return `<section><h3>代码执行</h3><label><span>语言</span><select id="workflow-node-code-language"><option value="javascript" ${config.language === 'javascript' ? 'selected' : ''}>JavaScript</option><option value="python" ${config.language === 'python' ? 'selected' : ''}>Python</option></select></label><label><span>代码</span><textarea id="workflow-node-code-source" class="workflow-code-field" rows="7">${escapeHtml(config.source || '')}</textarea></label></section>`;
+      return `<section><h3>代码执行</h3><label><span>语言</span><select id="workflow-node-code-language"><option value="javascript" ${config.language === 'javascript' ? 'selected' : ''}>JavaScript</option><option value="python" ${config.language === 'python' ? 'selected' : ''}>Python</option></select></label><label><span>代码</span><textarea id="workflow-node-code-source" data-workflow-variable-field class="workflow-code-field" rows="7">${escapeHtml(config.source || '')}</textarea></label></section>`;
     }
     if (node.type === 'condition') {
-      return `<section><h3>IF / ELSE 条件</h3><label><span>判断表达式</span><textarea id="workflow-node-expression" rows="3" placeholder="\${nodes.check.outputs.score} >= 0.8">${escapeHtml(config.expression || '')}</textarea></label><div class="workflow-condition-legend"><span><i class="true"></i>是：表达式成立</span><span><i class="false"></i>否：表达式不成立</span></div></section>`;
+      return `<section><h3>IF / ELSE 条件</h3><label><span>判断表达式</span><textarea id="workflow-node-expression" data-workflow-variable-field rows="3" placeholder="\${nodes.check.outputs.score} >= 0.8">${escapeHtml(config.expression || '')}</textarea></label><div class="workflow-condition-legend"><span><i class="true"></i>是：表达式成立</span><span><i class="false"></i>否：表达式不成立</span></div></section>`;
     }
     if (node.type === 'iteration') {
-      return `<section><h3>循环</h3><label><span>待遍历数据</span><input id="workflow-node-items" value="${escapeHtml(config.items || '${input.items}')}" /></label></section>`;
+      return `<section><h3>循环</h3><label><span>待遍历数据</span><input id="workflow-node-items" data-workflow-variable-field value="${escapeHtml(config.items || '${input.items}')}" /></label></section>`;
     }
     if (node.type === 'transform') {
-      return `<section><h3>数据映射</h3><label><span>映射表达式</span><textarea id="workflow-node-transform" rows="5" placeholder="声明输出字段与上游变量的映射">${escapeHtml(config.expression || '')}</textarea></label></section>`;
+      return `<section><h3>数据映射</h3><label><span>映射表达式</span><textarea id="workflow-node-transform" data-workflow-variable-field rows="5" placeholder="声明输出字段与上游变量的映射">${escapeHtml(config.expression || '')}</textarea></label></section>`;
     }
     if (node.type === 'assign') {
-      return `<section><h3>变量赋值</h3><label><span>变量映射</span><textarea id="workflow-node-assign" class="workflow-code-field" rows="6" placeholder='{"forecast.region":"\${input.region}"}'>${escapeHtml(config.mapping || '')}</textarea></label></section>`;
+      return `<section><h3>变量赋值</h3><label><span>变量映射</span><textarea id="workflow-node-assign" data-workflow-variable-field class="workflow-code-field" rows="6" placeholder='{"forecast.region":"\${input.region}"}'>${escapeHtml(config.mapping || '')}</textarea></label></section>`;
     }
     if (node.type === 'template') {
-      return `<section><h3>内容模板</h3><label><span>模板</span><textarea id="workflow-node-template" rows="6" placeholder="可引用上游节点输出">${escapeHtml(config.template || '')}</textarea></label></section>`;
+      return `<section><h3>内容模板</h3><label><span>模板</span><textarea id="workflow-node-template" data-workflow-variable-field rows="6" placeholder="可引用上游节点输出">${escapeHtml(config.template || '')}</textarea></label></section>`;
     }
     if (node.type === 'delay') {
       return `<section><h3>等待</h3><label><span>等待秒数</span><input id="workflow-node-delay-seconds" type="number" min="1" max="86400" value="${Number(config.seconds || 60)}" /></label></section>`;
@@ -396,7 +465,7 @@
     const node = api.selectedNode();
     if (!node) return '';
     const meta = nodeTypeMeta(node.type);
-    const experts = typeof allExperts === 'function' ? allExperts() : [];
+    const supportsSkills = ['llm', 'classifier', 'extractor'].includes(node.type);
     const availableSkills = typeof enabledSkillCatalog === 'function' ? enabledSkillCatalog() : [];
     const skillCatalog = [
       ...availableSkills,
@@ -422,20 +491,17 @@
           <div><small>${meta.label}</small><strong>${escapeHtml(node.name)}</strong></div>
           <button type="button" data-workflow-close-inspector aria-label="关闭配置面板" title="关闭配置面板">${icon('close')}</button>
         </div>
-        <form id="workflow-node-form" data-node-id="${escapeHtml(node.id)}">
+        <div class="workflow-inspector-tabs" role="tablist" aria-label="节点面板">
+          <button type="button" role="tab" aria-selected="${api.ui.inspectorTab === 'settings'}" class="${api.ui.inspectorTab === 'settings' ? 'active' : ''}" data-workflow-inspector-tab="settings">设置</button>
+          <button type="button" role="tab" aria-selected="${api.ui.inspectorTab === 'last-run'}" class="${api.ui.inspectorTab === 'last-run' ? 'active' : ''}" data-workflow-inspector-tab="last-run">上次运行</button>
+        </div>
+        ${api.ui.inspectorTab === 'settings' ? `<form id="workflow-node-form" data-node-id="${escapeHtml(node.id)}">
           <section>
             <h3>基本设置</h3>
             <label><span>节点名称</span><input id="workflow-node-name" value="${escapeHtml(node.name)}" maxlength="80" required /></label>
             <label><span>业务说明</span><textarea id="workflow-node-description" rows="3" maxlength="500">${escapeHtml(node.description || '')}</textarea></label>
           </section>
-          ${node.type === 'expert' ? `
-            <section>
-              <h3>专家与方法</h3>
-              <label><span>选择专家</span><select id="workflow-node-expert">${experts.map((expert) => `<option value="${escapeHtml(expert.id)}" ${expert.id === node.capability?.id ? 'selected' : ''}>${escapeHtml(expert.name)}${expert.kind === 'team' ? ' · 专家团' : ''}</option>`).join('')}</select></label>
-              <div class="workflow-node-skill-list"><span>节点 Skill</span>${skillCatalog.length ? skillCatalog.map((skill) => `<label><input type="checkbox" name="workflow-node-skills" value="${escapeHtml(skill.id)}" data-skill-version="${escapeHtml(skill.version || '')}" ${selectedSkillIds.has(skill.id) ? 'checked' : ''} /><span><strong>${escapeHtml(skill.name || skill.id)}</strong><small>${escapeHtml(skill.status || skill.version || '可用')}</small></span></label>`).join('') : '<small>当前没有可选 Skill</small>'}</div>
-              <div class="workflow-inspector-note"><strong>依赖合并</strong><p>运行时会同时加载专家自身的必需 Skill 与这里显式选择的节点 Skill。</p></div>
-            </section>
-          ` : ''}
+          ${renderVariablePicker(workflow, node)}
           ${node.type === 'tool' ? `
             <section>
               <h3>工具能力</h3>
@@ -453,6 +519,13 @@
                 return `<option value="${escapeHtml(reference)}" ${selected ? 'selected' : ''}>${escapeHtml(item.metadata.name)} · v${escapeHtml(item.metadata.version)}</option>`;
               }).join('')}</select></label>
               <input id="workflow-node-version" type="hidden" value="${escapeHtml(node.capability?.version || '')}" />
+            </section>
+          ` : ''}
+          ${supportsSkills ? `
+            <section>
+              <h3>节点 Skill</h3>
+              <div class="workflow-node-skill-list">${skillCatalog.length ? skillCatalog.map((skill) => `<label><input type="checkbox" name="workflow-node-skills" value="${escapeHtml(skill.id)}" data-skill-version="${escapeHtml(skill.version || '')}" ${selectedSkillIds.has(skill.id) ? 'checked' : ''} /><span><strong>${escapeHtml(skill.name || skill.id)}</strong><small>${escapeHtml(skill.status || skill.version || '可用')}</small></span></label>`).join('') : '<small>当前没有可选 Skill</small>'}</div>
+              <div class="workflow-inspector-note"><strong>方法增强</strong><p>Skill 只为当前智能节点提供方法和知识，不会创建或调用专家任务。</p></div>
             </section>
           ` : ''}
           ${renderNodeConfig(node)}
@@ -482,7 +555,7 @@
             <label><span>失败后</span><select id="workflow-node-on-error"><option value="abort" ${node.onError === 'abort' ? 'selected' : ''}>停止工作流</option><option value="continue" ${node.onError === 'continue' ? 'selected' : ''}>记录错误并继续</option></select></label>
           </section>
           <footer><button type="button" class="workflow-delete-node" data-workflow-remove-node="${escapeHtml(node.id)}">删除节点</button><span>节点 ${escapeHtml(node.id)}</span><button type="submit" class="primary-button small-button">保存节点</button></footer>
-        </form>
+        </form>` : renderNodeLastRun(workflow, node)}
       </aside>
     `;
   }
@@ -520,6 +593,90 @@
     `;
   }
 
+  function renderRunInputField(name, schema, value, required = false) {
+    const type = String(schema?.type || 'string');
+    const label = String(schema?.title || name);
+    const requiredMark = required ? '<em>必填</em>' : '';
+    const requiredAttribute = required ? 'required' : '';
+    if (type === 'boolean') {
+      return `<label><span>${escapeHtml(label)}${requiredMark}<small>${escapeHtml(name)} · Boolean</small></span><select data-workflow-run-input="${escapeHtml(name)}" data-input-type="boolean" ${requiredAttribute}><option value="false" ${value === false ? 'selected' : ''}>否</option><option value="true" ${value === true ? 'selected' : ''}>是</option></select></label>`;
+    }
+    if (['object', 'array'].includes(type)) {
+      const content = value === undefined ? '' : formatJson(value);
+      return `<label><span>${escapeHtml(label)}${requiredMark}<small>${escapeHtml(name)} · ${type === 'array' ? 'Array' : 'Object'}</small></span><textarea data-workflow-run-input="${escapeHtml(name)}" data-input-type="${type}" rows="4" placeholder="${type === 'array' ? '[]' : '{}'}" ${requiredAttribute}>${escapeHtml(content)}</textarea></label>`;
+    }
+    const inputType = ['number', 'integer'].includes(type) ? 'number' : 'text';
+    return `<label><span>${escapeHtml(label)}${requiredMark}<small>${escapeHtml(name)} · ${schemaTypeLabelForUi(type)}</small></span><input type="${inputType}" data-workflow-run-input="${escapeHtml(name)}" data-input-type="${escapeHtml(type)}" value="${escapeHtml(value ?? schema?.default ?? '')}" ${requiredAttribute} /></label>`;
+  }
+
+  function schemaTypeLabelForUi(type) {
+    return {
+      string: 'String',
+      number: 'Number',
+      integer: 'Integer',
+      boolean: 'Boolean',
+      array: 'Array',
+      object: 'Object',
+    }[String(type || '').toLowerCase()] || 'Any';
+  }
+
+  function renderRunDrawer(workflow) {
+    if (!api.ui.runDrawerOpen) return '';
+    const run = api.selectedRun();
+    const inputProperties = workflow.spec.inputSchema?.properties || {};
+    const requiredInputs = new Set(workflow.spec.inputSchema?.required || []);
+    const selectedNodeRun = run?.nodeRuns.find((item) =>
+      item.nodeId === api.ui.selectedRunNodeId
+    ) || run?.nodeRuns[0] || null;
+    const selectedNode = selectedNodeRun
+      ? workflow.spec.nodes.find((item) => item.id === selectedNodeRun.nodeId)
+      : null;
+    const tabs = [
+      ['input', '输入'],
+      ['result', '结果'],
+      ['detail', '详情'],
+      ['trace', '追踪'],
+    ];
+    const tab = run || api.ui.runDrawerTab === 'input' ? api.ui.runDrawerTab : 'input';
+    let body = '';
+    if (tab === 'input') {
+      body = `<form class="workflow-run-input-form" id="workflow-run-input-form">
+        <div class="workflow-run-drawer-copy"><strong>结构试跑输入</strong><p>只验证节点、变量引用、分支和审批，不调用模型、工具或写入文件。</p></div>
+        <div class="workflow-run-input-fields">${Object.entries(inputProperties).length
+          ? Object.entries(inputProperties).map(([name, schema]) =>
+              renderRunInputField(name, schema, run?.inputs?.[name], requiredInputs.has(name))
+            ).join('')
+          : '<div class="workflow-run-input-empty">这个工作流没有声明输入参数，可以直接开始试跑。</div>'}</div>
+        <button type="submit" class="primary-button workflow-run-start">${icon('play')} 开始试跑</button>
+      </form>`;
+    } else if (!run) {
+      body = '<div class="workflow-run-drawer-empty"><strong>还没有运行记录</strong><p>切换到“输入”开始第一次结构试跑。</p></div>';
+    } else if (tab === 'result') {
+      const completed = run.nodeRuns.filter((item) => item.status === 'completed').length;
+      body = `<div class="workflow-run-result">
+        <div class="workflow-run-summary ${escapeHtml(run.status)}"><span><small>状态</small><strong>${statusLabel(run.status)}</strong></span><span><small>节点</small><strong>${completed}/${run.nodeRuns.length}</strong></span><span><small>耗时</small><strong>${formatDuration(run.startedAt, run.finishedAt)}</strong></span></div>
+        ${run.status === 'waiting_approval' ? `<div class="workflow-run-approval"><strong>等待人工审批</strong><p>当前结构路径已通过上游校验，选择后继续验证对应分支。</p><div><button type="button" data-workflow-approve="false">驳回</button><button type="button" class="primary-button" data-workflow-approve="true">批准并继续</button></div></div>` : ''}
+        <div class="workflow-run-node-list">${run.nodeRuns.map((nodeRun) => `<button type="button" class="${nodeRun.nodeId === selectedNodeRun?.nodeId ? 'active' : ''}" data-workflow-run-node="${escapeHtml(nodeRun.nodeId)}"><i class="${escapeHtml(nodeRun.status)}"></i><span><strong>${escapeHtml(nodeRun.nodeName)}</strong><small>${statusLabel(nodeRun.status)} · ${formatDuration(nodeRun.startedAt, nodeRun.finishedAt)}</small></span></button>`).join('')}</div>
+      </div>`;
+    } else if (tab === 'detail') {
+      body = selectedNodeRun ? `<div class="workflow-run-node-detail">
+        <div class="workflow-run-node-heading"><span class="workflow-node-mark ${nodeTypeMeta(selectedNode?.type).tone}">${nodeTypeMeta(selectedNode?.type).mark}</span><span><small>${nodeTypeMeta(selectedNode?.type).label}</small><strong>${escapeHtml(selectedNodeRun.nodeName)}</strong></span><em class="${escapeHtml(selectedNodeRun.status)}">${statusLabel(selectedNodeRun.status)}</em></div>
+        <section><header><strong>输入</strong><button type="button" data-copy-text="${escapeHtml(formatJson(selectedNodeRun.inputs))}">复制</button></header><pre>${escapeHtml(formatJson(selectedNodeRun.inputs))}</pre></section>
+        <section><header><strong>输出</strong><button type="button" data-copy-text="${escapeHtml(formatJson(selectedNodeRun.outputs))}">复制</button></header><pre>${escapeHtml(formatJson(selectedNodeRun.outputs))}</pre></section>
+        ${selectedNodeRun.error ? `<section class="error"><header><strong>错误</strong></header><pre>${escapeHtml(selectedNodeRun.error)}</pre></section>` : ''}
+      </div>` : '<div class="workflow-run-drawer-empty"><strong>没有可查看的节点</strong></div>';
+    } else {
+      body = `<div class="workflow-run-trace">${run.events.map((event) => `<article><time>${formatTime(event.at)}</time><i class="${event.type.includes('failed') ? 'failed' : event.type.includes('approval') ? 'waiting_approval' : 'completed'}"></i><span><strong>${escapeHtml(event.type)}</strong><small>${escapeHtml(event.detail)}</small></span></article>`).join('')}</div>`;
+    }
+    return `
+      <aside class="workflow-run-drawer" aria-label="测试运行">
+        <header><span><small>测试运行</small><strong>${run ? `${statusLabel(run.status)} · ${formatDateTime(run.startedAt)}` : '准备输入参数'}</strong></span><button type="button" data-workflow-close-run-drawer aria-label="关闭测试运行">${icon('close')}</button></header>
+        <div class="workflow-run-drawer-tabs" role="tablist">${tabs.map(([id, label]) => `<button type="button" role="tab" aria-selected="${tab === id}" class="${tab === id ? 'active' : ''}" data-workflow-run-tab="${id}" ${!run && id !== 'input' ? 'disabled' : ''}>${label}</button>`).join('')}</div>
+        <div class="workflow-run-drawer-body">${body}</div>
+      </aside>
+    `;
+  }
+
   function renderEditor() {
     const workflow = api.selectedWorkflow();
     if (!workflow) return renderLibrary();
@@ -551,10 +708,11 @@
             ${icon(validation.valid && !validation.warnings.length ? 'check' : 'warning')}
             <span>${validation.valid ? validation.warnings.length ? `${validation.warnings.length} 项配置建议` : `${workflow.spec.nodes.length} 个节点，结构有效` : `${validation.errors.length} 个问题需要处理`}</span>
           </div>
+          <div class="workflow-save-state"><i></i><span>已保存 ${formatTime(workflow.updatedAt)}</span></div>
           <div class="workflow-editor-zoom">${api.ui.mode === 'canvas' ? '<span>拖动端口连线 · 右键添加节点 · ⌘/Ctrl + 滚轮缩放</span>' : '<span>按业务顺序查看节点</span>'}</div>
         </div>
         ${renderFeedback()}
-        <div class="workflow-editor-body ${api.ui.selectedNodeId ? 'inspector-open' : ''}">
+        <div class="workflow-editor-body ${api.ui.runDrawerOpen ? 'run-drawer-open' : api.ui.selectedNodeId ? 'inspector-open' : ''}">
           <main class="workflow-design-surface">
             ${validationPanel}
             ${renderWorkflowSettings(workflow)}
@@ -562,12 +720,12 @@
               ? `<div class="workflow-step-intro"><span>流程意图</span><p>${escapeHtml(workflow.metadata.description || '描述这个工作流解决的业务问题。')}</p><button type="button" data-workflow-edit-meta>编辑</button></div>${renderSteps(workflow)}`
               : renderCanvas(workflow)}
           </main>
-          ${renderInspector(workflow)}
+          ${api.ui.runDrawerOpen ? renderRunDrawer(workflow) : renderInspector(workflow)}
         </div>
         <footer class="workflow-run-dock">
           <div><span class="workflow-run-dot ${latestRun?.status || 'idle'}"></span><span><strong>${latestRun ? `最近运行 · ${statusLabel(latestRun.status)}` : '尚未运行'}</strong><small>${latestRun ? `${formatDateTime(latestRun.startedAt)} · ${latestRun.nodeRuns.filter((item) => item.status === 'completed').length}/${latestRun.nodeRuns.length} 节点完成` : '结构试跑不会调用模型或修改文件'}</small></span></div>
-          ${latestRun ? `<button type="button" data-workflow-open-run="${escapeHtml(latestRun.id)}">查看运行记录</button>` : ''}
-          <button type="button" class="primary-button" data-workflow-run>${icon('play')} 结构试跑</button>
+          ${latestRun ? `<button type="button" data-workflow-open-run-drawer="${escapeHtml(latestRun.id)}">查看运行记录</button>` : ''}
+          <button type="button" class="primary-button" data-workflow-run>${icon('play')} 测试运行</button>
         </footer>
       </div>
     `;
@@ -603,8 +761,8 @@
           </main>
           <aside class="workflow-run-action">
             ${run.status === 'waiting_approval'
-              ? `<span class="workflow-approval-badge">需要你的审批</span><h2>是否继续验证交付路径？</h2><p>上游专家节点和汇合关系有效，后续将检查工具与输出节点。</p><div class="workflow-approval-actions"><button type="button" data-workflow-approve="false">驳回</button><button type="button" class="primary-button" data-workflow-approve="true">批准并继续</button></div>`
-              : `<span class="workflow-complete-badge">${icon(run.status === 'completed' ? 'check' : 'warning')} ${statusLabel(run.status)}</span><h2>${run.status === 'completed' ? '所有执行路径有效' : '结构试跑已结束'}</h2><p>${run.status === 'completed' ? '专家、并行汇合、审批、工具和输出节点已经形成完整路径。' : '返回编辑器修正节点或连线后再次试跑。'}</p><button type="button" class="primary-button" data-workflow-back-editor>返回编辑</button>`}
+              ? `<span class="workflow-approval-badge">需要你的审批</span><h2>是否继续验证交付路径？</h2><p>上游节点和汇合关系有效，后续将检查工具与输出节点。</p><div class="workflow-approval-actions"><button type="button" data-workflow-approve="false">驳回</button><button type="button" class="primary-button" data-workflow-approve="true">批准并继续</button></div>`
+              : `<span class="workflow-complete-badge">${icon(run.status === 'completed' ? 'check' : 'warning')} ${statusLabel(run.status)}</span><h2>${run.status === 'completed' ? '所有执行路径有效' : '结构试跑已结束'}</h2><p>${run.status === 'completed' ? '模型、并行汇合、审批、工具和输出节点已经形成完整路径。' : '返回编辑器修正节点或连线后再次试跑。'}</p><button type="button" class="primary-button" data-workflow-back-editor>返回编辑</button>`}
             <div class="workflow-product-preview"><span>产品预览</span><article><strong>短临强降水预警产品</strong><small>Word · PDF · Web</small><div><i></i><i></i><i></i><i></i></div><p></p><p></p><p></p></article></div>
           </aside>
         </section>
@@ -641,7 +799,7 @@
       title: workflow.metadata.name,
       icon: 'workflow',
       backButton: `<button class="titlebar-button titlebar-back" data-workflow-close aria-label="返回工作流列表" title="返回工作流列表">${icon('back')}</button>`,
-      actions: `<span class="workflow-titlebar-version">v${escapeHtml(workflow.metadata.version)} · ${statusLabel(workflow.metadata.status)}</span><button class="titlebar-action" data-workflow-undo ${api.ui.undoStack.length ? '' : 'disabled'}>撤销</button><button class="titlebar-action" data-workflow-redo ${api.ui.redoStack.length ? '' : 'disabled'}>重做</button><button class="titlebar-action" data-workflow-settings>设置</button><button class="titlebar-action" data-workflow-export>${icon('external')} 导出 YAML</button><button class="titlebar-action" data-workflow-run>${icon('play')} 结构试跑</button><button class="titlebar-action primary" data-workflow-publish>${workflow.metadata.status === 'published' ? '重新发布' : '发布'}</button>`,
+      actions: `<span class="workflow-titlebar-version">v${escapeHtml(workflow.metadata.version)} · ${statusLabel(workflow.metadata.status)}</span><button class="titlebar-action" data-workflow-undo ${api.ui.undoStack.length ? '' : 'disabled'}>撤销</button><button class="titlebar-action" data-workflow-redo ${api.ui.redoStack.length ? '' : 'disabled'}>重做</button><button class="titlebar-action" data-workflow-settings>设置</button><button class="titlebar-action" data-workflow-export>${icon('external')} 导出 YAML</button><button class="titlebar-action" data-workflow-run>${icon('play')} 测试运行 <kbd>⌥R</kbd></button><button class="titlebar-action primary" data-workflow-publish>${workflow.metadata.status === 'published' ? '重新发布' : '发布'}</button>`,
     };
   }
 
