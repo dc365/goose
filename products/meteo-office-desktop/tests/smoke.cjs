@@ -36,6 +36,7 @@ for (const file of [
 
 const harnessAssets = [
   'harness/shared.js',
+  'harness/qc-policy.js',
   'harness/context-window.js',
   'harness/project.js',
   'harness/task-state-machine.js',
@@ -80,6 +81,9 @@ for (const asset of [
 }
 
 assert.ok(html.indexOf('harness/state-bootstrap.js') < html.indexOf('renderer-core.js'));
+assert.ok(html.indexOf('harness/shared.js') < html.indexOf('harness/qc-policy.js'));
+assert.ok(html.indexOf('harness/qc-policy.js') < html.indexOf('harness/evidence-ledger.js'));
+assert.ok(html.indexOf('harness/qc-policy.js') < html.indexOf('harness/validation-engine.js'));
 assert.ok(html.indexOf('renderer-core.js') < html.indexOf('harness/state-restore.js'));
 assert.ok(html.indexOf('harness/state-restore.js') < html.indexOf('renderer-actions.js'));
 
@@ -149,6 +153,10 @@ const publicationAttestorSource = fs.readFileSync(
   path.join(root, 'capabilities/publication-attestor.cjs'),
   'utf8'
 );
+const publicationContractsSource = fs.readFileSync(
+  path.join(root, 'capabilities/publication-contracts.cjs'),
+  'utf8'
+);
 const preloadSource = fs.readFileSync(path.join(root, 'preload.cjs'), 'utf8');
 const rendererSource = fs.readFileSync(path.join(root, 'renderer-core.js'), 'utf8');
 const rendererActionsSource = fs.readFileSync(path.join(root, 'renderer-actions.js'), 'utf8');
@@ -186,6 +194,11 @@ assert.ok(mainWrapperSource.includes('createPublicationAttestor'));
 assert.ok(mainWrapperSource.includes('publicationAttestor,'));
 assert.ok(publicationAttestorSource.includes("createHmac('sha256'"));
 assert.ok(publicationAttestorSource.includes('timingSafeEqual'));
+assert.ok(publicationContractsSource.includes('publication-signoff.schema.json'));
+assert.ok(publicationContractsSource.includes('evidence-qc-waiver.schema.json'));
+assert.ok(mainWrapperSource.includes('requestSingleInstanceLock'));
+assert.ok(mainWrapperSource.includes('dialog: electron.dialog'));
+assert.ok(mainWrapperSource.includes('safeStorage: electron.safeStorage'));
 assert.ok(mainSource.includes('WeatherConnector.createFixtureWeatherRun'));
 assert.ok(mainSource.includes('WeatherConnector.fixtureRuntimeEvents'));
 assert.ok(mainSource.includes("type: 'team_member_started'"));
@@ -201,6 +214,8 @@ assert.ok(rendererSource.includes('function renderTeamCollaborationBar(task, exp
 assert.ok(rendererSource.includes('function renderArtifactPreviewPanel(task)'));
 assert.ok(rendererSource.includes('function renderTaskPublicationPanel(task)'));
 assert.ok(rendererSource.includes('data-publication-toggle'));
+assert.ok(rendererSource.includes('data-publication-waive-qc'));
+assert.ok(rendererSource.includes('data-publication-revoke-qc-waiver'));
 assert.ok(rendererSource.includes('data-publication-sign'));
 assert.ok(rendererSource.includes('data-publication-revoke'));
 assert.ok(rendererSource.includes("'专家协作中'"));
@@ -222,9 +237,13 @@ assert.ok(documentsSkill.includes(`version: "${documentsManifest.version}"`));
 
 assert.ok(rendererActionsSource.includes('function latestAssistantMessage(task)'));
 assert.ok(rendererActionsSource.includes('async function checkTaskPublication(task,'));
+assert.ok(rendererActionsSource.includes('async function createPublicationQcWaiver(task, evidenceId)'));
+assert.ok(rendererActionsSource.includes('async function revokePublicationQcWaiver(task, waiverId)'));
 assert.ok(rendererActionsSource.includes('async function signTaskPublication(task)'));
 assert.ok(rendererActionsSource.includes('async function revokeTaskPublication(task)'));
 assert.ok(preloadSource.includes("ipcRenderer.invoke('publication:check'"));
+assert.ok(preloadSource.includes("ipcRenderer.invoke('publication:waive-qc'"));
+assert.ok(preloadSource.includes("ipcRenderer.invoke('publication:revoke-qc-waiver'"));
 assert.ok(preloadSource.includes("ipcRenderer.invoke('publication:sign'"));
 assert.ok(preloadSource.includes("ipcRenderer.invoke('publication:revoke'"));
 assert.ok(rendererActionsSource.includes('const assistant = currentStreamingAssistant(task);\n  if (!assistant) return null;'));
@@ -490,10 +509,11 @@ assert.ok(stateRestoreSource.includes('TaskStateMachine.finishRunAttempt'));
 assert.ok(stateRestoreSource.includes('RuntimeRecords.recordRuntimeEvent'));
 assert.ok(runtimeRecordsSource.includes("event.type === 'artifact_created'"));
 assert.ok(runtimeRecordsSource.includes("event.type === 'evidence_created'"));
-assert.equal(packageJson.version, '0.2.0-beta.3');
+assert.equal(packageJson.version, '0.2.0-beta.4');
 assert.ok(packageJson.scripts.check.includes('tests/harness.cjs'));
 assert.ok(packageJson.scripts.check.includes('tests/schema-contracts.cjs'));
 assert.ok(packageJson.scripts['check:syntax'].includes('node --check harness/workflow.js'));
+assert.ok(packageJson.scripts['check:syntax'].includes('node --check harness/qc-policy.js'));
 
 const schemaDir = path.join(root, 'schemas');
 assert.ok(fs.readdirSync(schemaDir).filter((name) => name.endsWith('.schema.json')).length >= 9);

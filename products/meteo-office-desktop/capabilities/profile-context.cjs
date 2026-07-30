@@ -193,6 +193,13 @@ function createProfileContext({
     return pathsFor(active.profileKey);
   }
 
+  function hasValidAuthenticatedSession() {
+    if (active?.status !== 'authenticated') return false;
+    if (!active.expiresAt) return true;
+    const expiresAt = Date.parse(active.expiresAt);
+    return Number.isFinite(expiresAt) && expiresAt > Date.now();
+  }
+
   function cachedProfile(key) {
     if (!key) return null;
     const metadata = safeReadJSON(pathsFor(key).metadata, null);
@@ -653,7 +660,7 @@ function createProfileContext({
     connectorAllowed,
     defaultSkillIds: () => [...(currentPolicyContext().policy.defaultSkillIds || [])],
     baseUrl: () => active?.baseUrl || loadConfig().baseUrl,
-    isAuthenticated: () => active?.status === 'authenticated',
+    isAuthenticated: hasValidAuthenticatedSession,
     hasActiveProfile: () => Boolean(active?.profileKey),
     onChange(listener) {
       listeners.add(listener);

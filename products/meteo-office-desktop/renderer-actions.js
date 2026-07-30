@@ -1486,6 +1486,7 @@ async function checkTaskPublication(task, { saveForm = true } = {}) {
   if (!task || publicationUI.busy) return;
   if (saveForm) savePublicationContext(task, { rerender: false });
   publicationUI.busy = 'check';
+  publicationUI.busyTargetId = null;
   publicationUI.error = '';
   render();
   try {
@@ -1497,6 +1498,112 @@ async function checkTaskPublication(task, { saveForm = true } = {}) {
     window.MeteoMateHarness.PublicationState.applyError(task, error);
   } finally {
     publicationUI.busy = '';
+    publicationUI.busyTargetId = null;
+    task.updatedAt = Date.now();
+    saveState();
+    render();
+  }
+}
+
+function publicationQcWaiverReasonInput(evidenceId) {
+  return [...document.querySelectorAll('[data-publication-qc-waiver-reason]')]
+    .find((input) => input.dataset.publicationQcWaiverReason === String(evidenceId || '')) || null;
+}
+
+function publicationQcActionReady(task) {
+  const api = window.MeteoMateHarness.PublicationState;
+  if (
+    task?.publication?.gate
+    && !task.publication.dirty
+    && api.cachedRequestMatchesTask(task)
+  ) {
+    return true;
+  }
+  publicationUI.error = '请先运行发布检查，确认当前 Evidence、QC 状态和成果物未发生变化。';
+  render();
+  return false;
+}
+
+async function createPublicationQcWaiver(task, evidenceId) {
+  if (!task || !evidenceId || publicationUI.busy) return;
+  const reasonInput = publicationQcWaiverReasonInput(evidenceId);
+  const reason = reasonInput?.value.trim() || '';
+  publicationUI.qcWaiverReasons[publicationQcReasonKey(task.id, evidenceId)] = reason;
+  if (reason.length < 8 || reason.length > 1000) {
+    if (reasonInput) {
+      reasonInput.setCustomValidity(
+        reason.length < 8 ? '请填写至少 8 个字符的人工豁免理由' : '人工豁免理由不能超过 1000 个字符'
+      );
+      reasonInput.reportValidity();
+      reasonInput.addEventListener('input', () => reasonInput.setCustomValidity(''), { once: true });
+    }
+    return;
+  }
+  if (!ensurePublicationFormCurrent(task) || !publicationQcActionReady(task)) return;
+  publicationUI.busy = 'waive-qc';
+  publicationUI.busyTargetId = evidenceId;
+  publicationUI.error = '';
+  render();
+  try {
+    const request = window.MeteoMateHarness.PublicationState.requestForTask(task, {
+      evidenceId,
+      reason,
+    });
+    const result = await window.meteoDesktop.waivePublicationQc(request);
+    if (applyPublicationResult(task, request, result)) {
+      delete publicationUI.qcWaiverReasons[publicationQcReasonKey(task.id, evidenceId)];
+    }
+  } catch (error) {
+    publicationUI.error = error?.message || String(error);
+    window.MeteoMateHarness.PublicationState.applyError(task, error);
+  } finally {
+    publicationUI.busy = '';
+    publicationUI.busyTargetId = null;
+    task.updatedAt = Date.now();
+    saveState();
+    render();
+  }
+}
+
+function publicationRevocationReason(subject) {
+  const value = window.prompt(
+    `请输入撤销${subject}的理由（8-1000 个字符）。该理由会写入不可静默修改的审计记录：`,
+    ''
+  );
+  if (value == null) return null;
+  const reason = value.trim();
+  if (reason.length < 8 || reason.length > 1000) {
+    publicationUI.error = reason.length < 8
+      ? '撤销理由至少需要 8 个字符。'
+      : '撤销理由不能超过 1000 个字符。';
+    render();
+    return null;
+  }
+  return reason;
+}
+
+async function revokePublicationQcWaiver(task, waiverId) {
+  if (!task || !waiverId || publicationUI.busy) return;
+  if (!publicationQcActionReady(task)) return;
+  const reason = publicationRevocationReason('这条 QC 人工豁免');
+  if (!reason) return;
+  publicationUI.busy = 'revoke-qc-waiver';
+  publicationUI.busyTargetId = waiverId;
+  publicationUI.error = '';
+  render();
+  try {
+    const request = window.MeteoMateHarness.PublicationState.requestForTask(task, {
+      waiverId,
+      reason,
+    });
+    const result = await window.meteoDesktop.revokePublicationQcWaiver(request);
+    applyPublicationResult(task, request, result);
+  } catch (error) {
+    publicationUI.error = error?.message || String(error);
+    window.MeteoMateHarness.PublicationState.applyError(task, error);
+  } finally {
+    publicationUI.busy = '';
+    publicationUI.busyTargetId = null;
     task.updatedAt = Date.now();
     saveState();
     render();
@@ -1508,6 +1615,7 @@ async function signTaskPublication(task) {
   if (!ensurePublicationFormCurrent(task)) return;
   if (!confirm('确认以当前账户签发这份预报结论、证据和成果物吗？签发后任何内容变化都需要重新审核。')) return;
   publicationUI.busy = 'sign';
+  publicationUI.busyTargetId = null;
   publicationUI.error = '';
   render();
   try {
@@ -1519,6 +1627,7 @@ async function signTaskPublication(task) {
     window.MeteoMateHarness.PublicationState.applyError(task, error);
   } finally {
     publicationUI.busy = '';
+    publicationUI.busyTargetId = null;
     task.updatedAt = Date.now();
     saveState();
     render();
@@ -1527,12 +1636,14 @@ async function signTaskPublication(task) {
 
 async function revokeTaskPublication(task) {
   if (!task || publicationUI.busy) return;
-  if (!confirm('确认撤销当前签发吗？撤销后该任务将恢复为待审核状态。')) return;
+  const reason = publicationRevocationReason('当前签发');
+  if (!reason) return;
   publicationUI.busy = 'revoke';
+  publicationUI.busyTargetId = null;
   publicationUI.error = '';
   render();
   try {
-    await window.meteoDesktop.revokePublicationSignoff({ taskId: task.id });
+    await window.meteoDesktop.revokePublicationSignoff({ taskId: task.id, reason });
     task.publication = {
       signoff: null,
       gate: null,
@@ -1549,6 +1660,7 @@ async function revokeTaskPublication(task) {
     window.MeteoMateHarness.PublicationState.applyError(task, error);
   } finally {
     publicationUI.busy = '';
+    publicationUI.busyTargetId = null;
     task.updatedAt = Date.now();
     saveState();
     render();
@@ -1586,6 +1698,24 @@ function bindPublicationEvents() {
   document.querySelectorAll('[data-publication-remove-conclusion]').forEach((button) => {
     button.addEventListener('click', () => {
       removePublicationConclusion(task, Number(button.dataset.publicationRemoveConclusion));
+    });
+  });
+  document.querySelectorAll('[data-publication-qc-waiver-reason]').forEach((input) => {
+    input.addEventListener('input', () => {
+      publicationUI.qcWaiverReasons[
+        publicationQcReasonKey(task?.id, input.dataset.publicationQcWaiverReason)
+      ] = input.value;
+      input.setCustomValidity('');
+    });
+  });
+  document.querySelectorAll('[data-publication-waive-qc]').forEach((button) => {
+    button.addEventListener('click', () => {
+      void createPublicationQcWaiver(task, button.dataset.publicationWaiveQc);
+    });
+  });
+  document.querySelectorAll('[data-publication-revoke-qc-waiver]').forEach((button) => {
+    button.addEventListener('click', () => {
+      void revokePublicationQcWaiver(task, button.dataset.publicationRevokeQcWaiver);
     });
   });
   document.querySelector('[data-publication-check]')?.addEventListener('click', () => {

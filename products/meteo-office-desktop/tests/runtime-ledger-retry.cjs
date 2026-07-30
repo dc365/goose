@@ -202,11 +202,15 @@ const publishableEvidence = {
   sourceVersion: 'dataset-v1',
   evidenceType: 'meteorological-fact',
   validTime: '2026-07-30T08:00:00Z',
+  expiresAt: '2026-08-02T08:00:00Z',
   variable: 'rain24h',
   unit: 'mm',
   value: 86,
+  qcStatus: 'checked',
+  qcVersion: 'meteomate.weather.qc/1.0.0',
   metadata: {
     classification: 'production',
+    synthetic: false,
   },
 };
 const publicationAnalysis = {
@@ -228,6 +232,7 @@ for (const status of ['draft', 'failed']) {
       path: `/workspace/${status}.html`,
       status,
       contentHash: 'c'.repeat(64),
+      metadata: { classification: 'production', synthetic: false },
     }],
     humanSignoff: { approved: true },
   });
@@ -244,6 +249,7 @@ for (const status of ['ready', 'published']) {
       path: `/workspace/${status}.html`,
       status,
       contentHash: 'd'.repeat(64),
+      metadata: { classification: 'production', synthetic: false },
     }],
     humanSignoff: { approved: true },
   });

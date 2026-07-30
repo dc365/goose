@@ -1,0 +1,252 @@
+{
+  "schemaVersion": "meteomate.weather.dataset/v1",
+  "kind": "WeatherDataset",
+  "id": "synthetic-fujian-rainstorm-001",
+  "name": "福建暖区暴雨构造样例 A",
+  "region": {
+    "name": "福建中东部示范区域",
+    "bbox": [
+      117.2,
+      24.8,
+      120.6,
+      27.7
+    ],
+    "timezone": "Asia/Shanghai",
+    "projection": "EPSG:4326"
+  },
+  "issueTime": "2026-06-18T08:30:00+08:00",
+  "validTime": {
+    "start": "2026-06-18T08:00:00+08:00",
+    "end": "2026-06-19T08:00:00+08:00"
+  },
+  "units": {
+    "rain1h": "mm",
+    "rain3h": "mm",
+    "rain6h": "mm",
+    "rain12h": "mm",
+    "rain24h": "mm",
+    "regionalMax24h": "mm",
+    "temperature": "°C",
+    "dewpoint": "°C",
+    "windDirection": "degree",
+    "windSpeed": "m/s",
+    "gust": "m/s",
+    "pressure": "hPa",
+    "precipitableWater": "mm",
+    "cape": "J/kg",
+    "cin": "J/kg",
+    "kIndex": "°C",
+    "liftedIndex": "°C",
+    "shear0to6km": "m/s",
+    "lcl": "m",
+    "freezingLevel": "m",
+    "specificHumidity": "g/kg",
+    "moistureFluxConvergence": "s^-1",
+    "omega": "Pa/s",
+    "height": "gpm",
+    "divergence": "s^-1",
+    "maxDbz": "dBZ"
+  },
+  "stations": [
+    {
+      "id": "58847",
+      "name": "福州",
+      "lon": 119.29,
+      "lat": 26.08,
+      "rain1h": 18.6,
+      "rain6h": 48.2,
+      "rain24h": 86.4,
+      "temperature": 26.8,
+      "dewpoint": 25.1,
+      "windDirection": 190,
+      "windSpeed": 6.8,
+      "gust": 14.1,
+      "pressure": 997.8,
+      "quality": "checked"
+    },
+    {
+      "id": "58844",
+      "name": "闽侯",
+      "lon": 119.14,
+      "lat": 26.15,
+      "rain1h": 24.1,
+      "rain6h": 67.5,
+      "rain24h": 118.3,
+      "temperature": 26.2,
+      "dewpoint": 24.9,
+      "windDirection": 205,
+      "windSpeed": 5.9,
+      "gust": 13.4,
+      "pressure": 996.9,
+      "quality": "checked"
+    },
+    {
+      "id": "58911",
+      "name": "永泰",
+      "lon": 118.93,
+      "lat": 25.87,
+      "rain1h": 31.7,
+      "rain6h": 82.9,
+      "rain24h": 146.8,
+      "temperature": 25.4,
+      "dewpoint": 24.6,
+      "windDirection": 180,
+      "windSpeed": 4.7,
+      "gust": 11.8,
+      "pressure": 988.6,
+      "quality": "checked"
+    },
+    {
+      "id": "58942",
+      "name": "福清",
+      "lon": 119.38,
+      "lat": 25.72,
+      "rain1h": 15.2,
+      "rain6h": 39.6,
+      "rain24h": 73.5,
+      "temperature": 27.1,
+      "dewpoint": 25.2,
+      "windDirection": 175,
+      "windSpeed": 7.6,
+      "gust": 15.9,
+      "pressure": 998.1,
+      "quality": "checked"
+    },
+    {
+      "id": "58848",
+      "name": "连江",
+      "lon": 119.54,
+      "lat": 26.2,
+      "rain1h": 12.8,
+      "rain6h": 42.7,
+      "rain24h": 79.1,
+      "temperature": 26.5,
+      "dewpoint": 24.8,
+      "windDirection": 195,
+      "windSpeed": 7.2,
+      "gust": 16.2,
+      "pressure": 998.4,
+      "quality": "checked"
+    },
+    {
+      "id": "58845",
+      "name": "罗源",
+      "lon": 119.55,
+      "lat": 26.49,
+      "rain1h": 8.4,
+      "rain6h": 31.2,
+      "rain24h": 61.7,
+      "temperature": 26,
+      "dewpoint": 24.2,
+      "windDirection": 200,
+      "windSpeed": 5.5,
+      "gust": 12.6,
+      "pressure": 997.6,
+      "quality": "checked"
+    }
+  ],
+  "upperAir": {
+    "surface": {
+      "pressureCenter": 996,
+      "pressureUnit": "hPa",
+      "feature": "闽中沿海构造性低压倒槽",
+      "convergence": "中等偏强"
+    },
+    "850hPa": {
+      "height": 1510,
+      "temperature": 19.2,
+      "dewpoint": 17.8,
+      "windDirection": 205,
+      "windSpeed": 18,
+      "specificHumidity": 14.8,
+      "moistureFluxConvergence": -0.000042,
+      "feature": "西南低空急流与暖湿输送"
+    },
+    "700hPa": {
+      "height": 3120,
+      "temperature": 8.4,
+      "dewpoint": 6.2,
+      "omega": -0.42,
+      "feature": "持续上升运动区"
+    },
+    "500hPa": {
+      "height": 5860,
+      "temperature": -7.8,
+      "windDirection": 235,
+      "windSpeed": 22,
+      "feature": "短波槽东移，副高西北侧西南气流"
+    },
+    "200hPa": {
+      "height": 12480,
+      "windDirection": 255,
+      "windSpeed": 38,
+      "divergence": 0.000031,
+      "feature": "高空急流入口区辐散"
+    },
+    "indices": {
+      "precipitableWater": 63,
+      "cape": 1450,
+      "cin": 28,
+      "kIndex": 38,
+      "liftedIndex": -3.4,
+      "shear0to6km": 17,
+      "lcl": 620,
+      "freezingLevel": 5100
+    }
+  },
+  "radar": {
+    "product": "构造组合反射率摘要",
+    "validTime": "2026-06-18T14:00:00+08:00",
+    "maxDbz": 55,
+    "coverage": "闽侯—永泰—福州西部",
+    "morphology": "西南—东北向带状回波，多单体合并",
+    "movement": {
+      "direction": "东北",
+      "speedKmh": 28
+    },
+    "signals": [
+      "局地 50 dBZ 以上强回波",
+      "上游持续生成",
+      "存在列车效应倾向"
+    ]
+  },
+  "guidance": [
+    {
+      "model": "ECMWF-like synthetic",
+      "cycle": "2026-06-18T08:00:00+08:00",
+      "regionalMax24h": 132,
+      "fuzhou24h": 78,
+      "yongtai24h": 126,
+      "timing": "18 日 14 时至 19 日 02 时",
+      "confidence": 0.78
+    },
+    {
+      "model": "CMA-MESO-like synthetic",
+      "cycle": "2026-06-18T08:00:00+08:00",
+      "regionalMax24h": 168,
+      "fuzhou24h": 96,
+      "yongtai24h": 151,
+      "timing": "18 日 12 时至 19 日 03 时",
+      "confidence": 0.72
+    },
+    {
+      "model": "GRAPES-like synthetic",
+      "cycle": "2026-06-18T08:00:00+08:00",
+      "regionalMax24h": 112,
+      "fuzhou24h": 69,
+      "yongtai24h": 104,
+      "timing": "18 日 15 时至 19 日 00 时",
+      "confidence": 0.67
+    }
+  ],
+  "metadata": {
+    "classification": "demo",
+    "synthetic": true,
+    "fixture": true,
+    "caseId": "synthetic-fujian-rainstorm-001"
+  },
+  "quality": {
+    "status": "checked",
+    "method": "fully-synthetic-golden-review/v1"
+  }
+}

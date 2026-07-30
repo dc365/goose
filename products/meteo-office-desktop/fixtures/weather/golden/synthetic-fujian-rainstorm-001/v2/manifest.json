@@ -1,0 +1,53 @@
+{
+  "apiVersion": "meteomate.weather.golden-replay/v1",
+  "kind": "WeatherGoldenReplay",
+  "id": "synthetic-fujian-rainstorm-001",
+  "revision": 2,
+  "supersedes": "synthetic-fujian-rainstorm-001/v1",
+  "dataPolicy": {
+    "origin": "synthetic",
+    "classification": "demo",
+    "synthetic": true,
+    "official": false,
+    "anonymizationProfile": "fully-synthetic-no-operational-observations/v1",
+    "privacyReviewed": true
+  },
+  "input": {
+    "path": "dataset.json",
+    "fileSha256": "sha256:2d03b53ef380f39969902898d177a4b5b355753310075f6dd91b57fa166efca9",
+    "datasetSchemaVersion": "meteomate.weather.dataset/v1"
+  },
+  "pipeline": {
+    "diagnosisKind": "all",
+    "normalizerVersion": "meteomate-weather-normalizer/1.1.0",
+    "qcPolicy": {
+      "version": "meteomate.weather.qc/1.0.0",
+      "digest": "91c64e11a4bb1157089359e8047a2626f12a1f01392820d19308a8888374a42f"
+    },
+    "algorithm": {
+      "name": "meteomate-weather-diagnosis",
+      "version": "meteomate-weather-diagnosis/1.1.0"
+    },
+    "renderer": {
+      "name": "meteomate-weather-risk-map",
+      "version": "meteomate-weather-risk-map/1.1.0",
+      "outputPath": "artifacts/golden/synthetic-fujian-rainstorm-001/v2/risk-map.html"
+    }
+  },
+  "clock": {
+    "inWindow": "2026-06-19T10:00:00Z",
+    "expired": "2026-06-19T13:00:00Z"
+  },
+  "expected": {
+    "path": "expected.json",
+    "fileSha256": "sha256:96922c016cf27c286b20fe8b41662a3b8fa0c7ae30e5c926d1c9391ecb6e196b",
+    "datasetHash": "e7e1d7978aed62aad304abf3b60930a3bbbfd4d406e139f04288848c16a67aa5",
+    "evidenceCount": 84,
+    "evidenceTypeCounts": {
+      "algorithm-diagnosis": 13,
+      "meteorological-fact": 71
+    },
+    "artifactContentHash": "52514ba4baf2a8afd8d96582670576a71bef492cab6c688a6b10649fb657907e",
+    "readyForRelease": false
+  }
+}

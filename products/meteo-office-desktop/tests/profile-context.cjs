@@ -12,6 +12,7 @@ const userData = path.join(temp, 'user-data');
 const documents = path.join(temp, 'documents');
 const ipcHandlers = new Map();
 let requirePasswordChange = false;
+let sessionExpiresAt = '2027-01-01T00:00:00Z';
 
 const server = http.createServer((request, response) => {
   const send = (status, payload) => {
@@ -21,7 +22,7 @@ const server = http.createServer((request, response) => {
   if (request.url === '/v1/auth/login' && request.method === 'POST') {
     return send(200, {
       sessionToken: 'session-secret-that-must-not-reach-disk',
-      expiresAt: '2027-01-01T00:00:00Z',
+      expiresAt: sessionExpiresAt,
       user: {
         id: 'usr-forecaster', username: 'forecaster', displayName: '值班预报员', role: 'publisher',
         status: 'active', mustChangePassword: requirePasswordChange, defaultSpaceId: 'personal:usr-forecaster',
@@ -167,6 +168,16 @@ server.listen(0, '127.0.0.1', async () => {
       username: 'forecaster',
       password: 'weather-new-2026',
     });
+    assert.equal(context.isAuthenticated(), true);
+    await context.logout();
+    sessionExpiresAt = '2000-01-01T00:00:00Z';
+    await context.login({
+      baseUrl: `http://127.0.0.1:${address.port}`,
+      username: 'forecaster',
+      password: 'expired-session',
+    });
+    assert.equal(context.publicState().status, 'authenticated');
+    assert.equal(context.isAuthenticated(), false);
     await context.logout();
     assert.equal(context.publicState().status, 'signed_out');
     assert.equal(context.publicState().offlineAvailable, false);

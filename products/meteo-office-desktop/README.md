@@ -1,10 +1,10 @@
-# 气象智伴 MeteoMate Desktop 0.2.0 Beta 3
+# 气象智伴 MeteoMate Desktop 0.2.0 Beta 4
 
 **MeteoMate — AI Workspace for Meteorological Operations**
 
 气象智伴是一个基于 Goose 的气象办公桌面 Agent。产品桌面保持独立，不修改 Goose Core，便于持续同步 `aaif-goose/goose` 上游。
 
-当前 Beta 3 聚焦把已有工作空间能力收拢为可验证、可重放、不可冒充正式业务的气象闭环：
+当前 Beta 4 聚焦把已有工作空间能力收拢为可验证、可重放、不可冒充正式业务的气象闭环：
 
 - WorkBuddy 风格的信息架构：任务、助理、项目、专家、技能、工具和自动化；
 - Goose ACP 作为首选运行时，支持多轮会话、会话恢复、流式消息和取消；
@@ -20,11 +20,14 @@
 - Office 成果物通过本地 MCP Runtime 创建、编辑、渲染和校验 DOCX、PPTX、XLSX 与 PDF；
 - HTML、网页、PDF、图片、Markdown 和代码文件可在任务右侧直接预览，支持刷新、前进后退、外部打开和拖拽调宽；
 - 本地 JSON/CSV/GeoJSON 与内网 HTTP/HTTPS 气象资料可按统一 Dataset 契约读取、校验、诊断并生成 Evidence；
-- 工具产出的 Evidence 与 Artifact 实时进入任务 Ledger，发布审核支持结构化结论、门禁检查、人工签发和撤销；
+- 工具产出的 Evidence 与 Artifact 实时进入任务 Ledger，发布审核支持结构化结论、版本化 QC、精确人工豁免、签发和撤销；
+- QC 豁免由主进程生成，绑定任务、工作区、Evidence SHA-256、政策摘要、复核身份和 24 小时有效期；工作区、证据、成果物、政策或豁免变化都会使旧签发失效；
+- Evidence、Artifact、签发和豁免使用本地 HMAC 证明，Artifact 的 Evidence lineage 与 Connector/Tool 身份纳入签名；
+- 签发、豁免和撤销由 Electron 主进程再次确认；撤销必须记录理由，并写入带系统加密锚点的追加审计链；
 - 固定 Fixture Weather Run 使用真实诊断与制图代码，但永久标记为构造数据，正式发布门禁必定阻止签发；
 - 工具卡同时显示连接状态与 `planned / demo / experimental / beta / production / deprecated` 成熟度，连接成功不等于生产可用。
 
-Beta 3 不内置任何单位的真实气象接口地址或生产凭据。接入真实业务前，仍需由部署方配置受信资料源、允许主机和凭据引用。
+Beta 4 不内置任何单位的真实气象接口地址或生产凭据。接入真实业务前，仍需由部署方配置受信资料源、允许主机和凭据引用。
 
 所有产品代码仍位于：
 
@@ -335,8 +338,9 @@ npm run test:browser
 
 `npm run check` 执行产品 JavaScript 语法检查和本地契约测试；`npm run test:browser` 会启动真实 Playwright MCP 和浏览器，验证导航、输入、点击、快照与截图链路。
 
-Beta 3 的 Replay、Provider 契约与下一阶段工作见
-[`docs/BETA3_REPLAY_CONTRACT.md`](docs/BETA3_REPLAY_CONTRACT.md)；上一阶段硬化记录保留在
+Beta 4 的 QC、人工豁免与发布门禁契约见
+[`docs/BETA4_QC_PUBLICATION_CONTRACT.md`](docs/BETA4_QC_PUBLICATION_CONTRACT.md)；Replay 与 Provider 契约保留在
+[`docs/BETA3_REPLAY_CONTRACT.md`](docs/BETA3_REPLAY_CONTRACT.md)，上一阶段硬化记录保留在
 [`docs/BETA2_HARDENING.md`](docs/BETA2_HARDENING.md)。
 
 更多信息：

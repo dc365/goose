@@ -12,6 +12,9 @@ const artifactStub = {
   },
 };
 const evidenceStub = {
+  semanticHash(record) {
+    return JSON.stringify(record);
+  },
   isExpired(record, at = Date.now()) {
     return Boolean(record?.expiresAt && new Date(record.expiresAt).getTime() <= at);
   },
@@ -40,10 +43,13 @@ const evidence = [{
   source: 'ECMWF',
   sourceVersion: '2026072900',
   validTime: new Date(now + 3_600_000).toISOString(),
+  expiresAt: new Date(now + 86_400_000).toISOString(),
   variable: 'rain24h',
   unit: 'mm',
   value: 110,
   confidence: 0.9,
+  qcStatus: 'checked',
+  qcVersion: 'meteomate.weather.qc/1.0.0',
   metadata: { classification: 'production', synthetic: false },
 }];
 const artifacts = [{

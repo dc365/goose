@@ -27,3 +27,9 @@ manifest and its SHA-256 values.
 Run `node tests/weather-golden-replay.cjs` from `products/meteo-office-desktop` to verify the replay,
 including idempotence, ordering invariance, cross-workspace stability, lineage, mutation
 sensitivity, expiry clocks, and the synthetic publication gate.
+
+Revision `v1` is retained byte-for-byte and its three file hashes are asserted by the test.
+Revision `v2` adds an explicit dataset-level `checked` QC result and records diagnosis/renderer
+`1.1.0`, so every generated Evidence carries the current QC policy version. Use
+`npm run record:weather-golden` only when creating the next immutable revision; the recorder
+refuses to overwrite an existing revision.

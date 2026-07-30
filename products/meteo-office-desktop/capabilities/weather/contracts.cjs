@@ -3,6 +3,7 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
+const QcPolicy = require('../../harness/qc-policy');
 
 const DATASET_SCHEMA_VERSION = 'meteomate.weather.dataset/v1';
 const DIAGNOSIS_SCHEMA_VERSION = 'meteomate.weather.diagnosis/v1';
@@ -64,6 +65,20 @@ const PROVIDER_ATTESTATION_VERSION = 'v1';
 const PROVIDER_ATTESTATION_KEY_FILE_ENV = 'METEOMATE_WEATHER_ATTESTATION_KEY_FILE';
 const VOLATILE_PROVIDER_ATTESTATION_KEY = crypto.randomBytes(32);
 const PROVIDER_ATTESTATION_KEYS = new Map();
+const EVIDENCE_RESERVED_METADATA_FIELDS = new Set([
+  'datasetId',
+  'datasetHash',
+  'sourceId',
+  'sourceType',
+  'sourceAuthority',
+  'classification',
+  'synthetic',
+  'official',
+  'quality',
+  'qc',
+  'qcStatus',
+  'qcVersion',
+]);
 
 class WeatherContractError extends Error {
   constructor(code, message, details = undefined) {
@@ -404,6 +419,12 @@ function attestProviderDataset(dataset) {
   return dataset;
 }
 
+function requiresProviderAttestation(dataset = {}) {
+  return dataset.source?.authority === 'deployment'
+    || dataset.source?.official === true
+    || ['beta', 'production'].includes(dataset.source?.classification);
+}
+
 function normalizeStation(station = {}, index = 0, context = {}) {
   const { units = {}, issues = [], conversions = [] } = context;
   const stationId = text(station.id || station.stationId);
@@ -724,6 +745,19 @@ function validateDataset(dataset = {}) {
   ) {
     addError('WEATHER_SOURCE_AUTHORITY_INVALID', '资料来源未经部署方授权，不能标记为 beta、production 或官方来源', 'source.authority');
   }
+  const calculatedContentHash = datasetContentHash(dataset);
+  if (!dataset.contentHash) {
+    addError('WEATHER_HASH_MISSING', '资料集缺少内容摘要', 'contentHash');
+  } else if (dataset.contentHash !== calculatedContentHash) {
+    addError('WEATHER_HASH_MISMATCH', '资料集内容摘要与当前内容不匹配', 'contentHash');
+  }
+  if (requiresProviderAttestation(dataset) && !verifyProviderAttestation(dataset)) {
+    addError(
+      'WEATHER_PROVIDER_ATTESTATION_INVALID',
+      '正式资料来源证明缺失或与当前内容不匹配',
+      'metadata.providerAttestation',
+    );
+  }
   if (!dataset.region?.name && !dataset.region?.bbox) addWarning('WEATHER_REGION_MISSING', '资料集未声明区域', 'region');
   if (!dataset.region?.timezone) addError('WEATHER_TIMEZONE_MISSING', '资料集未声明区域时区', 'region.timezone');
   else if (!validTimezone(dataset.region.timezone)) addError('WEATHER_TIMEZONE_INVALID', `资料集区域时区无效：${dataset.region.timezone}`, 'region.timezone');
@@ -901,7 +935,6 @@ function validateDataset(dataset = {}) {
   const qualityStatus = String(dataset.quality?.status || '').trim().toLowerCase();
   if (qualityStatus && !QUALITY_CODES.has(qualityStatus)) addError('WEATHER_QUALITY_INVALID', `资料集总体质控码无效：${qualityStatus}`, 'quality.status');
   if (['bad', 'rejected'].includes(qualityStatus)) addError('WEATHER_QUALITY_REJECTED', '资料集总体质控未通过', 'quality.status');
-  if (!dataset.contentHash) addWarning('WEATHER_HASH_MISSING', '资料集缺少内容摘要', 'contentHash');
   return {
     valid: errors.length === 0,
     errors: [...new Set(errors)],
@@ -924,12 +957,20 @@ function expiryFor(dataset, fallbackHours = 12) {
 }
 
 function createEvidence(dataset, input = {}) {
+  const qc = QcPolicy.deriveEvidenceQc({
+    qcStatus: input.qcStatus ?? dataset.quality?.status,
+  });
+  const calculatedDatasetHash = datasetContentHash(dataset);
+  const inputMetadata = input.metadata && typeof input.metadata === 'object' && !Array.isArray(input.metadata)
+    ? clone(input.metadata)
+    : {};
+  for (const field of EVIDENCE_RESERVED_METADATA_FIELDS) delete inputMetadata[field];
   const core = {
     apiVersion: EVIDENCE_API_VERSION,
     kind: 'Evidence',
     evidenceType: input.evidenceType || 'meteorological-fact',
     source: input.source || dataset.source?.name || dataset.source?.id,
-    sourceVersion: input.sourceVersion || dataset.source?.version || dataset.contentHash,
+    sourceVersion: input.sourceVersion || dataset.source?.version || calculatedDatasetHash,
     model: input.model ?? dataset.model ?? null,
     initTime: input.initTime ?? dataset.issueTime ?? null,
     validTime: input.validTime ?? dataset.validTime?.end ?? dataset.validTime?.start ?? null,
@@ -942,18 +983,21 @@ function createEvidence(dataset, input = {}) {
     algorithm: input.algorithm ? clone(input.algorithm) : null,
     confidence: number(input.confidence),
     uncertainty: input.uncertainty || null,
+    qcStatus: qc.qcStatus,
+    qcVersion: qc.qcVersion,
     createdAt: input.createdAt || Date.now(),
     expiresAt: input.expiresAt || expiryFor(dataset),
     metadata: {
+      ...inputMetadata,
       datasetId: dataset.id,
-      datasetHash: dataset.contentHash,
+      datasetHash: calculatedDatasetHash,
       sourceId: dataset.source?.id,
       sourceType: dataset.source?.type,
+      sourceAuthority: dataset.source?.authority,
       classification: dataset.source?.classification,
       synthetic: dataset.source?.synthetic === true,
       official: dataset.source?.official === true,
       quality: clone(dataset.quality || {}),
-      ...(input.metadata || {}),
     },
   };
   return { id: input.id || evidenceId(core), ...core };
@@ -985,6 +1029,7 @@ function datasetEvidence(dataset, options = {}) {
         value: station[field],
         validTime: station.validTime || validTime,
         confidence: station.quality === 'checked' ? 0.95 : 0.7,
+        qcStatus: station.quality,
         metadata: { stationId: station.id, stationName: station.name, quality: station.quality },
       });
     }
@@ -1104,7 +1149,8 @@ function evidencePage(dataset, options = {}) {
   };
 }
 
-function publicationAssessment(dataset, validation = validateDataset(dataset)) {
+function publicationAssessment(dataset) {
+  const validation = validateDataset(dataset);
   const blockers = [...validation.errors];
   const warnings = [...validation.warnings];
   if (dataset.source?.synthetic || dataset.source?.classification === 'demo') {

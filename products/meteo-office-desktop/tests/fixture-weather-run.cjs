@@ -6,6 +6,7 @@ const vm = require('node:vm');
 
 const WeatherConnector = require('../capabilities/weather-connector.js');
 const ExpertTeam = require('../harness/expert-team');
+const RuntimeRecords = require('../harness/runtime-records');
 const ValidationEngine = require('../harness/validation-engine');
 const { createPublicationService } = require('../capabilities/publication-service.cjs');
 
@@ -60,7 +61,7 @@ try {
   assert.equal(fixture.dataset.source.official, false);
 
   assert.equal(fixture.algorithm.name, 'meteomate-weather-diagnosis');
-  assert.equal(fixture.algorithm.version, 'meteomate-weather-diagnosis/1.0.0');
+  assert.equal(fixture.algorithm.version, 'meteomate-weather-diagnosis/1.1.0');
   assert.equal(fixture.diagnosis.heavyRain.total, 68);
   assert.notEqual(
     fixture.diagnosis.heavyRain.total,
@@ -102,10 +103,21 @@ try {
   );
   assert.ok(events.every((event) => event.taskId === 'fixture-task'));
   assert.ok(events.slice(0, -1).every((event) => event.toolCallId === 'fixture-tool'));
+  for (const event of events.filter((item) => item.type === 'evidence_created')) {
+    const diagnosis = event.evidence.evidenceType === 'algorithm-diagnosis';
+    assert.equal(event.extensionName, diagnosis ? 'weather-diagnosis' : 'weather-data');
+    assert.equal(event.toolName, diagnosis ? 'weather_diagnose_dataset' : 'weather_build_evidence');
+  }
+  assert.ok(events
+    .filter((event) => event.type === 'artifact_created')
+    .every((event) =>
+      event.extensionName === 'gis-map' && event.toolName === 'weather_render_dataset_map'
+    ));
   assert.deepEqual(events.at(-1).publicationAnalysis, fixture.publicationAnalysis);
 
   const publicationRequest = {
     taskId: 'fixture-task',
+    workspace,
     analysis: fixture.publicationAnalysis,
     artifacts: fixture.artifacts,
     evidence: fixture.evidence,
@@ -134,6 +146,25 @@ try {
     () => publicationService.sign(publicationRequest),
     /发布门禁未通过/
   );
+  const runtimeTask = { id: 'fixture-task', artifacts: [], evidence: [] };
+  for (const event of events.slice(0, -1)) {
+    RuntimeRecords.recordRuntimeEvent(
+      runtimeTask,
+      publicationService.publicationAttestor.attestRuntimeEvent({
+        ...event,
+        runId: 'fixture-run',
+      }),
+      { runId: 'fixture-run' },
+    );
+  }
+  const attestedFixtureGate = publicationService.check({
+    ...publicationRequest,
+    artifacts: runtimeTask.artifacts,
+    evidence: runtimeTask.evidence,
+  }).gate;
+  assert.equal(attestedFixtureGate.ready, false);
+  assert.ok(attestedFixtureGate.blockers.some((blocker) => blocker.includes('synthetic')));
+  assert.ok(!attestedFixtureGate.blockers.some((blocker) => blocker.includes('Connector/Tool')));
 
   const mainSource = fs.readFileSync(path.resolve(__dirname, '..', 'main.cjs'), 'utf8');
   const runtimeEvents = [];

@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meteomate.local/schemas/publication-signoff.schema.json",
+  "title": "MeteoMate Publication Signoff",
+  "type": "object",
+  "additionalProperties": false,
+  "$defs": {
+    "confirmation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "action", "challengeId", "confirmedAt"],
+      "properties": {
+        "method": { "const": "electron-main-dialog" },
+        "action": { "enum": ["sign", "revoke", "waive-qc", "revoke-qc"] },
+        "challengeId": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$"
+        },
+        "confirmedAt": { "type": "string", "format": "date-time" }
+      }
+    }
+  },
+  "required": [
+    "apiVersion",
+    "kind",
+    "id",
+    "approved",
+    "taskId",
+    "reviewerId",
+    "reviewerName",
+    "reviewerRole",
+    "verification",
+    "workspaceDigest",
+    "analysisDigest",
+    "evidenceDigest",
+    "artifactDigest",
+    "qcWaiverDigest",
+    "qcPolicyVersion",
+    "qcPolicyDigest",
+    "snapshotDigest",
+    "securityMode",
+    "signedAt",
+    "auditAttestation"
+  ],
+  "properties": {
+    "apiVersion": { "const": "meteomate/v1" },
+    "kind": { "const": "PublicationSignoff" },
+    "id": {
+      "type": "string",
+      "pattern": "^publication-signoff-[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$"
+    },
+    "approved": { "const": true },
+    "taskId": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "reviewerId": { "type": "string", "minLength": 1, "maxLength": 300 },
+    "reviewerName": { "type": "string", "minLength": 1, "maxLength": 300 },
+    "reviewerRole": { "type": "string", "minLength": 1, "maxLength": 100 },
+    "verification": { "enum": ["account-profile", "local-profile"] },
+    "confirmation": { "$ref": "#/$defs/confirmation" },
+    "note": { "type": "string", "maxLength": 2000 },
+    "workspaceDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "analysisDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "evidenceDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "artifactDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "qcWaiverDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "qcPolicyVersion": { "const": "meteomate.weather.qc/1.0.0" },
+    "qcPolicyDigest": {
+      "const": "91c64e11a4bb1157089359e8047a2626f12a1f01392820d19308a8888374a42f"
+    },
+    "snapshotDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "securityMode": { "enum": ["internal", "strict"] },
+    "signedAt": { "type": "string", "format": "date-time" },
+    "revokedAt": { "type": "string", "format": "date-time" },
+    "revokedBy": { "type": "string", "minLength": 1, "maxLength": 300 },
+    "revokedByName": { "type": "string", "minLength": 1, "maxLength": 300 },
+    "revocationReason": { "type": "string", "minLength": 8, "maxLength": 1000 },
+    "revocationConfirmation": { "$ref": "#/$defs/confirmation" },
+    "auditAttestation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "kind", "taskId", "signedAt", "revokedAt", "value"],
+      "properties": {
+        "version": { "const": "meteomate-publication-audit/v1" },
+        "kind": { "const": "PublicationSignoff" },
+        "taskId": { "type": "string", "minLength": 1 },
+        "signedAt": { "type": "string", "format": "date-time" },
+        "revokedAt": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        },
+        "value": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      }
+    }
+  }
+}

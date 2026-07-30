@@ -332,6 +332,10 @@ const manifest = {
   pipeline: {
     diagnosisKind: 'all',
     normalizerVersion: 'meteomate-weather-normalizer/1.0.0',
+    qcPolicy: {
+      version: 'meteomate.weather.qc/1.0.0',
+      digest: hash,
+    },
     algorithm: {
       name: 'meteomate-weather-diagnosis',
       version: 'meteomate-weather-diagnosis/1.0.0',
