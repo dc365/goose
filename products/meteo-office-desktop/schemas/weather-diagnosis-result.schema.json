@@ -1,0 +1,208 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meteomate.local/schemas/weather-diagnosis-result.schema.json",
+  "title": "MeteoMate Weather Diagnosis Result",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "kind",
+    "dataset",
+    "validation",
+    "diagnosis",
+    "evidence",
+    "publication",
+    "algorithm"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": { "const": "meteomate.weather.diagnosis/v1" },
+    "kind": { "const": "WeatherDiagnosisResult" },
+    "dataset": { "$ref": "#/$defs/datasetSummary" },
+    "validation": {
+      "$ref": "https://meteomate.local/schemas/weather-provider-result.schema.json#/$defs/validation"
+    },
+    "diagnosis": { "$ref": "#/$defs/diagnosis" },
+    "evidence": {
+      "type": "array",
+      "maxItems": 5000,
+      "items": {
+        "$ref": "https://meteomate.local/schemas/weather-provider-result.schema.json#/$defs/evidence"
+      }
+    },
+    "evidenceSummary": {
+      "$ref": "https://meteomate.local/schemas/weather-provider-result.schema.json#/$defs/evidenceSummary"
+    },
+    "publication": {
+      "$ref": "https://meteomate.local/schemas/weather-provider-result.schema.json#/$defs/publication"
+    },
+    "algorithm": { "$ref": "#/$defs/diagnosisAlgorithm" }
+  },
+  "$defs": {
+    "datasetSummary": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "contentHash",
+        "source",
+        "region",
+        "issueTime",
+        "validTime"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "contentHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "source": {
+          "$ref": "https://meteomate.local/schemas/weather-dataset.schema.json#/$defs/source"
+        },
+        "region": {
+          "$ref": "https://meteomate.local/schemas/weather-dataset.schema.json#/$defs/region"
+        },
+        "issueTime": { "type": ["string", "null"], "format": "date-time" },
+        "validTime": {
+          "$ref": "https://meteomate.local/schemas/weather-dataset.schema.json#/$defs/validTime"
+        }
+      }
+    },
+    "diagnosis": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": false,
+      "properties": {
+        "synoptic": { "$ref": "#/$defs/synoptic" },
+        "heavyRain": { "$ref": "#/$defs/heavyRain" },
+        "convection": { "$ref": "#/$defs/convection" }
+      }
+    },
+    "synoptic": {
+      "type": "object",
+      "required": ["systems", "confidence", "uncertainty"],
+      "additionalProperties": false,
+      "properties": {
+        "systems": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["type", "name", "confidence", "evidence"],
+            "additionalProperties": false,
+            "properties": {
+              "type": { "type": "string", "minLength": 1 },
+              "name": { "type": "string", "minLength": 1 },
+              "confidence": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "evidence": { "type": "string" }
+            }
+          }
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "uncertainty": { "type": ["string", "null"] }
+      }
+    },
+    "heavyRain": {
+      "type": "object",
+      "required": ["total", "level", "dimensions", "hotspots", "uncertainty"],
+      "additionalProperties": false,
+      "properties": {
+        "total": { "type": "number", "minimum": 0, "maximum": 100 },
+        "level": { "type": "string", "minLength": 1 },
+        "dimensions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["key", "name", "score", "max", "evidence"],
+            "additionalProperties": false,
+            "properties": {
+              "key": {
+                "enum": [
+                  "moisture",
+                  "lift",
+                  "instability",
+                  "persistence",
+                  "consistency"
+                ]
+              },
+              "name": { "type": "string", "minLength": 1 },
+              "score": { "type": "number", "minimum": 0 },
+              "max": { "type": "number", "exclusiveMinimum": 0 },
+              "evidence": {
+                "type": "array",
+                "items": { "type": "string" }
+              }
+            }
+          }
+        },
+        "hotspots": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "name", "rain24h", "level", "confidence"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "type": "string", "minLength": 1 },
+              "name": { "type": "string", "minLength": 1 },
+              "rain24h": { "type": "number" },
+              "level": { "type": "string", "minLength": 1 },
+              "confidence": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              }
+            }
+          }
+        },
+        "uncertainty": { "type": ["string", "null"] }
+      }
+    },
+    "convection": {
+      "type": "object",
+      "required": ["total", "level", "hazards", "uncertainty"],
+      "additionalProperties": false,
+      "properties": {
+        "total": { "type": "number", "minimum": 0, "maximum": 100 },
+        "level": { "type": "string", "minLength": 1 },
+        "hazards": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["type", "probability", "confidence"],
+            "additionalProperties": false,
+            "properties": {
+              "type": { "type": "string", "minLength": 1 },
+              "probability": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "confidence": { "enum": ["低", "中", "高"] }
+            }
+          }
+        },
+        "uncertainty": { "type": ["string", "null"] }
+      }
+    },
+    "diagnosisAlgorithm": {
+      "type": "object",
+      "required": ["name", "version"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "const": "meteomate-weather-diagnosis" },
+        "version": {
+          "type": "string",
+          "pattern": "^meteomate-weather-diagnosis/[0-9]+\\.[0-9]+\\.[0-9]+$"
+        }
+      }
+    }
+  }
+}

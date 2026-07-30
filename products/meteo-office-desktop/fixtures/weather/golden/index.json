@@ -1,0 +1,14 @@
+{
+  "apiVersion": "meteomate.weather.golden-replay-index/v1",
+  "kind": "WeatherGoldenReplayIndex",
+  "cases": [
+    {
+      "id": "synthetic-fujian-rainstorm-001",
+      "latestRevision": 1,
+      "latestPath": "synthetic-fujian-rainstorm-001/v1/manifest.json",
+      "manifestSha256": "sha256:f15a2dc7ebb8e4b66fdd5a06c927d9e81e5366339b71f1f79a6bed09dd7b45ec",
+      "dataPolicy": "fully-synthetic",
+      "status": "active"
+    }
+  ]
+}

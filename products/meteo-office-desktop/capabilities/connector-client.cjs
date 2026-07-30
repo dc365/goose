@@ -208,7 +208,7 @@ async function testStdioConnector(config, secrets = {}) {
       cwd: config.cwd || undefined,
       windowsHide: true,
       shell: false,
-      env: { ...process.env, ...(config.runtimeEnv || {}), ...(secrets.env || {}) },
+      env: { ...process.env, ...(secrets.env || {}), ...(config.runtimeEnv || {}) },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     const timer = setTimeout(() => finish(new Error('工具服务初始化超时')), (config.timeout || 30) * 1000);
@@ -389,7 +389,7 @@ function extensionConfig(config, secrets = {}, availableTools) {
     description: config.description || config.name,
     cmd: config.command,
     args: config.args || [],
-    envs: { ...(config.runtimeEnv || {}), ...(secrets.env || {}) },
+    envs: { ...(secrets.env || {}), ...(config.runtimeEnv || {}) },
     env_keys: [],
     timeout: config.timeout || 30,
     cwd: config.cwd || undefined,

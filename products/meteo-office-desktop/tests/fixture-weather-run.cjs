@@ -45,6 +45,10 @@ try {
   assert.ok(weatherDataDiscovery.result.tools.every((tool) =>
     tool.maturity === tool.annotations.maturity
   ));
+  const weatherQueryTool = weatherDataDiscovery.result.tools
+    .find((tool) => tool.name === 'weather_query_dataset');
+  assert.equal(weatherQueryTool.annotations.readOnlyHint, false);
+  assert.equal(weatherQueryTool.effects.networkMutation, true);
 
   const fixture = WeatherConnector.createFixtureWeatherRun(workspace);
 

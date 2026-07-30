@@ -11,7 +11,7 @@ const SERVER_VERSION = '1.1.0';
 const CASE_ID = 'synthetic-fujian-rainstorm-001';
 
 const SYNTHETIC_CASE = Object.freeze({
-  schemaVersion: SCHEMA_VERSION,
+  schemaVersion: WeatherContracts.DATASET_SCHEMA_VERSION,
   id: CASE_ID,
   name: '福建暖区暴雨构造样例 A',
   synthetic: true,
@@ -21,6 +21,7 @@ const SYNTHETIC_CASE = Object.freeze({
     name: '福建中东部示范区域',
     bbox: [117.2, 24.8, 120.6, 27.7],
     timezone: 'Asia/Shanghai',
+    projection: 'EPSG:4326',
   },
   validTime: {
     start: '2026-06-18T08:00:00+08:00',
@@ -39,6 +40,34 @@ const SYNTHETIC_CASE = Object.freeze({
       'weather_course_site/lessons/lesson-10.html',
       'weather_course_site/lessons/lesson-15.html',
     ],
+  },
+  units: {
+    rain1h: 'mm',
+    rain3h: 'mm',
+    rain6h: 'mm',
+    rain12h: 'mm',
+    rain24h: 'mm',
+    regionalMax24h: 'mm',
+    temperature: '°C',
+    dewpoint: '°C',
+    windDirection: 'degree',
+    windSpeed: 'm/s',
+    gust: 'm/s',
+    pressure: 'hPa',
+    precipitableWater: 'mm',
+    cape: 'J/kg',
+    cin: 'J/kg',
+    kIndex: '°C',
+    liftedIndex: '°C',
+    shear0to6km: 'm/s',
+    lcl: 'm',
+    freezingLevel: 'm',
+    specificHumidity: 'g/kg',
+    moistureFluxConvergence: 's^-1',
+    omega: 'Pa/s',
+    height: 'gpm',
+    divergence: 's^-1',
+    maxDbz: 'dBZ',
   },
   stations: [
     { id: '58847', name: '福州', lon: 119.29, lat: 26.08, rain1h: 18.6, rain6h: 48.2, rain24h: 86.4, temperature: 26.8, dewpoint: 25.1, windDirection: 190, windSpeed: 6.8, gust: 14.1, pressure: 997.8, quality: 'checked' },
@@ -140,9 +169,9 @@ const BETA_TOOL_NAMES = new Set([
 
 const TOOL_DEFINITIONS = Object.freeze([
   { name: 'weather_list_sources', group: 'weather-data', description: '列出当前项目配置的本地或内网气象资料源及成熟度。', parameters: [], annotations: { readOnlyHint: true }, effects: { filesystemRead: 'workspace', risk: 'low' } },
-  { name: 'weather_query_dataset', group: 'weather-data', description: '从本地 JSON/CSV 或内网 HTTP/HTTPS JSON Provider 读取标准化气象资料集。', parameters: ['sourceId', 'datasetRef', 'query'], annotations: { readOnlyHint: true }, effects: { filesystemRead: 'workspace', networkRead: true, risk: 'medium' } },
+  { name: 'weather_query_dataset', group: 'weather-data', description: '从本地 JSON/CSV 或内网 HTTP/HTTPS JSON Provider 读取标准化气象资料集。HTTP Provider 可能使用 POST。', parameters: ['sourceId', 'datasetRef', 'query'], annotations: { readOnlyHint: false }, effects: { filesystemRead: 'workspace', networkRead: true, networkMutation: true, risk: 'medium' } },
   { name: 'weather_validate_dataset', group: 'weather-data', description: '校验气象资料的来源、时次、区域、单位、质控与可发布性。', parameters: ['dataset'], annotations: { readOnlyHint: true }, effects: { risk: 'low' } },
-  { name: 'weather_build_evidence', group: 'weather-data', description: '把标准化气象资料转换为可登记、可过期和可追溯的 Evidence。', parameters: ['dataset'], annotations: { readOnlyHint: true }, effects: { risk: 'low' } },
+  { name: 'weather_build_evidence', group: 'weather-data', description: '把标准化气象资料分页转换为可登记、可过期和可追溯的 Evidence。', parameters: ['dataset', 'limit', 'cursor'], annotations: { readOnlyHint: true }, effects: { risk: 'low' } },
   { name: 'weather_diagnose_dataset', group: 'weather-diagnosis', description: '对真实资料执行可解释的形势、强降水和强对流算法，并生成诊断 Evidence。', parameters: ['dataset', 'kind'], annotations: { readOnlyHint: true }, effects: { risk: 'low' } },
   { name: 'weather_render_dataset_map', group: 'gis-map', description: '在项目工作区内生成带来源、成熟度、诊断和 Evidence 血缘的 HTML 风险图。', parameters: ['dataset', 'diagnosis', 'evidence', 'outputPath'], annotations: { readOnlyHint: false }, effects: { filesystemWrite: 'workspace', risk: 'medium' } },
   { name: 'weather_list_cases', group: 'weather-data', description: '列出内置可重复运行的气象演示案例及数据声明。', parameters: [], annotations: { readOnlyHint: true }, effects: { risk: 'low' } },
@@ -363,6 +392,11 @@ ${SYNTHETIC_CASE.forecastDraft.summary}
 `;
 }
 
+function csvCell(value) {
+  const normalized = String(value ?? '');
+  return /[",\r\n]/.test(normalized) ? `"${normalized.replaceAll('"', '""')}"` : normalized;
+}
+
 function exportDemoBundle({ workspace, outputDirectory = 'artifacts/meteomate-demo' } = {}) {
   const { fs, path } = nodeModules();
   const root = workspaceRoot(workspace);
@@ -379,7 +413,7 @@ function exportDemoBundle({ workspace, outputDirectory = 'artifacts/meteomate-de
       station.rain24h, station.temperature, station.dewpoint, station.windSpeed, station.quality,
     ]),
   ];
-  fs.writeFileSync(csvPath, `${csvRows.map((row) => row.join(',')).join('\n')}\n`, { encoding: 'utf8', mode: 0o600 });
+  fs.writeFileSync(csvPath, `${csvRows.map((row) => row.map(csvCell).join(',')).join('\n')}\n`, { encoding: 'utf8', mode: 0o600 });
   fs.writeFileSync(markdownPath, analysisMarkdown(), { encoding: 'utf8', mode: 0o600 });
   return [
     artifactRecord(jsonPath, 'application/json'),
@@ -396,15 +430,19 @@ function createDemoArtifacts(workspace) {
 }
 
 function fixtureDataset() {
-  return WeatherContracts.normalizeDataset({
-    ...clone(SYNTHETIC_CASE),
-    metadata: {
-      classification: 'demo',
-      synthetic: true,
-      fixture: true,
-      caseId: CASE_ID,
-    },
-  }, {
+  const { fs, path } = nodeModules();
+  const fixturePath = path.join(
+    __dirname,
+    '..',
+    'fixtures',
+    'weather',
+    'golden',
+    CASE_ID,
+    'v1',
+    'dataset.json',
+  );
+  const dataset = JSON.parse(fs.readFileSync(fixturePath, 'utf8'));
+  return WeatherContracts.normalizeDataset(dataset, {
     id: 'meteomate-synthetic-fixture',
     name: 'MeteoMate synthetic fixture',
     type: 'fixture',
@@ -413,6 +451,7 @@ function fixtureDataset() {
     classification: 'demo',
     synthetic: true,
     official: false,
+    authority: 'fixture',
   });
 }
 
@@ -718,7 +757,7 @@ function presetFor(value) {
   return PRESETS[value?.id] || PRESETS[value?.connectorType] || null;
 }
 
-function materialize(input = {}, { productRoot, workspace } = {}) {
+function materialize(input = {}, { productRoot, workspace, attestationKeyFile } = {}) {
   const { path } = nodeModules();
   const preset = presetFor(input);
   if (!preset) throw new Error('未知的内置气象工具服务');
@@ -737,6 +776,9 @@ function materialize(input = {}, { productRoot, workspace } = {}) {
     runtimeEnv: {
       ELECTRON_RUN_AS_NODE: '1',
       METEOMATE_WEATHER_WORKSPACE: root,
+      ...(attestationKeyFile
+        ? { METEOMATE_WEATHER_ATTESTATION_KEY_FILE: path.resolve(attestationKeyFile) }
+        : {}),
     },
     runtimeInfo: {
       source: 'bundled-weather-runtime',
@@ -803,37 +845,55 @@ async function executeTool(name, input = {}) {
     case 'weather_validate_dataset': {
       const dataset = WeatherContracts.normalizeDataset(input.dataset);
       const validation = WeatherContracts.validateDataset(dataset);
+      const evidenceSummary = WeatherContracts.summarizeEvidence(
+        WeatherContracts.datasetEvidence(dataset),
+      );
       return {
         schemaVersion: WeatherContracts.DATASET_SCHEMA_VERSION,
         dataset,
         validation,
-        evidence: WeatherContracts.datasetEvidence(dataset),
+        evidenceSummary,
         publication: WeatherContracts.publicationAssessment(dataset, validation),
       };
     }
     case 'weather_build_evidence': {
       const dataset = WeatherContracts.normalizeDataset(input.dataset);
       const validation = WeatherContracts.validateDataset(dataset);
+      const page = WeatherContracts.evidencePage(dataset, {
+        limit: input.limit,
+        cursor: input.cursor,
+      });
       return {
         schemaVersion: WeatherContracts.DATASET_SCHEMA_VERSION,
         datasetId: dataset.id,
         datasetHash: dataset.contentHash,
         validation,
-        evidence: WeatherContracts.datasetEvidence(dataset),
+        evidence: page.evidence,
+        evidencePage: page.page,
         publication: WeatherContracts.publicationAssessment(dataset, validation),
       };
     }
-    case 'weather_diagnose_dataset':
-      return WeatherDiagnosis.diagnoseDataset(input.dataset, input.kind || 'all');
+    case 'weather_diagnose_dataset': {
+      const result = WeatherDiagnosis.diagnoseDataset(input.dataset, input.kind || 'all');
+      const algorithmEvidence = result.evidence
+        .filter((record) => record.evidenceType === 'algorithm-diagnosis');
+      return {
+        ...result,
+        evidence: algorithmEvidence,
+        evidenceSummary: WeatherContracts.summarizeEvidence(result.evidence),
+      };
+    }
     case 'weather_render_dataset_map': {
       const dataset = WeatherContracts.normalizeDataset(input.dataset);
       const validation = WeatherContracts.validateDataset(dataset);
-      const calculated = WeatherDiagnosis.diagnoseDataset(dataset, 'all');
+      const calculated = WeatherDiagnosis.diagnoseDataset(dataset, 'heavy-rain');
       const diagnosis = {
         ...calculated.diagnosis,
         algorithm: calculated.algorithm,
       };
       const evidence = calculated.evidence;
+      const algorithmEvidence = evidence
+        .filter((record) => record.evidenceType === 'algorithm-diagnosis');
       const artifact = WeatherRender.renderDatasetMap({
         workspace,
         dataset,
@@ -846,7 +906,8 @@ async function executeTool(name, input = {}) {
         dataset,
         validation,
         diagnosis,
-        evidence,
+        evidence: algorithmEvidence,
+        evidenceSummary: WeatherContracts.summarizeEvidence(evidence),
         artifact,
         publication: WeatherContracts.publicationAssessment(dataset, validation),
       };
@@ -872,7 +933,12 @@ async function startServer() {
       query: objectValue.optional(),
     },
     weather_validate_dataset: { dataset: objectValue },
-    weather_build_evidence: { dataset: objectValue },
+    weather_build_evidence: {
+      dataset: objectValue,
+      limit: z.number().int().min(1).max(WeatherContracts.MAX_EVIDENCE_PAGE_SIZE).optional()
+        .default(WeatherContracts.DEFAULT_EVIDENCE_PAGE_SIZE),
+      cursor: z.string().max(1024).optional(),
+    },
     weather_diagnose_dataset: {
       dataset: objectValue,
       kind: z.enum(['all', 'synoptic', 'heavy-rain', 'convection']).optional().default('all'),
@@ -934,7 +1000,11 @@ async function startServer() {
         } catch (error) {
           const result = {
             schemaVersion: SCHEMA_VERSION,
-            error: { code: 'WEATHER_TOOL_FAILED', message: String(error?.message || error) },
+            error: {
+              code: String(error?.code || 'WEATHER_TOOL_FAILED'),
+              message: String(error?.message || error),
+              details: error?.details || undefined,
+            },
           };
           return {
             isError: true,

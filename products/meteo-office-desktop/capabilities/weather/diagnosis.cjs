@@ -1,27 +1,28 @@
 'use strict';
 
 const Contracts = require('./contracts.cjs');
+const SchemaValidator = require('./schema-validator.cjs');
 
 const ALGORITHM_VERSION = 'meteomate-weather-diagnosis/1.0.0';
 
 function clamp(value, minimum, maximum) {
-  return Math.max(minimum, Math.min(maximum, Number(value) || 0));
+  return Math.max(minimum, Math.min(maximum, Contracts.number(value, 0)));
 }
 
 function scale(value, low, high, maximum, invert = false) {
-  const number = Number(value);
+  const number = Contracts.number(value);
   if (!Number.isFinite(number)) return 0;
   const ratio = clamp((number - low) / Math.max(1e-9, high - low), 0, 1);
   return (invert ? 1 - ratio : ratio) * maximum;
 }
 
 function average(values) {
-  const numbers = values.map(Number).filter(Number.isFinite);
+  const numbers = values.map((value) => Contracts.number(value)).filter(Number.isFinite);
   return numbers.length ? numbers.reduce((sum, value) => sum + value, 0) / numbers.length : null;
 }
 
 function max(values) {
-  const numbers = values.map(Number).filter(Number.isFinite);
+  const numbers = values.map((value) => Contracts.number(value)).filter(Number.isFinite);
   return numbers.length ? Math.max(...numbers) : null;
 }
 
@@ -38,12 +39,81 @@ function indices(dataset) {
   return dataset.upperAir?.indices || {};
 }
 
+function diagnosticInputReadiness(dataset, kind) {
+  const env = indices(dataset);
+  const low = upper(dataset, '850hPa');
+  const mid = upper(dataset, '700hPa');
+  const high = upper(dataset, '200hPa');
+  const surface = upper(dataset, 'surface');
+  const finiteCount = (values) => values
+    .map((value) => Contracts.number(value))
+    .filter(Number.isFinite)
+    .length;
+  if (kind === 'synoptic') {
+    const featureText = [
+      low.feature,
+      surface.feature,
+      upper(dataset, '500hPa').feature,
+      high.feature,
+    ].filter(Boolean).join(' ');
+    const ready = Boolean(featureText.trim())
+      || finiteCount([low.windSpeed, high.divergence]) > 0;
+    return {
+      ready,
+      requirement: '至少需要一个天气系统特征字段，或低空风速/高空辐散定量值',
+    };
+  }
+  if (kind === 'heavy-rain') {
+    const precipitationOrMoisture = finiteCount([
+      env.precipitableWater,
+      low.specificHumidity,
+      low.dewpoint,
+      ...(dataset.stations || []).flatMap((station) => [station.rain6h, station.rain24h]),
+      ...(dataset.guidance || []).map((item) => item.regionalMax24h),
+    ]);
+    const dynamicsOrInstability = finiteCount([
+      mid.omega,
+      high.divergence,
+      low.moistureFluxConvergence,
+      low.windSpeed,
+      env.cape,
+      env.cin,
+      env.kIndex,
+      env.liftedIndex,
+    ]);
+    return {
+      ready: precipitationOrMoisture > 0
+        && dynamicsOrInstability > 0
+        && precipitationOrMoisture + dynamicsOrInstability >= 3,
+      requirement: '至少需要 3 个定量指标，并同时覆盖降水/水汽与动力/不稳定条件',
+    };
+  }
+  if (kind === 'convection') {
+    const values = [
+      env.cape,
+      env.cin,
+      env.shear0to6km,
+      env.freezingLevel,
+      env.lcl,
+      dataset.radar?.maxDbz,
+      env.precipitableWater,
+    ];
+    const hasTrigger = Number.isFinite(Contracts.number(env.cape))
+      || Number.isFinite(Contracts.number(dataset.radar?.maxDbz));
+    return {
+      ready: hasTrigger && finiteCount(values) >= 3,
+      requirement: '至少需要 CAPE 或雷达反射率，并具备不少于 3 个对流环境/雷达指标',
+    };
+  }
+  return { ready: false, requirement: `不支持的诊断类型：${kind}` };
+}
+
 function moistureDimension(dataset) {
   const env = indices(dataset);
   const low = upper(dataset, '850hPa');
-  const pw = Number(env.precipitableWater);
-  const q = Number(low.specificHumidity);
-  const dewpoint = Number(low.dewpoint);
+  const pw = Contracts.number(env.precipitableWater);
+  const q = Contracts.number(low.specificHumidity);
+  const dewpoint = Contracts.number(low.dewpoint);
   const score = clamp(
     scale(pw, 30, 70, 12)
       + scale(q, 6, 18, 8)
@@ -65,9 +135,9 @@ function liftDimension(dataset) {
   const mid = upper(dataset, '700hPa');
   const high = upper(dataset, '200hPa');
   const low = upper(dataset, '850hPa');
-  const omega = Number(mid.omega);
-  const divergence = Number(high.divergence);
-  const convergence = Number(low.moistureFluxConvergence ?? low.convergence);
+  const omega = Contracts.number(mid.omega);
+  const divergence = Contracts.number(high.divergence);
+  const convergence = Contracts.number(low.moistureFluxConvergence);
   const omegaScore = Number.isFinite(omega) ? scale(-omega, 0, 0.8, 12) : 0;
   const upperScore = Number.isFinite(divergence) ? scale(divergence, 0, 6e-5, 7) : 0;
   const lowScore = Number.isFinite(convergence) ? scale(Math.abs(Math.min(0, convergence)), 0, 8e-5, 6) : 0;
@@ -84,10 +154,10 @@ function liftDimension(dataset) {
 
 function instabilityDimension(dataset) {
   const env = indices(dataset);
-  const cape = Number(env.cape);
-  const cin = Number(env.cin);
-  const k = Number(env.kIndex);
-  const li = Number(env.liftedIndex);
+  const cape = Contracts.number(env.cape);
+  const cin = Contracts.number(env.cin);
+  const k = Contracts.number(env.kIndex);
+  const li = Contracts.number(env.liftedIndex);
   const score = clamp(
     scale(cape, 200, 2500, 10)
       + (Number.isFinite(cin) ? scale(cin, 0, 180, 3, true) : 0)
@@ -110,7 +180,7 @@ function instabilityDimension(dataset) {
 function persistenceDimension(dataset) {
   const low = upper(dataset, '850hPa');
   const radar = dataset.radar || {};
-  const lowJet = Number(low.windSpeed);
+  const lowJet = Contracts.number(low.windSpeed);
   const radarSignals = Array.isArray(radar.signals) ? radar.signals.join(' ') : '';
   const training = textIncludes(`${radar.morphology || ''} ${radarSignals}`, ['列车', 'training', '上游持续', '带状']);
   const rain6 = max((dataset.stations || []).map((station) => station.rain6h));
@@ -183,13 +253,13 @@ function diagnoseHeavyRain(dataset) {
 function diagnoseConvection(dataset) {
   const env = indices(dataset);
   const radar = dataset.radar || {};
-  const cape = Number(env.cape);
-  const cin = Number(env.cin);
-  const shear = Number(env.shear0to6km);
-  const freezing = Number(env.freezingLevel);
-  const lcl = Number(env.lcl);
-  const maxDbz = Number(radar.maxDbz);
-  const pw = Number(env.precipitableWater);
+  const cape = Contracts.number(env.cape);
+  const cin = Contracts.number(env.cin);
+  const shear = Contracts.number(env.shear0to6km);
+  const freezing = Contracts.number(env.freezingLevel);
+  const lcl = Contracts.number(env.lcl);
+  const maxDbz = Contracts.number(radar.maxDbz);
+  const pw = Contracts.number(env.precipitableWater);
   const shortRain = clamp(
     scale(pw, 30, 70, 0.35)
       + scale(cape, 200, 2200, 0.25)
@@ -239,7 +309,7 @@ function diagnoseSynoptic(dataset) {
   const lowFeature = `${low.feature || ''} ${surface.feature || ''}`;
   const midFeature = String(mid.feature || '');
   const highFeature = String(high.feature || '');
-  if (Number(low.windSpeed) >= 12 || textIncludes(lowFeature, ['低空急流', 'low-level jet'])) {
+  if (Contracts.number(low.windSpeed) >= 12 || textIncludes(lowFeature, ['低空急流', 'low-level jet'])) {
     systems.push({ type: 'low-level-jet', name: '低空急流', confidence: 0.82, evidence: `850hPa 风速 ${low.windSpeed ?? '未知'} m/s；${low.feature || ''}`.trim() });
   }
   if (textIncludes(midFeature, ['槽', 'trough'])) {
@@ -248,7 +318,7 @@ function diagnoseSynoptic(dataset) {
   if (textIncludes(midFeature, ['副高', 'subtropical'])) {
     systems.push({ type: 'subtropical-high-edge', name: '副热带高压边缘', confidence: 0.75, evidence: midFeature });
   }
-  if (Number(high.divergence) > 0 || textIncludes(highFeature, ['辐散', 'divergence'])) {
+  if (Contracts.number(high.divergence) > 0 || textIncludes(highFeature, ['辐散', 'divergence'])) {
     systems.push({ type: 'upper-divergence', name: '高空辐散', confidence: 0.76, evidence: `${highFeature} ${high.divergence ?? ''}`.trim() });
   }
   if (textIncludes(lowFeature, ['辐合', '切变', '倒槽', 'convergence'])) {
@@ -300,15 +370,53 @@ function diagnosisEvidence(dataset, diagnosis) {
 }
 
 function diagnoseDataset(datasetInput, kind = 'all') {
+  if (!['all', 'synoptic', 'heavy-rain', 'convection'].includes(kind)) {
+    throw new Contracts.WeatherContractError(
+      'WEATHER_DIAGNOSIS_KIND_UNSUPPORTED',
+      `不支持的气象诊断类型：${kind}`,
+      { kind },
+    );
+  }
   const dataset = Contracts.normalizeDataset(datasetInput);
   const validation = Contracts.validateDataset(dataset);
+  if (!validation.valid) {
+    throw new Contracts.WeatherContractError(
+      'WEATHER_DATASET_INVALID',
+      `气象资料集未通过诊断前校验：${validation.errors.join('；')}`,
+      { validation },
+    );
+  }
+  const requestedKinds = kind === 'all'
+    ? ['synoptic', 'heavy-rain', 'convection']
+    : [kind];
+  const insufficient = requestedKinds
+    .map((requestedKind) => ({
+      kind: requestedKind,
+      ...diagnosticInputReadiness(dataset, requestedKind),
+    }))
+    .filter((entry) => !entry.ready);
+  if (insufficient.length) {
+    throw new Contracts.WeatherContractError(
+      'WEATHER_DIAGNOSIS_INPUT_INSUFFICIENT',
+      `气象诊断输入不足：${insufficient.map((entry) => `${entry.kind}（${entry.requirement}）`).join('；')}`,
+      { requestedKind: kind, insufficient },
+    );
+  }
   const diagnosis = {};
   if (kind === 'all' || kind === 'synoptic') diagnosis.synoptic = diagnoseSynoptic(dataset);
   if (kind === 'all' || kind === 'heavy-rain') diagnosis.heavyRain = diagnoseHeavyRain(dataset);
   if (kind === 'all' || kind === 'convection') diagnosis.convection = diagnoseConvection(dataset);
   const evidence = [...Contracts.datasetEvidence(dataset), ...diagnosisEvidence(dataset, diagnosis)];
-  return {
+  if (evidence.length > Contracts.MAX_EVIDENCE_RECORDS) {
+    throw new Contracts.WeatherContractError(
+      'WEATHER_EVIDENCE_LIMIT_EXCEEDED',
+      `气象诊断 Evidence 超过 ${Contracts.MAX_EVIDENCE_RECORDS} 条限制`,
+      { maximum: Contracts.MAX_EVIDENCE_RECORDS, actual: evidence.length },
+    );
+  }
+  const result = {
     schemaVersion: Contracts.DIAGNOSIS_SCHEMA_VERSION,
+    kind: 'WeatherDiagnosisResult',
     dataset: {
       id: dataset.id,
       name: dataset.name,
@@ -324,6 +432,8 @@ function diagnoseDataset(datasetInput, kind = 'all') {
     publication: Contracts.publicationAssessment(dataset, validation),
     algorithm: { name: 'meteomate-weather-diagnosis', version: ALGORITHM_VERSION },
   };
+  SchemaValidator.validateOrThrow(SchemaValidator.CONTRACT_KINDS.DIAGNOSIS_RESULT, result);
+  return result;
 }
 
 module.exports = {

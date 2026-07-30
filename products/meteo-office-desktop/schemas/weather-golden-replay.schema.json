@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meteomate.local/schemas/weather-golden-replay.schema.json",
+  "title": "MeteoMate Weather Golden Replay Manifest",
+  "type": "object",
+  "required": [
+    "apiVersion",
+    "kind",
+    "id",
+    "revision",
+    "supersedes",
+    "dataPolicy",
+    "input",
+    "pipeline",
+    "clock",
+    "expected"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "apiVersion": { "const": "meteomate.weather.golden-replay/v1" },
+    "kind": { "const": "WeatherGoldenReplay" },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)*$"
+    },
+    "revision": { "type": "integer", "minimum": 1 },
+    "supersedes": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "dataPolicy": {
+      "type": "object",
+      "required": [
+        "origin",
+        "classification",
+        "synthetic",
+        "official",
+        "anonymizationProfile",
+        "privacyReviewed"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "origin": { "enum": ["synthetic", "anonymized-historical"] },
+        "classification": { "const": "demo" },
+        "synthetic": { "const": true },
+        "official": { "const": false },
+        "anonymizationProfile": { "type": "string", "minLength": 1 },
+        "privacyReviewed": { "const": true }
+      }
+    },
+    "input": {
+      "type": "object",
+      "required": ["path", "fileSha256", "datasetSchemaVersion"],
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "fileSha256": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "datasetSchemaVersion": {
+          "const": "meteomate.weather.dataset/v1"
+        }
+      }
+    },
+    "pipeline": {
+      "type": "object",
+      "required": [
+        "diagnosisKind",
+        "normalizerVersion",
+        "algorithm",
+        "renderer"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "diagnosisKind": {
+          "enum": ["all", "synoptic", "heavy-rain", "convection"]
+        },
+        "normalizerVersion": { "type": "string", "minLength": 1 },
+        "algorithm": { "$ref": "#/$defs/versionedComponent" },
+        "renderer": {
+          "type": "object",
+          "required": ["name", "version", "outputPath"],
+          "additionalProperties": false,
+          "properties": {
+            "name": { "type": "string", "minLength": 1 },
+            "version": { "type": "string", "minLength": 1 },
+            "outputPath": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    },
+    "clock": {
+      "type": "object",
+      "required": ["inWindow", "expired"],
+      "additionalProperties": false,
+      "properties": {
+        "inWindow": { "type": "string", "format": "date-time" },
+        "expired": { "type": "string", "format": "date-time" }
+      }
+    },
+    "expected": {
+      "type": "object",
+      "required": [
+        "path",
+        "fileSha256",
+        "datasetHash",
+        "evidenceCount",
+        "evidenceTypeCounts",
+        "artifactContentHash",
+        "readyForRelease"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "fileSha256": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "datasetHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "evidenceCount": { "type": "integer", "minimum": 0 },
+        "evidenceTypeCounts": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": { "minLength": 1 },
+          "additionalProperties": { "type": "integer", "minimum": 0 }
+        },
+        "artifactContentHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "readyForRelease": { "const": false }
+      }
+    }
+  },
+  "$defs": {
+    "versionedComponent": {
+      "type": "object",
+      "required": ["name", "version"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

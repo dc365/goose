@@ -30,9 +30,9 @@ METEOMATE_SECURITY_MODE=internal
 
 - 允许 HTTP 和 HTTPS；
 - `allowedHosts` 可不配置；
-- 允许 Authorization、API Key、Cookie 和自定义 Token Header；
-- 允许 URL Basic Auth；
-- 默认跟随 HTTP 重定向；
+- 仅未受部署授权的实验来源保留内联 Authorization、API Key、Cookie、自定义 Token Header
+  和 URL Basic Auth 兼容；生产/官方来源必须使用部署凭据引用；
+- Weather Provider 一律不跟随 HTTP 重定向；
 - 允许绝对路径、项目目录外路径、共享盘和符号链接；
 - 凭据保存到当前用户 Profile 文件，不调用操作系统钥匙串；
 - `workspace-approval` 除明确 blocked 工具外直接放行；
@@ -62,11 +62,15 @@ METEOMATE_SECURITY_MODE=strict npm start
   "name": "本地业务资料",
   "type": "local",
   "root": "data/weather",
-  "classification": "production",
-  "official": true,
+  "classification": "experimental",
+  "official": false,
   "version": "operations-v1"
 }
 ```
+
+工作区配置不能自行获得生产或官方身份。只有部署方通过
+`METEOMATE_WEATHER_SOURCE_AUTHORITIES` 绑定精确工作区和本地 `root` 后，运行时才接受
+`beta / production / official` 身份。
 
 支持 JSON、GeoJSON 和站点 CSV。内网模式下 `root` 可以是：
 
@@ -75,13 +79,14 @@ METEOMATE_SECURITY_MODE=strict npm start
 - 已挂载共享盘；
 - 通过符号链接进入的资料目录。
 
-默认单文件上限为 512 MB，可在资料源中设置 `maxLocalFileBytes`，或通过：
+默认单文件上限为 64 MB。工作区资料源可以通过 `maxLocalFileBytes` 下调，不能自行上调；
+部署环境可通过：
 
 ```bash
-METEOMATE_WEATHER_LOCAL_MAX_BYTES=1073741824
+METEOMATE_WEATHER_LOCAL_MAX_BYTES=134217728
 ```
 
-调整。
+调整，但硬上限为 256 MB。
 
 ### 内网 HTTP/HTTPS JSON Provider
 
@@ -90,13 +95,13 @@ METEOMATE_WEATHER_LOCAL_MAX_BYTES=1073741824
   "id": "internal-weather-api",
   "name": "单位气象产品接口",
   "type": "http-json",
-  "baseUrl": "http://10.0.0.8:8080",
+  "baseUrl": "https://weather.internal",
   "queryPath": "/api/v1/meteomate/query",
   "method": "POST",
   "headers": {
-    "Authorization": "Bearer internal-token",
-    "X-Api-Key": "internal-key"
+    "X-Meteo-Tenant": "operations"
   },
+  "credentialRef": "weather:internal-weather-api",
   "timeoutMs": 60000,
   "classification": "production",
   "official": true,
@@ -108,30 +113,36 @@ METEOMATE_WEATHER_LOCAL_MAX_BYTES=1073741824
 
 - HTTP、HTTPS；
 - GET、POST；
-- 静态 Header；
-- `tokenEnv` 环境变量 Token；
-- `token` 或 `apiKey` 配置字段；
-- `http://user:password@host` Basic Auth；
-- 自动重定向；
+- 非敏感静态 Header；
+- 固定格式 `credentialRef`，且必须同时具有部署方来源授权和精确 Origin Binding；
+- 仅实验来源保留旧内联凭据兼容，生产/官方来源一律拒绝；
+- Weather Provider 的所有请求都禁止自动重定向；
 - 不填写 `allowedHosts`；
-- 可选 `allowedHosts: ["*", "10.0.0.8:8080", "*.internal"]`。
+- 非严格、非生产来源可选通配；严格或受保护来源必须显式列出主机。
 
-默认响应上限 128 MB，可通过 `maxResponseBytes` 或：
+部署授权必须绑定精确工作区、Provider 类型、Origin、`method`、`queryPath` 和版本。最终
+`queryPath` 必须与 `baseUrl` 同 Origin，不能用绝对 URL 降级或绕过主机策略。严格模式下，
+HTTP 来源若没有部署授权会在发出请求前被拒绝。成功响应
+必须使用 `meteomate.weather.provider/v1 / WeatherDatasetResponse` Envelope，Dataset 必须声明
+`meteomate.weather.dataset/v1`、带时区时间、`EPSG:4326`、单位和质控信息。
+
+默认响应上限为 32 MB。工作区资料源可以通过 `maxResponseBytes` 下调，不能自行上调；
+部署环境可通过：
 
 ```bash
-METEOMATE_WEATHER_HTTP_MAX_BYTES=268435456
+METEOMATE_WEATHER_HTTP_MAX_BYTES=67108864
 ```
 
-调整。
+调整，但硬上限为 128 MB。
 
 ### MCP 工具
 
 | 工具 | 作用 |
 |---|---|
 | `weather_list_sources` | 列出项目资料源 |
-| `weather_query_dataset` | 读取并标准化资料 |
+| `weather_query_dataset` | 读取并标准化资料，返回 Evidence 数量与摘要 |
 | `weather_validate_dataset` | 校验来源、时次、区域、质控和成熟度 |
-| `weather_build_evidence` | 生成资料 Evidence |
+| `weather_build_evidence` | 使用 `limit/cursor` 分页生成资料 Evidence（每页最多 200 条） |
 | `weather_diagnose_dataset` | 执行形势、强降水和强对流诊断 |
 | `weather_render_dataset_map` | 生成带 Evidence 血缘的 HTML 风险图 |
 
@@ -152,6 +163,10 @@ quality / metadata
 ```
 
 Dataset ID、内容摘要与 Evidence ID 排除读取时间和本机绝对路径等易变字段。同一份资料复制到另一台机器后，应保持相同血缘标识。
+单个 Dataset 最多包含 600 个站点、1,000 条模式指导和 5,000 条 Evidence。查询工具不会把
+全量 Evidence 自动塞入 MCP/LLM 上下文；校验只返回摘要，诊断/制图只返回算法 Evidence，
+调用方需显式分页获取资料事实。来源证明密钥保存在当前 Profile，权限为 `0600`，供数据、
+诊断和 GIS 三个 Weather MCP 进程共同验证。
 
 透明规则诊断包括：
 

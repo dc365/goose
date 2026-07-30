@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meteomate.local/schemas/weather-query.schema.json",
+  "title": "MeteoMate Weather Query",
+  "type": "object",
+  "required": ["apiVersion", "kind", "sourceId", "query"],
+  "additionalProperties": false,
+  "properties": {
+    "apiVersion": { "const": "meteomate.weather/v1" },
+    "kind": { "const": "WeatherQuery" },
+    "sourceId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)*$"
+    },
+    "datasetRef": {
+      "type": ["string", "null"],
+      "maxLength": 1024
+    },
+    "securityMode": {
+      "enum": ["internal", "strict"]
+    },
+    "query": {
+      "type": "object",
+      "maxProperties": 64,
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "datasetId": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "region": {
+          "anyOf": [
+            {
+              "type": "object",
+              "maxProperties": 16,
+              "additionalProperties": {
+                "anyOf": [
+                  { "type": ["string", "number", "boolean", "null"], "maxLength": 1024 },
+                  {
+                    "type": "array",
+                    "maxItems": 16,
+                    "items": { "type": ["string", "number", "boolean", "null"] }
+                  }
+                ]
+              }
+            },
+            { "type": "string", "maxLength": 1024 },
+            { "type": "null" }
+          ]
+        },
+        "issueTime": { "type": ["string", "null"], "format": "date-time" },
+        "validTime": {
+          "anyOf": [
+            { "type": "string", "format": "date-time" },
+            {
+              "type": "object",
+              "required": [],
+              "additionalProperties": false,
+              "properties": {
+                "start": { "type": ["string", "null"], "format": "date-time" },
+                "end": { "type": ["string", "null"], "format": "date-time" }
+              }
+            },
+            { "type": "null" }
+          ]
+        },
+        "model": { "type": ["string", "null"], "maxLength": 256 },
+        "forecastHour": { "type": ["number", "null"] },
+        "units": {
+          "type": "object",
+          "maxProperties": 128,
+          "additionalProperties": { "type": "string", "minLength": 1, "maxLength": 64 }
+        }
+      },
+      "additionalProperties": {
+        "anyOf": [
+          { "type": ["string", "number", "boolean", "null"], "maxLength": 4096 },
+          {
+            "type": "array",
+            "maxItems": 256,
+            "items": {
+              "type": ["string", "number", "boolean", "null"],
+              "maxLength": 4096
+            }
+          }
+        ]
+      }
+    }
+  }
+}

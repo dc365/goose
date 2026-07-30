@@ -6,6 +6,8 @@ const path = require('node:path');
 const SafeWorkspace = require('../safe-workspace.cjs');
 const Contracts = require('./contracts.cjs');
 
+const RENDERER_VERSION = 'meteomate-weather-risk-map/1.0.0';
+
 function escapeHtml(value) {
   return String(value ?? '')
     .replaceAll('&', '&amp;')
@@ -42,9 +44,13 @@ function renderHtml(dataset, diagnosis = {}) {
   const width = Math.max(0.1, maxLon - minLon);
   const height = Math.max(0.1, maxLat - minLat);
   const stations = (dataset.stations || [])
-    .filter((station) => Number.isFinite(station.lon) && Number.isFinite(station.lat))
+    .filter((station) => (
+      Number.isFinite(station.lon)
+      && Number.isFinite(station.lat)
+      && (Number.isFinite(station.rain24h) || Number.isFinite(station.rain6h))
+    ))
     .map((station) => {
-      const rain = Number.isFinite(station.rain24h) ? station.rain24h : Number.isFinite(station.rain6h) ? station.rain6h : 0;
+      const rain = Number.isFinite(station.rain24h) ? station.rain24h : station.rain6h;
       const x = 70 + ((station.lon - minLon) / width) * 740;
       const y = 430 - ((station.lat - minLat) / height) * 340;
       const radius = Math.max(8, Math.min(30, Math.sqrt(Math.max(0, rain)) * 2.2));
@@ -114,9 +120,17 @@ function renderDatasetMap({ workspace, dataset: input, diagnosis = {}, evidence 
     { securityMode: 'strict' },
   );
   const dataset = Contracts.normalizeDataset(input);
+  const validation = Contracts.validateDataset(dataset);
+  if (!validation.valid) {
+    throw new Contracts.WeatherContractError(
+      'WEATHER_DATASET_INVALID',
+      `气象资料集未通过制图前校验：${validation.errors.join('；')}`,
+      { validation },
+    );
+  }
   const target = SafeWorkspace.ensureParent(root, outputPath, { securityMode: 'strict' });
   fs.writeFileSync(target, renderHtml(dataset, diagnosis), { encoding: 'utf8', mode: 0o600 });
   return artifactRecord(target, dataset, diagnosis, evidence);
 }
 
-module.exports = { renderDatasetMap, renderHtml, artifactRecord };
+module.exports = { RENDERER_VERSION, renderDatasetMap, renderHtml, artifactRecord };

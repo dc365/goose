@@ -138,6 +138,7 @@ function createCapabilityService({
       return WeatherConnector.materialize(input, {
         productRoot,
         workspace: weatherWorkspace(request),
+        attestationKeyFile: path.join(paths().root, 'weather-provider-attestation.key'),
       });
     }
     return input;

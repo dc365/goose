@@ -1,0 +1,227 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meteomate.local/schemas/weather-provider-result.schema.json",
+  "title": "MeteoMate Weather Provider Result",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "kind",
+    "provider",
+    "dataset",
+    "validation",
+    "evidenceSummary",
+    "publication"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": { "const": "meteomate.weather.dataset/v1" },
+    "kind": { "const": "WeatherProviderResult" },
+    "provider": { "$ref": "#/$defs/provider" },
+    "dataset": {
+      "$ref": "https://meteomate.local/schemas/weather-dataset.schema.json#/$defs/normalizedDataset"
+    },
+    "validation": { "$ref": "#/$defs/validation" },
+    "evidenceSummary": { "$ref": "#/$defs/evidenceSummary" },
+    "publication": { "$ref": "#/$defs/publication" }
+  },
+  "$defs": {
+    "provider": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "type",
+        "description",
+        "classification",
+        "official",
+        "synthetic",
+        "authority",
+        "version"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "type": { "enum": ["local", "http-json"] },
+        "description": { "type": "string" },
+        "classification": {
+          "enum": ["demo", "experimental", "beta", "production"]
+        },
+        "official": { "type": "boolean" },
+        "synthetic": { "type": "boolean" },
+        "authority": {
+          "enum": ["fixture", "workspace", "deployment", "untrusted"]
+        },
+        "version": { "type": "string", "minLength": 1 },
+        "root": { "type": "string" },
+        "baseUrl": { "type": "string", "pattern": "^https?://" }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "required": [
+        "valid",
+        "errors",
+        "warnings",
+        "errorDetails",
+        "warningDetails"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "valid": { "type": "boolean" },
+        "errors": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "warnings": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "errorDetails": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/validationDetail" }
+        },
+        "warningDetails": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/validationDetail" }
+        }
+      }
+    },
+    "validationDetail": {
+      "type": "object",
+      "required": ["code", "path", "message"],
+      "additionalProperties": false,
+      "properties": {
+        "code": { "type": "string", "minLength": 1 },
+        "path": { "type": "string" },
+        "message": { "type": "string", "minLength": 1 }
+      }
+    },
+    "evidenceSummary": {
+      "type": "object",
+      "required": [
+        "total",
+        "evidenceTypeCounts",
+        "evidenceSetHash",
+        "pageTool"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "total": { "type": "integer", "minimum": 0, "maximum": 5000 },
+        "evidenceTypeCounts": {
+          "type": "object",
+          "maxProperties": 16,
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 5000
+          }
+        },
+        "evidenceSetHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "pageTool": { "const": "weather_build_evidence" }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "required": [
+        "id",
+        "apiVersion",
+        "kind",
+        "evidenceType",
+        "source",
+        "sourceVersion",
+        "model",
+        "initTime",
+        "validTime",
+        "forecastHour",
+        "region",
+        "variable",
+        "level",
+        "unit",
+        "value",
+        "algorithm",
+        "confidence",
+        "uncertainty",
+        "createdAt",
+        "expiresAt",
+        "metadata"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^evidence-weather-[a-f0-9]{24}$"
+        },
+        "apiVersion": { "const": "meteomate/v1" },
+        "kind": { "const": "Evidence" },
+        "evidenceType": { "type": "string", "minLength": 1 },
+        "source": { "type": "string", "minLength": 1 },
+        "sourceVersion": { "type": ["string", "null"] },
+        "model": { "type": ["string", "null"] },
+        "initTime": { "type": ["string", "null"], "format": "date-time" },
+        "validTime": { "type": ["string", "null"], "format": "date-time" },
+        "forecastHour": { "type": ["number", "null"] },
+        "region": { "type": ["string", "null"] },
+        "variable": { "type": ["string", "null"] },
+        "level": { "type": ["string", "number", "null"] },
+        "unit": { "type": ["string", "null"] },
+        "value": true,
+        "algorithm": {
+          "anyOf": [
+            { "type": "object" },
+            { "type": "null" }
+          ]
+        },
+        "confidence": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1
+        },
+        "uncertainty": { "type": ["string", "null"] },
+        "createdAt": { "type": "number", "minimum": 0 },
+        "expiresAt": { "type": ["string", "null"], "format": "date-time" },
+        "metadata": { "type": "object" }
+      }
+    },
+    "publication": {
+      "type": "object",
+      "required": [
+        "readyForHumanReview",
+        "readyForRelease",
+        "blockers",
+        "warnings",
+        "requiresHumanSignoff",
+        "classification"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "readyForHumanReview": { "type": "boolean" },
+        "readyForRelease": { "const": false },
+        "blockers": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "warnings": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "requiresHumanSignoff": { "const": true },
+        "classification": {
+          "enum": ["demo", "experimental", "beta", "production", "unknown"]
+        }
+      }
+    },
+    "algorithm": {
+      "type": "object",
+      "required": ["name", "version"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

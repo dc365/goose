@@ -11,7 +11,15 @@ async function main() {
   try {
     const materialized = WeatherConnector.materialize(
       WeatherConnector.PRESETS['weather-data'],
-      { productRoot, workspace },
+      {
+        productRoot,
+        workspace,
+        attestationKeyFile: path.join(workspace, 'profile', 'weather-provider.key'),
+      },
+    );
+    assert.equal(
+      materialized.runtimeEnv.METEOMATE_WEATHER_ATTESTATION_KEY_FILE,
+      path.join(workspace, 'profile', 'weather-provider.key'),
     );
     const result = await ConnectorClient.testConnector(materialized);
     assert.equal(result.ok, true);
