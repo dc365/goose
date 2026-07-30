@@ -1,10 +1,10 @@
-# 气象智伴 MeteoMate Desktop 0.2.0 Beta 2
+# 气象智伴 MeteoMate Desktop 0.2.0 Beta 3
 
 **MeteoMate — AI Workspace for Meteorological Operations**
 
 气象智伴是一个基于 Goose 的气象办公桌面 Agent。产品桌面保持独立，不修改 Goose Core，便于持续同步 `aaif-goose/goose` 上游。
 
-当前 Beta 2 聚焦把已有工作空间能力收拢为可验证、不可冒充正式业务的气象闭环：
+当前 Beta 3 聚焦把已有工作空间能力收拢为可验证、可重放、不可冒充正式业务的气象闭环：
 
 - WorkBuddy 风格的信息架构：任务、助理、项目、专家、技能、工具和自动化；
 - Goose ACP 作为首选运行时，支持多轮会话、会话恢复、流式消息和取消；
@@ -24,7 +24,7 @@
 - 固定 Fixture Weather Run 使用真实诊断与制图代码，但永久标记为构造数据，正式发布门禁必定阻止签发；
 - 工具卡同时显示连接状态与 `planned / demo / experimental / beta / production / deprecated` 成熟度，连接成功不等于生产可用。
 
-Beta 2 不内置任何单位的真实气象接口地址或生产凭据。接入真实业务前，仍需由部署方配置受信资料源、允许主机和凭据引用。
+Beta 3 不内置任何单位的真实气象接口地址或生产凭据。接入真实业务前，仍需由部署方配置受信资料源、允许主机和凭据引用。
 
 所有产品代码仍位于：
 
@@ -212,13 +212,15 @@ Headless 模式无法进行逐次权限审批，因此会自动关闭文件工�
   "id": "operations-api",
   "type": "http-json",
   "baseUrl": "https://weather.internal",
+  "queryPath": "/api/v1/meteomate/query",
+  "method": "POST",
   "credentialRef": "weather:operations-api",
   "classification": "production",
   "official": true
 }
 ```
 
-Beta 2 的兼容运行时把该引用映射到固定派生环境变量，且不允许项目任意指定其他宿主环境变量。
+Beta 3 的兼容运行时把该引用映射到固定派生环境变量，且不允许项目任意指定其他宿主环境变量。
 部署方还必须用 `METEOMATE_WEATHER_CREDENTIAL_BINDINGS` 把引用绑定到精确 Origin 和认证方案：
 
 ```bash
@@ -231,8 +233,47 @@ export METEOMATE_WEATHER_CREDENTIAL_BINDINGS='{
 export METEOMATE_WEATHER_TOKEN_OPERATIONS_DASH_API='...'
 ```
 
-带凭据的请求不接受通配 `allowedHosts`，也不跟随重定向，避免项目把受信凭据转发到其他服务。
+工作区中的注册表不能自行把来源提升成 `production` 或 `official`。部署方还需用
+`METEOMATE_WEATHER_SOURCE_AUTHORITIES` 绑定精确工作区、Provider 类型、Origin、方法、路径和版本：
+
+```bash
+export METEOMATE_WEATHER_SOURCE_AUTHORITIES='{
+  "operations-api": {
+    "type": "http-json",
+    "workspaceRoot": "/srv/meteomate/projects/operations",
+    "origin": "https://weather.internal",
+    "method": "POST",
+    "queryPath": "/api/v1/meteomate/query",
+    "classification": "production",
+    "official": true,
+    "version": "2026.07"
+  }
+}'
+```
+
+未获部署授权的工作区来源会固定降级为 `experimental + official=false`，不能进入正式发布；
+严格模式也不会访问该 HTTP 来源。`credentialRef/tokenEnv` 只允许用于部署授权来源，避免其他
+工作区借用全局生产 Token。带凭据的请求不接受通配 `allowedHosts`；Weather Provider
+一律不跟随重定向。
 这是一条防止明文凭据、任意环境变量读取和 Token 跨 Origin 外传的边界，不是完整企业 Vault；正式部署仍应接入系统安全存储或服务端 Secret Provider。
+
+Provider 成功响应使用固定 Envelope：
+
+```json
+{
+  "apiVersion": "meteomate.weather.provider/v1",
+  "kind": "WeatherDatasetResponse",
+  "dataset": {
+    "schemaVersion": "meteomate.weather.dataset/v1"
+  }
+}
+```
+
+Dataset 还必须显式声明带时区时间、`EPSG:4326`、变量单位与质控状态；不支持的版本、单位或异常值不会被静默改写成可发布资料。
+`weather_query_dataset` 返回 Dataset、校验、发布评估和 Evidence 摘要，不自动返回全量
+Evidence；校验工具也只返回摘要，诊断与制图只返回算法 Evidence。使用
+`weather_build_evidence` 的 `limit/cursor` 分页获取资料事实，每页最多 200 条。Provider
+来源证明使用当前 Profile 下的共享 `0600` 密钥，跨 Weather MCP 进程与重启后仍可验证。
 
 ## Manifest
 
@@ -294,7 +335,9 @@ npm run test:browser
 
 `npm run check` 执行产品 JavaScript 语法检查和本地契约测试；`npm run test:browser` 会启动真实 Playwright MCP 和浏览器，验证导航、输入、点击、快照与截图链路。
 
-Beta 2 的边界、验收项与下一阶段工作见 [`docs/BETA2_HARDENING.md`](docs/BETA2_HARDENING.md)。
+Beta 3 的 Replay、Provider 契约与下一阶段工作见
+[`docs/BETA3_REPLAY_CONTRACT.md`](docs/BETA3_REPLAY_CONTRACT.md)；上一阶段硬化记录保留在
+[`docs/BETA2_HARDENING.md`](docs/BETA2_HARDENING.md)。
 
 更多信息：
 

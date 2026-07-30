@@ -582,6 +582,22 @@ assert.deepEqual(httpExtension.server, {
   url: 'http://127.0.0.1:3000/messages',
   headers: [{ name: 'Authorization', value: 'Bearer test' }],
 });
+const protectedRuntimeEnvironment = ConnectorClient.extensionConfig({
+  id: 'protected-runtime-env',
+  name: 'Protected runtime env',
+  transport: 'stdio',
+  command: process.execPath,
+  runtimeEnv: { METEOMATE_RUNTIME_VALUE: 'managed' },
+}, {
+  env: {
+    METEOMATE_RUNTIME_VALUE: 'user-override',
+    USER_VALUE: 'preserved',
+  },
+});
+assert.deepEqual(protectedRuntimeEnvironment.envs, {
+  METEOMATE_RUNTIME_VALUE: 'managed',
+  USER_VALUE: 'preserved',
+});
 assert.deepEqual(httpExtension.available_tools, ['get_weather']);
 
 service.saveConnector({

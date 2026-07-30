@@ -9,6 +9,8 @@ const registryDirectory = path.join(workspace, '.meteomate');
 const registryPath = path.join(registryDirectory, 'weather-sources.json');
 const bindingsEnvironment = 'METEOMATE_WEATHER_CREDENTIAL_BINDINGS';
 const previousBindings = process.env[bindingsEnvironment];
+const authoritiesEnvironment = Providers.SOURCE_AUTHORITIES_ENV;
+const previousAuthorities = process.env[authoritiesEnvironment];
 fs.mkdirSync(registryDirectory, { recursive: true });
 
 function writeSource(source) {
@@ -31,6 +33,8 @@ const productionSource = {
   id: 'operations-api',
   type: 'http-json',
   baseUrl: 'https://weather.internal',
+  queryPath: '/query',
+  method: 'POST',
   classification: 'production',
   official: true,
 };
@@ -40,6 +44,18 @@ try {
     'weather:operations-api': {
       origin: 'https://weather.internal',
       authScheme: 'Bearer',
+    },
+  });
+  process.env[authoritiesEnvironment] = JSON.stringify({
+    'operations-api': {
+      type: 'http-json',
+      workspaceRoot: workspace,
+      origin: 'https://weather.internal',
+      method: 'POST',
+      queryPath: '/query',
+      classification: 'production',
+      official: true,
+      version: '2026.07',
     },
   });
   assert.equal(Providers.credentialReference('operations-api'), 'weather:operations-api');
@@ -64,21 +80,33 @@ try {
     { ...productionSource, credentialRef: 'weather:other-source' },
     /credentialRef 必须为 weather:operations-api/,
   );
-  expectRejected(
-    {
+  assert.throws(
+    () => Providers.validateSourceCredentials({
       ...productionSource,
+      authority: 'deployment',
       baseUrl: 'https://attacker.example',
       credentialRef: 'weather:operations-api',
-    },
+    }, { securityMode: 'internal' }),
     /只能发送到可信 Origin https:\/\/weather\.internal/,
+  );
+  assert.throws(
+    () => Providers.validateSourceCredentials({
+      ...productionSource,
+      authority: 'deployment',
+      credentialRef: 'weather:operations-api',
+      allowedHosts: ['*'],
+    }, { securityMode: 'internal' }),
+    /禁止使用通配 allowedHosts/,
   );
   expectRejected(
     {
-      ...productionSource,
-      credentialRef: 'weather:operations-api',
-      allowedHosts: ['*'],
+      id: 'workspace-credential',
+      type: 'http-json',
+      baseUrl: 'https://weather.internal',
+      method: 'GET',
+      credentialRef: 'weather:workspace-credential',
     },
-    /禁止使用通配 allowedHosts/,
+    (error) => error.code === 'WEATHER_PROVIDER_CREDENTIAL_AUTHORITY_REQUIRED',
   );
 
   for (const field of ['token', 'apiKey']) {
@@ -136,7 +164,11 @@ try {
   );
 
   writeSource({
-    ...productionSource,
+    id: 'development-api',
+    type: 'http-json',
+    baseUrl: 'https://development.weather.internal',
+    queryPath: '/query',
+    method: 'GET',
     classification: 'beta',
     official: false,
     token: 'legacy-development-token',
@@ -150,5 +182,7 @@ try {
 } finally {
   if (previousBindings == null) delete process.env[bindingsEnvironment];
   else process.env[bindingsEnvironment] = previousBindings;
+  if (previousAuthorities == null) delete process.env[authoritiesEnvironment];
+  else process.env[authoritiesEnvironment] = previousAuthorities;
   fs.rmSync(workspace, { recursive: true, force: true });
 }

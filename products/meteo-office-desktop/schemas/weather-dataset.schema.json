@@ -1,0 +1,330 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meteomate.local/schemas/weather-dataset.schema.json",
+  "title": "MeteoMate Weather Dataset",
+  "type": "object",
+  "required": [],
+  "anyOf": [
+    { "$ref": "#/$defs/rawDataset" },
+    { "$ref": "#/$defs/normalizedDataset" }
+  ],
+  "$defs": {
+    "nullableNumber": {
+      "type": ["number", "null"]
+    },
+    "source": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "type",
+        "version",
+        "uri",
+        "official",
+        "synthetic",
+        "classification",
+        "authority",
+        "retrievedAt"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "type": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "uri": { "type": ["string", "null"] },
+        "official": { "type": "boolean" },
+        "synthetic": { "type": "boolean" },
+        "classification": {
+          "enum": ["demo", "experimental", "beta", "production"]
+        },
+        "authority": {
+          "enum": ["fixture", "workspace", "deployment", "untrusted"]
+        },
+        "retrievedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "region": {
+      "type": "object",
+      "required": ["name", "bbox", "timezone", "projection"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "bbox": {
+          "anyOf": [
+            {
+              "type": "array",
+              "minItems": 4,
+              "maxItems": 4,
+              "prefixItems": [
+                { "type": "number", "minimum": -180, "maximum": 180 },
+                { "type": "number", "minimum": -90, "maximum": 90 },
+                { "type": "number", "minimum": -180, "maximum": 180 },
+                { "type": "number", "minimum": -90, "maximum": 90 }
+              ],
+              "items": false
+            },
+            { "type": "null" }
+          ]
+        },
+        "timezone": { "type": "string", "minLength": 1 },
+        "projection": { "type": "string" }
+      }
+    },
+    "validTime": {
+      "type": "object",
+      "required": ["start", "end"],
+      "additionalProperties": false,
+      "properties": {
+        "start": { "type": ["string", "null"], "format": "date-time" },
+        "end": { "type": ["string", "null"], "format": "date-time" }
+      }
+    },
+    "station": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "lon",
+        "lat",
+        "rain1h",
+        "rain3h",
+        "rain6h",
+        "rain12h",
+        "rain24h",
+        "temperature",
+        "dewpoint",
+        "windDirection",
+        "windSpeed",
+        "gust",
+        "pressure",
+        "quality",
+        "validTime",
+        "metadata"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "lon": {
+          "type": ["number", "null"],
+          "minimum": -180,
+          "maximum": 180
+        },
+        "lat": {
+          "type": ["number", "null"],
+          "minimum": -90,
+          "maximum": 90
+        },
+        "rain1h": { "$ref": "#/$defs/nullableNumber" },
+        "rain3h": { "$ref": "#/$defs/nullableNumber" },
+        "rain6h": { "$ref": "#/$defs/nullableNumber" },
+        "rain12h": { "$ref": "#/$defs/nullableNumber" },
+        "rain24h": { "$ref": "#/$defs/nullableNumber" },
+        "temperature": { "$ref": "#/$defs/nullableNumber" },
+        "dewpoint": { "$ref": "#/$defs/nullableNumber" },
+        "windDirection": { "$ref": "#/$defs/nullableNumber" },
+        "windSpeed": { "$ref": "#/$defs/nullableNumber" },
+        "gust": { "$ref": "#/$defs/nullableNumber" },
+        "pressure": { "$ref": "#/$defs/nullableNumber" },
+        "quality": { "type": "string", "minLength": 1 },
+        "validTime": { "type": ["string", "null"], "format": "date-time" },
+        "metadata": { "type": "object" }
+      }
+    },
+    "guidance": {
+      "type": "object",
+      "required": [
+        "model",
+        "cycle",
+        "validTime",
+        "forecastHour",
+        "regionalMax24h",
+        "hotspot",
+        "timing",
+        "confidence",
+        "metadata"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "model": { "type": "string", "minLength": 1 },
+        "cycle": { "type": ["string", "null"], "format": "date-time" },
+        "validTime": { "type": ["string", "null"], "format": "date-time" },
+        "forecastHour": { "$ref": "#/$defs/nullableNumber" },
+        "regionalMax24h": { "$ref": "#/$defs/nullableNumber" },
+        "hotspot": { "type": "string" },
+        "timing": { "type": "string" },
+        "confidence": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1
+        },
+        "metadata": { "type": "object" }
+      }
+    },
+    "rawSource": {
+      "type": "object",
+      "required": [],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string" },
+        "type": { "type": "string" },
+        "version": { "type": "string" },
+        "uri": { "type": ["string", "null"] },
+        "official": { "type": "boolean" },
+        "synthetic": { "type": "boolean" },
+        "classification": {
+          "enum": ["demo", "experimental", "beta", "production"]
+        },
+        "authority": {
+          "enum": ["fixture", "workspace", "deployment", "untrusted"]
+        },
+        "retrievedAt": { "type": ["string", "null"], "format": "date-time" }
+      },
+      "additionalProperties": true
+    },
+    "rawDataset": {
+      "type": "object",
+      "required": ["schemaVersion", "id", "validTime"],
+      "properties": {
+        "schemaVersion": { "const": "meteomate.weather.dataset/v1" },
+        "kind": { "const": "WeatherDataset" },
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string" },
+        "source": { "$ref": "#/$defs/rawSource" },
+        "provenance": { "$ref": "#/$defs/rawSource" },
+        "region": { "type": "object" },
+        "regionName": { "type": "string" },
+        "timezone": { "type": "string" },
+        "issueTime": { "type": ["string", "null"], "format": "date-time" },
+        "initTime": { "type": ["string", "null"], "format": "date-time" },
+        "validTime": {
+          "anyOf": [
+            { "type": "string", "format": "date-time" },
+            {
+              "type": "object",
+              "required": [],
+              "properties": {
+                "issueTime": { "type": ["string", "null"], "format": "date-time" },
+                "start": { "type": ["string", "null"], "format": "date-time" },
+                "end": { "type": ["string", "null"], "format": "date-time" }
+              },
+              "additionalProperties": true
+            }
+          ]
+        },
+        "validStart": { "type": ["string", "null"], "format": "date-time" },
+        "validEnd": { "type": ["string", "null"], "format": "date-time" },
+        "validTimeStart": { "type": ["string", "null"], "format": "date-time" },
+        "validTimeEnd": { "type": ["string", "null"], "format": "date-time" },
+        "model": { "type": "string" },
+        "forecastHour": { "$ref": "#/$defs/nullableNumber" },
+        "units": {
+          "type": "object",
+          "additionalProperties": { "type": "string", "minLength": 1 }
+        },
+        "stations": {
+          "type": "array",
+          "maxItems": 600,
+          "items": { "type": "object" }
+        },
+        "upperAir": { "type": "object" },
+        "radar": { "type": "object" },
+        "satellite": { "type": "object" },
+        "guidance": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": { "type": "object" }
+        },
+        "fields": { "type": "object" },
+        "quality": { "type": "object" },
+        "metadata": { "type": "object" }
+      },
+      "anyOf": [
+        {
+          "properties": { "stations": true },
+          "required": ["stations"]
+        },
+        {
+          "properties": { "upperAir": true },
+          "required": ["upperAir"]
+        },
+        {
+          "properties": {
+            "radar": {
+              "type": "object",
+              "required": ["maxDbz"],
+              "properties": {
+                "maxDbz": { "type": "number" }
+              }
+            }
+          },
+          "required": ["radar"]
+        }
+      ],
+      "additionalProperties": true
+    },
+    "normalizedDataset": {
+      "type": "object",
+      "required": [
+        "schemaVersion",
+        "kind",
+        "id",
+        "name",
+        "source",
+        "region",
+        "issueTime",
+        "validTime",
+        "model",
+        "forecastHour",
+        "units",
+        "stations",
+        "upperAir",
+        "radar",
+        "satellite",
+        "guidance",
+        "fields",
+        "quality",
+        "metadata",
+        "contentHash"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schemaVersion": { "const": "meteomate.weather.dataset/v1" },
+        "kind": { "const": "WeatherDataset" },
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "source": { "$ref": "#/$defs/source" },
+        "region": { "$ref": "#/$defs/region" },
+        "issueTime": { "type": ["string", "null"], "format": "date-time" },
+        "validTime": { "$ref": "#/$defs/validTime" },
+        "model": { "type": "string" },
+        "forecastHour": { "$ref": "#/$defs/nullableNumber" },
+        "units": {
+          "type": "object",
+          "additionalProperties": { "type": "string", "minLength": 1 }
+        },
+        "stations": {
+          "type": "array",
+          "maxItems": 600,
+          "items": { "$ref": "#/$defs/station" }
+        },
+        "upperAir": { "type": "object" },
+        "radar": { "type": "object" },
+        "satellite": { "type": "object" },
+        "guidance": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": { "$ref": "#/$defs/guidance" }
+        },
+        "fields": { "type": "object" },
+        "quality": { "type": "object" },
+        "metadata": { "type": "object" },
+        "contentHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    }
+  }
+}

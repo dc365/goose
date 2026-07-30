@@ -7,17 +7,52 @@ const Providers = require('../capabilities/weather/providers.cjs');
 const Diagnosis = require('../capabilities/weather/diagnosis.cjs');
 const Render = require('../capabilities/weather/render.cjs');
 const Contracts = require('../capabilities/weather/contracts.cjs');
+const SchemaValidator = require('../capabilities/weather/schema-validator.cjs');
 const WeatherConnector = require('../capabilities/weather-connector.js');
 
 (async () => {
   const datasetFixture = {
+    schemaVersion: Contracts.DATASET_SCHEMA_VERSION,
     id: 'south-rain-20260729',
     name: '华南强降水过程',
-    region: { name: '华南', bbox: [108, 18, 118, 27], timezone: 'Asia/Shanghai' },
+    region: {
+      name: '华南',
+      bbox: [108, 18, 118, 27],
+      timezone: 'Asia/Shanghai',
+      projection: 'EPSG:4326',
+    },
     issueTime: '2026-07-29T08:00:00+08:00',
     validTime: { start: '2026-07-29T08:00:00+08:00', end: '2026-07-30T08:00:00+08:00' },
     model: 'ECMWF',
     forecastHour: 24,
+    units: {
+      rain1h: 'mm',
+      rain3h: 'mm',
+      rain6h: 'mm',
+      rain12h: 'mm',
+      rain24h: 'mm',
+      regionalMax24h: 'mm',
+      temperature: '°C',
+      dewpoint: '°C',
+      windDirection: 'degree',
+      windSpeed: 'm/s',
+      gust: 'm/s',
+      pressure: 'hPa',
+      precipitableWater: 'mm',
+      cape: 'J/kg',
+      cin: 'J/kg',
+      kIndex: '°C',
+      liftedIndex: '°C',
+      shear0to6km: 'm/s',
+      lcl: 'm',
+      freezingLevel: 'm',
+      specificHumidity: 'g/kg',
+      moistureFluxConvergence: 's^-1',
+      omega: 'Pa/s',
+      height: 'gpm',
+      divergence: 's^-1',
+      maxDbz: 'dBZ',
+    },
     stations: [
       { id: 'A', name: '甲站', lon: 112.1, lat: 23.1, rain24h: 128, rain6h: 62, quality: 'checked' },
       { id: 'B', name: '乙站', lon: 113.2, lat: 22.8, rain24h: 88, rain6h: 40, quality: 'checked' },
@@ -55,7 +90,11 @@ const WeatherConnector = require('../capabilities/weather-connector.js');
     receivedAuthorization = String(request.headers.authorization || '');
     receivedApiKey = String(request.headers['x-api-key'] || '');
     response.writeHead(200, { 'Content-Type': 'application/json' });
-    response.end(JSON.stringify({ dataset: datasetFixture }));
+    response.end(JSON.stringify({
+      apiVersion: Providers.PROVIDER_RESPONSE_API_VERSION,
+      kind: Providers.PROVIDER_RESPONSE_KIND,
+      dataset: datasetFixture,
+    }));
   });
   await new Promise((resolve, reject) => {
     server.once('error', reject);
@@ -69,6 +108,8 @@ const WeatherConnector = require('../capabilities/weather-connector.js');
   const previousWeatherWorkspace = process.env.METEOMATE_WEATHER_WORKSPACE;
   const bindingsEnvironment = 'METEOMATE_WEATHER_CREDENTIAL_BINDINGS';
   const previousBindings = process.env[bindingsEnvironment];
+  const authoritiesEnvironment = Providers.SOURCE_AUTHORITIES_ENV;
+  const previousAuthorities = process.env[authoritiesEnvironment];
   const credentialEnvironment = Providers.credentialEnvironmentName('http-products');
   const previousCredential = process.env[credentialEnvironment];
   try {
@@ -80,6 +121,45 @@ const WeatherConnector = require('../capabilities/weather-connector.js');
     },
   });
   workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'meteomate-weather-'));
+  assert.throws(
+    () => Providers.authorizedSource({
+      id: 'http-products-with-path-authority',
+      type: 'http-json',
+      baseUrl: `http://127.0.0.1:${port}`,
+    }, workspace, {
+      securityMode: 'internal',
+      sourceAuthorities: {
+        'http-products-with-path-authority': {
+          type: 'http-json',
+          workspaceRoot: workspace,
+          origin: `http://127.0.0.1:${port}/not-an-origin`,
+          classification: 'production',
+          official: true,
+        },
+      },
+    }),
+    (error) => error.code === 'WEATHER_PROVIDER_AUTHORITY_CONFIG_INVALID',
+  );
+  process.env[authoritiesEnvironment] = JSON.stringify({
+    'local-products': {
+      type: 'local',
+      workspaceRoot: workspace,
+      root: 'data',
+      classification: 'production',
+      official: true,
+      version: '2026.07',
+    },
+    'http-products': {
+      type: 'http-json',
+      workspaceRoot: workspace,
+      origin: `http://127.0.0.1:${port}`,
+      method: 'GET',
+      queryPath: '/query',
+      classification: 'production',
+      official: true,
+      version: '2026.07',
+    },
+  });
   fs.mkdirSync(path.join(workspace, '.meteomate'), { recursive: true });
   fs.mkdirSync(path.join(workspace, 'data'), { recursive: true });
   fs.writeFileSync(path.join(workspace, '.meteomate', 'weather-sources.json'), JSON.stringify({
@@ -178,6 +258,9 @@ const WeatherConnector = require('../capabilities/weather-connector.js');
   assert.ok(syntheticValidation.errors.some((item) => item.includes('结束早于开始')));
   assert.ok(syntheticValidation.errors.some((item) => item.includes('站点 ID 重复')));
 
+  const normalizedAgain = Contracts.normalizeDataset(synthetic);
+  assert.deepEqual(normalizedAgain, synthetic, 'normalization must preserve missing numeric values and content identity');
+
   const untrustedInline = Contracts.normalizeDataset({
     ...datasetFixture,
     source: {
@@ -193,15 +276,39 @@ const WeatherConnector = require('../capabilities/weather-connector.js');
   assert.equal(queried.validation.valid, true);
   assert.equal(queried.dataset.source.synthetic, false);
   assert.equal(queried.dataset.source.classification, 'production');
-  assert.ok(queried.evidence.length >= 10);
+  assert.ok(queried.evidenceSummary.total >= 10);
   assert.equal(queried.publication.readyForHumanReview, true);
   const queriedAgain = await Providers.queryDataset({ workspace, sourceId: 'local-products', datasetRef: 'case.json', securityMode: 'internal' });
   assert.equal(queriedAgain.dataset.contentHash, queried.dataset.contentHash, 'retrieval time and absolute path must not change dataset hash');
   assert.deepEqual(
-    queriedAgain.evidence.map((item) => item.id),
-    queried.evidence.map((item) => item.id),
+    queriedAgain.evidenceSummary,
+    queried.evidenceSummary,
     'equivalent data must produce stable Evidence IDs',
   );
+  process.env.METEOMATE_WEATHER_WORKSPACE = workspace;
+  const firstEvidencePage = await WeatherConnector.executeTool('weather_build_evidence', {
+    dataset: queried.dataset,
+    limit: 5,
+  });
+  assert.equal(firstEvidencePage.evidence.length, 5);
+  assert.equal(firstEvidencePage.evidencePage.total, queried.evidenceSummary.total);
+  const secondEvidencePage = await WeatherConnector.executeTool('weather_build_evidence', {
+    dataset: queried.dataset,
+    limit: 5,
+    cursor: firstEvidencePage.evidencePage.nextCursor,
+  });
+  assert.equal(secondEvidencePage.evidencePage.offset, 5);
+  assert.equal(
+    firstEvidencePage.evidence.some((record) =>
+      secondEvidencePage.evidence.some((candidate) => candidate.id === record.id)
+    ),
+    false,
+  );
+  const validatedToolResult = await WeatherConnector.executeTool('weather_validate_dataset', {
+    dataset: queried.dataset,
+  });
+  assert.equal(Object.hasOwn(validatedToolResult, 'evidence'), false);
+  assert.deepEqual(validatedToolResult.evidenceSummary, queried.evidenceSummary);
   const forgedQuery = await Providers.queryDataset({
     workspace,
     sourceId: 'local-products',
@@ -225,6 +332,26 @@ const WeatherConnector = require('../capabilities/weather-connector.js');
   );
 
   secondWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), 'meteomate-weather-copy-'));
+  process.env[authoritiesEnvironment] = JSON.stringify({
+    'local-products': {
+      type: 'local',
+      workspaceRoots: [workspace, secondWorkspace],
+      root: 'data',
+      classification: 'production',
+      official: true,
+      version: '2026.07',
+    },
+    'http-products': {
+      type: 'http-json',
+      workspaceRoots: [workspace, secondWorkspace],
+      origin: `http://127.0.0.1:${port}`,
+      method: 'GET',
+      queryPath: '/query',
+      classification: 'production',
+      official: true,
+      version: '2026.07',
+    },
+  });
   fs.mkdirSync(path.join(secondWorkspace, '.meteomate'), { recursive: true });
   fs.mkdirSync(path.join(secondWorkspace, 'data'), { recursive: true });
   fs.copyFileSync(path.join(workspace, '.meteomate', 'weather-sources.json'), path.join(secondWorkspace, '.meteomate', 'weather-sources.json'));
@@ -233,8 +360,8 @@ const WeatherConnector = require('../capabilities/weather-connector.js');
   assert.equal(queriedFromCopy.dataset.id, queried.dataset.id, 'equivalent local data must produce a stable Dataset ID across workspaces');
   assert.equal(queriedFromCopy.dataset.contentHash, queried.dataset.contentHash, 'absolute local path must not affect Dataset Hash');
   assert.deepEqual(
-    queriedFromCopy.evidence.map((item) => item.id),
-    queried.evidence.map((item) => item.id),
+    queriedFromCopy.evidenceSummary,
+    queried.evidenceSummary,
     'absolute local path must not affect Evidence IDs',
   );
 
@@ -244,6 +371,23 @@ const WeatherConnector = require('../capabilities/weather-connector.js');
   assert.equal(result.publication.readyForRelease, false);
   assert.equal(result.publication.requiresHumanSignoff, true);
   assert.ok(result.evidence.some((item) => item.evidenceType === 'algorithm-diagnosis'));
+  const diagnosisToolResult = await WeatherConnector.executeTool('weather_diagnose_dataset', {
+    dataset: queried.dataset,
+    kind: 'all',
+  });
+  assert.ok(diagnosisToolResult.evidence.length > 0);
+  assert.ok(
+    diagnosisToolResult.evidence
+      .every((item) => item.evidenceType === 'algorithm-diagnosis'),
+  );
+  assert.equal(diagnosisToolResult.evidenceSummary.total, result.evidence.length);
+  assert.equal(
+    SchemaValidator.validate(
+      SchemaValidator.CONTRACT_KINDS.DIAGNOSIS_RESULT,
+      diagnosisToolResult,
+    ).valid,
+    true,
+  );
 
   outsideArtifacts = fs.mkdtempSync(path.join(os.tmpdir(), 'meteomate-weather-artifacts-'));
   assert.throws(() => Render.renderDatasetMap({
@@ -264,7 +408,6 @@ const WeatherConnector = require('../capabilities/weather-connector.js');
   assert.equal(artifact.metadata.synthetic, false);
   assert.ok(artifact.evidenceIds.length > 0);
 
-  process.env.METEOMATE_WEATHER_WORKSPACE = workspace;
   const connectorRendered = await WeatherConnector.executeTool('weather_render_dataset_map', {
     dataset: queried.dataset,
     diagnosis: { forged: true },
@@ -274,6 +417,14 @@ const WeatherConnector = require('../capabilities/weather-connector.js');
   assert.equal(connectorRendered.diagnosis.forged, undefined);
   assert.ok(connectorRendered.artifact.metadata.algorithm);
   assert.equal(connectorRendered.artifact.evidenceIds.includes('forged-evidence'), false);
+  assert.ok(
+    connectorRendered.evidence
+      .every((item) => item.evidenceType === 'algorithm-diagnosis'),
+  );
+  assert.equal(
+    connectorRendered.evidenceSummary.total,
+    connectorRendered.artifact.evidenceIds.length,
+  );
   console.log('weather production/intranet provider tests passed');
   } finally {
     if (previousWeatherWorkspace == null) delete process.env.METEOMATE_WEATHER_WORKSPACE;
@@ -282,6 +433,8 @@ const WeatherConnector = require('../capabilities/weather-connector.js');
     else process.env[credentialEnvironment] = previousCredential;
     if (previousBindings == null) delete process.env[bindingsEnvironment];
     else process.env[bindingsEnvironment] = previousBindings;
+    if (previousAuthorities == null) delete process.env[authoritiesEnvironment];
+    else process.env[authoritiesEnvironment] = previousAuthorities;
     await new Promise((resolve) => server.close(resolve));
     for (const target of [workspace, secondWorkspace, outsideArtifacts]) {
       if (target) fs.rmSync(target, { recursive: true, force: true });

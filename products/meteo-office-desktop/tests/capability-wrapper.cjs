@@ -21,6 +21,7 @@ for (const excludedPath of [
   "^/tests($|/)",
   "^/docs($|/)",
   "^/README\\.md$",
+  "^/\\.meteomate-phase1-apply\\.json$",
   "^/assets/icons/MeteoMate\\.icns$",
 ]) {
   assert.ok(macPackageScript.includes(excludedPath), `${excludedPath} must not enter the desktop bundle`);

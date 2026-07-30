@@ -479,6 +479,7 @@ assert.ok(packageMacScript.includes('**/node_modules/@aaif/goose-binary-*/bin/go
 assert.ok(packageMacScript.includes('**/node_modules/@trycua/**/*'));
 assert.ok(packageMacScript.includes('**/node_modules/@ubjs/**/*'));
 assert.ok(packageMacScript.includes("--asar.unpackDir='runtime'"));
+assert.ok(packageMacScript.includes("^/\\.meteomate-phase1-apply\\.json$"));
 
 assert.ok(stateStoreSource.includes('function normalizeStoredTask'));
 assert.ok(stateStoreSource.includes('const storedPlan = Array.isArray(message.processPlan)'));
@@ -489,9 +490,10 @@ assert.ok(stateRestoreSource.includes('TaskStateMachine.finishRunAttempt'));
 assert.ok(stateRestoreSource.includes('RuntimeRecords.recordRuntimeEvent'));
 assert.ok(runtimeRecordsSource.includes("event.type === 'artifact_created'"));
 assert.ok(runtimeRecordsSource.includes("event.type === 'evidence_created'"));
-assert.equal(packageJson.version, '0.2.0-beta.2');
+assert.equal(packageJson.version, '0.2.0-beta.3');
 assert.ok(packageJson.scripts.check.includes('tests/harness.cjs'));
 assert.ok(packageJson.scripts.check.includes('tests/schema-contracts.cjs'));
+assert.ok(packageJson.scripts['check:syntax'].includes('node --check harness/workflow.js'));
 
 const schemaDir = path.join(root, 'schemas');
 assert.ok(fs.readdirSync(schemaDir).filter((name) => name.endsWith('.schema.json')).length >= 9);
