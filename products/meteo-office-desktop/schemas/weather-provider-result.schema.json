@@ -145,6 +145,8 @@
         "algorithm",
         "confidence",
         "uncertainty",
+        "qcStatus",
+        "qcVersion",
         "createdAt",
         "expiresAt",
         "metadata"
@@ -181,6 +183,10 @@
           "maximum": 1
         },
         "uncertainty": { "type": ["string", "null"] },
+        "qcStatus": {
+          "enum": ["checked", "good", "suspect", "unchecked", "missing", "bad", "rejected", "unknown"]
+        },
+        "qcVersion": { "const": "meteomate.weather.qc/1.0.0" },
         "createdAt": { "type": "number", "minimum": 0 },
         "expiresAt": { "type": ["string", "null"], "format": "date-time" },
         "metadata": { "type": "object" }

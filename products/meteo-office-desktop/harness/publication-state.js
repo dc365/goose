@@ -69,6 +69,15 @@
     );
   }
 
+  function artifactEvidenceIds(artifacts = []) {
+    return new Set(
+      (Array.isArray(artifacts) ? artifacts : [])
+        .flatMap((artifact) => artifact?.lineage?.evidenceIds || [])
+        .map(String)
+        .filter(Boolean)
+    );
+  }
+
   function currentArtifacts(artifacts = []) {
     const records = Array.isArray(artifacts) ? artifacts : [];
     const identityFor = (artifact) => {
@@ -92,15 +101,20 @@
     if (!task.id) throw new Error('Publication request requires a task');
     const analysis = analysisForTask(task);
     const referencedIds = referencedEvidenceIds(analysis);
+    const artifacts = currentArtifacts(task.artifacts);
+    const authorityIds = new Set([
+      ...referencedIds,
+      ...artifactEvidenceIds(artifacts),
+    ]);
     return {
       ...Shared.cleanObject(overrides),
       taskId: task.id,
       workspace: task.workspace || null,
       analysis,
-      artifacts: Shared.deepClone(currentArtifacts(task.artifacts)),
+      artifacts: Shared.deepClone(artifacts),
       evidence: Shared.deepClone(
         (Array.isArray(task.evidence) ? task.evidence : [])
-          .filter((record) => referencedIds.has(String(record?.id || '')))
+          .filter((record) => authorityIds.has(String(record?.id || '')))
       ),
     };
   }
@@ -137,9 +151,11 @@
   function evaluate(task = {}, signoff = task.publication?.signoff || null, at = Date.now()) {
     const request = requestForTask(task);
     return ValidationEngine.runPublicationGate({
+      taskId: request.taskId,
       analysis: request.analysis,
       artifacts: request.artifacts,
       evidence: request.evidence,
+      qcWaivers: task.publication?.qcWaivers || [],
       humanSignoff: signoff,
       at,
     });
@@ -156,6 +172,9 @@
     task.publication = {
       signoff: serviceResult.signoff || null,
       gate: serviceResult.gate || null,
+      qcWaivers: Array.isArray(serviceResult.qcWaivers)
+        ? Shared.deepClone(serviceResult.qcWaivers)
+        : Shared.deepClone(task.publication?.qcWaivers || []),
       checkedAt: serviceResult.gate?.checkedAt || Date.now(),
       error: null,
       dirty: false,
@@ -167,8 +186,11 @@
   function applyError(task, error) {
     task.publication = {
       ...(task.publication || {}),
+      gate: null,
       error: error?.message || String(error || '发布检查失败'),
       checkedAt: Date.now(),
+      dirty: true,
+      requestFingerprint: null,
     };
     return task.publication;
   }
@@ -180,6 +202,7 @@
     analysisForTask,
     updateAnalysis,
     referencedEvidenceIds,
+    artifactEvidenceIds,
     currentArtifacts,
     requestForTask,
     requestFingerprint,

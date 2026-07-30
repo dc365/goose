@@ -18,8 +18,9 @@ function atomicWrite(target, value) {
 function safeRead(target, fallback) {
   try {
     return JSON.parse(fs.readFileSync(target, 'utf8'));
-  } catch {
-    return fallback;
+  } catch (error) {
+    if (error?.code === 'ENOENT') return fallback;
+    throw new Error(`Secret store cannot be read: ${error?.message || String(error)}`);
   }
 }
 

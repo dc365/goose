@@ -29,6 +29,24 @@
     return metadata;
   }
 
+  function recordLineage(payload, task, event, runId) {
+    const attested = payload?.metadata?.publicationAttestation?.version
+      === 'meteomate-publication/v2';
+    const stored = payload?.lineage && typeof payload.lineage === 'object'
+      ? payload.lineage
+      : {};
+    if (attested) return { ...stored };
+    return {
+      taskId: stored.taskId || task.id,
+      runId: stored.runId || runId,
+      contextSnapshotId: stored.contextSnapshotId || task.contextSnapshotId || null,
+      expertId: stored.expertId || null,
+      templateId: stored.templateId || null,
+      evidenceIds: stored.evidenceIds || [],
+      toolCallId: stored.toolCallId || event.toolCallId || null,
+    };
+  }
+
   function recordRuntimeEvent(task, event = {}, lineage = {}, options = {}) {
     if (!task?.id) throw new Error('Runtime event requires a task');
     if (!event?.type) throw new Error('Runtime event requires a type');
@@ -53,10 +71,7 @@
         artifact = ArtifactRegistry.registerArtifact(task, {
           ...payload,
           metadata: recordMetadata(payload),
-        }, {
-          runId,
-          toolCallId: event.toolCallId || null,
-        });
+        }, recordLineage(payload, task, event, runId));
         artifactChanged = (task.artifacts || []).length > previousCount;
       }
     } else if (event.type === 'evidence_created') {
@@ -66,10 +81,7 @@
         evidence = EvidenceLedger.registerEvidence(task, {
           ...payload,
           metadata: recordMetadata(payload),
-        }, {
-          runId,
-          toolCallId: event.toolCallId || null,
-        });
+        }, recordLineage(payload, task, event, runId));
         evidenceChanged = (task.evidence || []).length > previousCount;
       }
     }

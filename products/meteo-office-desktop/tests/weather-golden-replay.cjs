@@ -10,6 +10,7 @@ const Diagnosis = require('../capabilities/weather/diagnosis.cjs');
 const Render = require('../capabilities/weather/render.cjs');
 const SchemaValidator = require('../capabilities/weather/schema-validator.cjs');
 const ValidationEngine = require('../harness/validation-engine');
+const QcPolicy = require('../harness/qc-policy');
 const Golden = require('./support/weather-golden-replay.cjs');
 
 function clone(value) {
@@ -24,8 +25,21 @@ const replay = Golden.loadReplay();
 const { manifest, dataset, expected, paths } = replay;
 const index = Golden.readJson(paths.index);
 const indexEntry = index.cases.find((entry) => entry.id === manifest.id);
+const immutableV1 = Golden.replayPaths(Golden.DEFAULT_CASE_ID, 'v1');
 
 assert.ok(indexEntry, `golden index is missing ${manifest.id}`);
+assert.equal(
+  Golden.sha256File(immutableV1.dataset),
+  'sha256:46436a89ab9b11405366489ce8235a5cb0a12911fb27af7bcd59a437c0510479',
+);
+assert.equal(
+  Golden.sha256File(immutableV1.expected),
+  'sha256:a77e9fd31c8bcfee6fcec5388fa2781aaed3f74a1277c1875dbe7b42ff921225',
+);
+assert.equal(
+  Golden.sha256File(immutableV1.manifest),
+  'sha256:f15a2dc7ebb8e4b66fdd5a06c927d9e81e5366339b71f1f79a6bed09dd7b45ec',
+);
 assert.equal(indexEntry.latestRevision, manifest.revision);
 assert.equal(
   path.resolve(paths.root, indexEntry.latestPath),
@@ -45,6 +59,10 @@ assert.equal(
   true,
 );
 assert.equal(manifest.pipeline.normalizerVersion, Contracts.NORMALIZER_VERSION);
+assert.deepEqual(manifest.pipeline.qcPolicy, {
+  version: QcPolicy.POLICY_VERSION,
+  digest: QcPolicy.POLICY_DIGEST,
+});
 assert.deepEqual(manifest.pipeline.algorithm, {
   name: 'meteomate-weather-diagnosis',
   version: Diagnosis.ALGORITHM_VERSION,
@@ -98,6 +116,10 @@ try {
   assert.equal(expected.lineage.algorithmEvidenceIds.length, 13);
   assert.ok(expected.evidence.every((record) => record.metadata.datasetHash === expected.dataset.contentHash));
   assert.ok(expected.evidence.every((record) => record.metadata.sourceId === expected.dataset.source.id));
+  assert.ok(expected.evidence.every((record) => record.qcStatus === 'checked'));
+  assert.ok(expected.evidence.every((record) =>
+    record.qcVersion === 'meteomate.weather.qc/1.0.0'
+  ));
 
   assert.equal(expected.dataset.source.synthetic, true);
   assert.equal(expected.dataset.source.official, false);

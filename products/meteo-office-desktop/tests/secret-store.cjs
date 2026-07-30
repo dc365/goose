@@ -62,6 +62,14 @@ assert.equal(strictStore.get(strictRecord.ref).token, 'secret');
 const raw = fs.readFileSync(path.join(strictRoot, 'secrets', 'vault.json'), 'utf8');
 assert.equal(raw.includes('"token"'), false);
 assert.equal(raw.includes('secret'), false);
+const strictVaultPath = path.join(strictRoot, 'secrets', 'vault.json');
+fs.writeFileSync(strictVaultPath, '{"version":2,');
+assert.throws(() => strictStore.get('connector:strict'), /cannot be read/);
+assert.throws(
+  () => strictStore.put('connector:new', { token: 'must-not-overwrite-corrupt-vault' }),
+  /cannot be read/,
+);
+assert.equal(fs.readFileSync(strictVaultPath, 'utf8'), '{"version":2,');
 
 const legacyInternalRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'meteomate-secret-legacy-'));
 fs.mkdirSync(path.join(legacyInternalRoot, 'secrets'), { recursive: true });

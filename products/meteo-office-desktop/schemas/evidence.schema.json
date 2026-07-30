@@ -22,6 +22,10 @@
     "confidence": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
     "algorithm": { "type": ["object", "null"] },
     "expiresAt": { "type": ["string", "null"] },
+    "qcStatus": {
+      "enum": ["checked", "good", "suspect", "unchecked", "missing", "bad", "rejected", "unknown"]
+    },
+    "qcVersion": { "const": "meteomate.weather.qc/1.0.0" },
     "lineage": { "type": "object" }
   }
 }

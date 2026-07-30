@@ -369,7 +369,9 @@ const publicationUI = {
   open: false,
   taskId: null,
   busy: '',
+  busyTargetId: null,
   error: '',
+  qcWaiverReasons: {},
 };
 const automationUI = {
   tab: 'schedules',
@@ -1903,8 +1905,135 @@ function publicationGateForTask(task) {
   }
 }
 
+function publicationQcReasonKey(taskId, evidenceId) {
+  return `${String(taskId || '')}:${String(evidenceId || '')}`;
+}
+
+function publicationEvidenceLabel(record = {}) {
+  const subject = record.variable || record.evidenceType || record.id || '';
+  const station = record.metadata?.stationName || record.metadata?.stationId || '';
+  return [subject, station].filter(Boolean).join(' · ');
+}
+
+function renderPublicationQcReview(task, publication, gate, checked) {
+  const qcPolicy = window.MeteoMateHarness.QcPolicy;
+  const qc = gate?.qc || {};
+  const findings = Array.isArray(qc.findings) ? qc.findings : [];
+  const evidenceById = new Map(
+    (Array.isArray(task.evidence) ? task.evidence : [])
+      .map((record) => [String(record?.id || ''), record])
+  );
+  const statusCounts = qc.statusCounts || {};
+  const statusItems = qcPolicy.STATUSES
+    .map((status) => ({ status, count: Number(statusCounts[status]) || 0 }))
+    .filter((item) => item.count > 0);
+  const activeWaiverIds = new Set(
+    Array.isArray(qc.activeWaiverIds) ? qc.activeWaiverIds.map(String) : []
+  );
+  const activeWaivers = (Array.isArray(publication.qcWaivers) ? publication.qcWaivers : [])
+    .filter((waiver) => activeWaiverIds.has(String(waiver?.id || '')));
+  const pendingFindings = findings.filter((finding) => finding?.waivable && !finding.waiverId);
+  const hardBlockerCount = findings.filter((finding) => !finding?.valid && !finding?.waivable).length;
+  const policyVersion = String(qc.policyVersion || gate?.policy?.qcPolicyVersion || qcPolicy.POLICY_VERSION);
+  const shortPolicyVersion = policyVersion.split('/').pop() || policyVersion;
+
+  const activeWaiverMarkup = activeWaivers.length
+    ? activeWaivers.map((waiver) => {
+        const record = evidenceById.get(String(waiver.evidenceId || '')) || {};
+        const busy = publicationUI.busy === 'revoke-qc-waiver'
+          && publicationUI.busyTargetId === waiver.id;
+        return `
+          <article class="publication-qc-waiver">
+            <header>
+              <span><strong>${escapeHtml(publicationEvidenceLabel(record) || waiver.evidenceId)}</strong><small>${escapeHtml(waiver.evidenceId || '')}</small></span>
+              <em>有效豁免</em>
+            </header>
+            <p>${escapeHtml(waiver.reason || '未提供豁免理由')}</p>
+            <small>${escapeHtml([
+              waiver.reviewerName || waiver.reviewerId || '未知复核人',
+              waiver.approvedAt ? `批准 ${formatDateTime(waiver.approvedAt)}` : '',
+              waiver.expiresAt ? `到期 ${formatDateTime(waiver.expiresAt)}` : '',
+            ].filter(Boolean).join(' · '))}</small>
+            <button
+              type="button"
+              class="publication-danger-button"
+              data-publication-revoke-qc-waiver="${escapeHtml(waiver.id)}"
+              ${!checked || publicationUI.busy ? 'disabled' : ''}
+            >${busy ? '撤销中…' : '撤销豁免'}</button>
+          </article>`;
+      }).join('')
+    : '<p class="publication-qc-empty">当前没有活跃的 QC 豁免。</p>';
+
+  const pendingWaiverMarkup = pendingFindings.length
+    ? pendingFindings.map((finding) => {
+        const evidenceId = String(finding.evidenceId || '');
+        const record = evidenceById.get(evidenceId) || {};
+        const reason = publicationUI.qcWaiverReasons[
+          publicationQcReasonKey(task.id, evidenceId)
+        ] || '';
+        const busy = publicationUI.busy === 'waive-qc'
+          && publicationUI.busyTargetId === evidenceId;
+        return `
+          <article class="publication-qc-waiver-editor">
+            <header>
+              <span><strong>${escapeHtml(publicationEvidenceLabel(record) || evidenceId)}</strong><small>${escapeHtml(evidenceId)}</small></span>
+              <em>QC ${escapeHtml(qcPolicy.labelForStatus(finding.qcStatus))}</em>
+            </header>
+            <label>
+              <span>人工豁免理由</span>
+              <textarea
+                data-publication-qc-waiver-reason="${escapeHtml(evidenceId)}"
+                minlength="8"
+                maxlength="1000"
+                placeholder="说明已核查的资料、判断依据和接受风险的原因，至少 8 个字符"
+                ${publicationUI.busy ? 'disabled' : ''}
+              >${escapeHtml(reason)}</textarea>
+            </label>
+            <button
+              type="button"
+              class="publication-waiver-button"
+              data-publication-waive-qc="${escapeHtml(evidenceId)}"
+              ${!checked || publicationUI.busy ? 'disabled' : ''}
+            >${busy ? '创建中…' : '创建豁免记录'}</button>
+            ${checked ? '' : '<small class="publication-qc-hint">先运行发布检查，确认当前 Evidence 与成果物未发生变化。</small>'}
+          </article>`;
+      }).join('')
+    : `<p class="publication-qc-empty">${
+        hardBlockerCount
+          ? '当前 QC 问题不可人工豁免，请先修复资料质量或策略版本。'
+          : '当前引用的 Evidence 不需要新增人工豁免。'
+      }</p>`;
+
+  return `
+    <section class="publication-qc-review" aria-labelledby="publication-qc-title">
+      <div class="publication-section-title">
+        <strong id="publication-qc-title">QC 审核</strong>
+        <small title="${escapeHtml(policyVersion)}">策略 ${escapeHtml(shortPolicyVersion)}</small>
+      </div>
+      <div class="publication-qc-counts" role="list" aria-label="QC 状态汇总">
+        ${statusItems.length
+          ? statusItems.map(({ status, count }) => `
+              <span class="publication-qc-count ${escapeHtml(status)}" role="listitem">
+                <em>${escapeHtml(qcPolicy.labelForStatus(status))}</em>
+                <strong>${count}</strong>
+              </span>`).join('')
+          : '<p>暂无 QC 记录</p>'}
+      </div>
+      <div class="publication-qc-subsection">
+        <div class="publication-qc-subtitle"><strong>活跃豁免</strong><span>${activeWaivers.length}</span></div>
+        ${activeWaiverMarkup}
+      </div>
+      <div class="publication-qc-subsection">
+        <div class="publication-qc-subtitle"><strong>待人工复核</strong><span>${pendingFindings.length}</span></div>
+        ${pendingWaiverMarkup}
+      </div>
+    </section>`;
+}
+
 function renderPublicationEvidence(record) {
   const metadata = record.metadata || {};
+  const qcPolicy = window.MeteoMateHarness.QcPolicy;
+  const qc = qcPolicy.normalizeEvidenceQc(record);
   const value = record.value == null
     ? '无数值'
     : `${typeof record.value === 'object' ? JSON.stringify(record.value) : record.value}${record.unit ? ` ${record.unit}` : ''}`;
@@ -1912,9 +2041,16 @@ function renderPublicationEvidence(record) {
     ? `${record.algorithm.name || record.algorithm.id || '算法'}${record.algorithm.version ? ` ${record.algorithm.version}` : ''}`
     : '';
   const flags = [
-    metadata.synthetic === true ? '构造数据' : '',
-    metadata.classification ? String(metadata.classification) : '',
-    record.expiresAt && new Date(record.expiresAt).getTime() <= Date.now() ? '已过期' : '',
+    metadata.synthetic === true ? { label: '构造数据', className: '' } : null,
+    metadata.classification ? { label: String(metadata.classification), className: '' } : null,
+    record.expiresAt && new Date(record.expiresAt).getTime() <= Date.now()
+      ? { label: '已过期', className: '' }
+      : null,
+    {
+      label: `QC ${qcPolicy.labelForStatus(qc.qcStatus)}`,
+      className: `qc-${qc.qcStatus}`,
+      title: qc.qcVersion || '缺少 QC 策略版本',
+    },
   ].filter(Boolean);
   return `
     <label class="publication-evidence-row">
@@ -1931,7 +2067,7 @@ function renderPublicationEvidence(record) {
           algorithm,
         ].filter(Boolean).join(' · '))}</small>
       </span>
-      ${flags.length ? `<span class="publication-evidence-flags">${flags.map((flag) => `<em>${escapeHtml(flag)}</em>`).join('')}</span>` : ''}
+      ${flags.length ? `<span class="publication-evidence-flags">${flags.map((flag) => `<em class="${escapeHtml(flag.className)}" title="${escapeHtml(flag.title || flag.label)}">${escapeHtml(flag.label)}</em>`).join('')}</span>` : ''}
     </label>`;
 }
 
@@ -1993,7 +2129,7 @@ function renderTaskPublicationPanel(task) {
 
       ${needsRecheck ? `<p class="publication-notice">${stale ? '缓存的发布审核结果与当前任务不匹配，当前显示本地预检查。请重新运行发布检查。' : '分析、证据或成果物已经变化，请重新运行发布检查。已有签发不会被静默复用。'}</p>` : ''}
       ${error ? `<p class="publication-error" role="alert">${escapeHtml(error)}</p>` : ''}
-      ${reviewer ? `<p class="publication-signoff">签发人：<strong>${escapeHtml(reviewer)}</strong>${publication.signoff.approvedAt ? ` · ${escapeHtml(formatDateTime(publication.signoff.approvedAt))}` : ''}</p>` : ''}
+      ${reviewer ? `<p class="publication-signoff">签发人：<strong>${escapeHtml(reviewer)}</strong>${publication.signoff.signedAt || publication.signoff.approvedAt ? ` · ${escapeHtml(formatDateTime(publication.signoff.signedAt || publication.signoff.approvedAt))}` : ''}</p>` : ''}
 
       <div class="publication-review-columns">
         <section class="publication-editor">
@@ -2030,6 +2166,7 @@ function renderTaskPublicationPanel(task) {
 
         <aside class="publication-gate">
           <div class="publication-section-title"><strong>门禁结果</strong><small>${checked ? '服务端校验结果' : '本地预检查，签发前需正式检查'}</small></div>
+          ${renderPublicationQcReview(task, publication, gate, checked)}
           <div class="publication-gate-group blockers">
             <span>阻塞项</span>
             ${(gate.blockers || []).length

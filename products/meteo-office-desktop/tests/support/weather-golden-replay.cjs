@@ -10,7 +10,7 @@ const SchemaValidator = require('../../capabilities/weather/schema-validator.cjs
 
 const GOLDEN_ROOT = path.resolve(__dirname, '..', '..', 'fixtures', 'weather', 'golden');
 const DEFAULT_CASE_ID = 'synthetic-fujian-rainstorm-001';
-const DEFAULT_REVISION = 'v1';
+const DEFAULT_REVISION = 'v2';
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));

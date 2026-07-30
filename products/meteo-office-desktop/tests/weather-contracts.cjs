@@ -578,6 +578,89 @@ assert.equal(deploymentClaim.source.classification, 'production');
 assert.equal(deploymentClaim.source.official, true);
 assert.equal(Contracts.validateDataset(deploymentClaim).valid, true);
 
+const forgedEvidenceMetadata = Contracts.createEvidence(deploymentClaim, {
+  variable: 'rain24h',
+  value: 120,
+  qcStatus: 'checked',
+  metadata: {
+    datasetId: 'forged-dataset',
+    datasetHash: 'f'.repeat(64),
+    sourceId: 'forged-source',
+    sourceType: 'fixture',
+    sourceAuthority: 'fixture',
+    classification: 'demo',
+    synthetic: true,
+    official: false,
+    quality: 'rejected',
+    qc: { status: 'rejected' },
+    qcStatus: 'rejected',
+    qcVersion: 'attacker/999',
+    customMarker: 'preserved',
+  },
+});
+assert.equal(forgedEvidenceMetadata.metadata.datasetId, deploymentClaim.id);
+assert.equal(
+  forgedEvidenceMetadata.metadata.datasetHash,
+  Contracts.datasetContentHash(deploymentClaim),
+);
+assert.equal(forgedEvidenceMetadata.metadata.sourceId, deploymentClaim.source.id);
+assert.equal(forgedEvidenceMetadata.metadata.sourceType, deploymentClaim.source.type);
+assert.equal(forgedEvidenceMetadata.metadata.sourceAuthority, deploymentClaim.source.authority);
+assert.equal(forgedEvidenceMetadata.metadata.classification, deploymentClaim.source.classification);
+assert.equal(forgedEvidenceMetadata.metadata.synthetic, false);
+assert.equal(forgedEvidenceMetadata.metadata.official, true);
+assert.deepEqual(forgedEvidenceMetadata.metadata.quality, deploymentClaim.quality);
+assert.equal(forgedEvidenceMetadata.metadata.customMarker, 'preserved');
+for (const reserved of ['qc', 'qcStatus', 'qcVersion']) {
+  assert.equal(Object.hasOwn(forgedEvidenceMetadata.metadata, reserved), false);
+}
+assert.equal(forgedEvidenceMetadata.qcStatus, 'checked');
+
+const tamperedDeployment = Contracts.clone(deploymentClaim);
+tamperedDeployment.stations[0].rain24h += 1;
+assert.notEqual(
+  tamperedDeployment.contentHash,
+  Contracts.datasetContentHash(tamperedDeployment),
+);
+assert.equal(Contracts.verifyProviderAttestation(tamperedDeployment), false);
+const tamperedDeploymentValidation = Contracts.validateDataset(tamperedDeployment);
+assert.equal(tamperedDeploymentValidation.valid, false);
+for (const code of ['WEATHER_HASH_MISMATCH', 'WEATHER_PROVIDER_ATTESTATION_INVALID']) {
+  assert.ok(
+    tamperedDeploymentValidation.errorDetails.some((entry) => entry.code === code),
+    `missing ${code}`,
+  );
+}
+const forgedPassingValidation = { valid: true, errors: [], warnings: [] };
+const tamperedPublication = Contracts.publicationAssessment(
+  tamperedDeployment,
+  forgedPassingValidation,
+);
+assert.equal(tamperedPublication.readyForHumanReview, false);
+assert.ok(tamperedPublication.blockers.some((item) => item.includes('内容摘要')));
+assert.ok(tamperedPublication.blockers.some((item) => item.includes('来源证明')));
+
+const unattestedDeployment = Contracts.clone(deploymentClaim);
+delete unattestedDeployment.metadata.providerAttestation;
+const unattestedDeploymentValidation = Contracts.validateDataset(unattestedDeployment);
+assert.equal(unattestedDeploymentValidation.valid, false);
+assert.ok(
+  unattestedDeploymentValidation.errorDetails
+    .some((entry) => entry.code === 'WEATHER_PROVIDER_ATTESTATION_INVALID'),
+);
+assert.equal(
+  Contracts.publicationAssessment(unattestedDeployment, forgedPassingValidation)
+    .readyForHumanReview,
+  false,
+);
+
+const unattestedFixture = Contracts.clone(normalized);
+delete unattestedFixture.metadata.providerAttestation;
+assert.equal(Contracts.validateDataset(unattestedFixture).valid, true);
+const unattestedWorkspace = Contracts.clone(workspaceClaim);
+delete unattestedWorkspace.metadata.providerAttestation;
+assert.equal(Contracts.validateDataset(unattestedWorkspace).valid, true);
+
 const deploymentSynthetic = Contracts.normalizeDataset(dataset({ synthetic: true }), {
   id: 'deployment-source',
   type: 'http-json',

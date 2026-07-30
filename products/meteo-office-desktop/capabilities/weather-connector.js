@@ -438,7 +438,7 @@ function fixtureDataset() {
     'weather',
     'golden',
     CASE_ID,
-    'v1',
+    'v2',
     'dataset.json',
   );
   const dataset = JSON.parse(fs.readFileSync(fixturePath, 'utf8'));
@@ -524,18 +524,25 @@ function fixtureRuntimeEvents({
   toolCallId = 'meteomate-weather-fixture',
 } = {}) {
   return [
-    ...fixture.evidence.map((evidence) => ({
-      type: 'evidence_created',
-      taskId,
-      runtime,
-      toolCallId,
-      evidence: clone(evidence),
-    })),
+    ...fixture.evidence.map((evidence) => {
+      const diagnosis = evidence.evidenceType === 'algorithm-diagnosis';
+      return {
+        type: 'evidence_created',
+        taskId,
+        runtime,
+        toolCallId,
+        extensionName: diagnosis ? 'weather-diagnosis' : 'weather-data',
+        toolName: diagnosis ? 'weather_diagnose_dataset' : 'weather_build_evidence',
+        evidence: clone(evidence),
+      };
+    }),
     ...fixture.artifacts.map((artifact) => ({
       type: 'artifact_created',
       taskId,
       runtime,
       toolCallId,
+      extensionName: 'gis-map',
+      toolName: 'weather_render_dataset_map',
       artifact: clone(artifact),
     })),
     {

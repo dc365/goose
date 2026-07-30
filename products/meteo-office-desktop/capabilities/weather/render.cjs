@@ -6,7 +6,7 @@ const path = require('node:path');
 const SafeWorkspace = require('../safe-workspace.cjs');
 const Contracts = require('./contracts.cjs');
 
-const RENDERER_VERSION = 'meteomate-weather-risk-map/1.0.0';
+const RENDERER_VERSION = 'meteomate-weather-risk-map/1.1.0';
 
 function escapeHtml(value) {
   return String(value ?? '')

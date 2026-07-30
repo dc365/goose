@@ -11,6 +11,7 @@ const ContextCompiler = require('../harness/context-compiler');
 const EventNormalizer = require('../harness/event-normalizer');
 const ArtifactRegistry = require('../harness/artifact-registry');
 const EvidenceLedger = require('../harness/evidence-ledger');
+const QcPolicy = require('../harness/qc-policy');
 const RuntimeRecords = require('../harness/runtime-records');
 const ValidationEngine = require('../harness/validation-engine');
 const PublicationState = require('../harness/publication-state');
@@ -23,6 +24,10 @@ function createDefaultPlan() {
     { id: 'deliver', title: '交付', status: 'pending' },
   ];
 }
+
+assert.equal(ValidationEngine.validRfc3339('2026-02-28T23:59:59+08:00'), true);
+assert.equal(ValidationEngine.validRfc3339('2026-02-30T00:00:00Z'), false);
+assert.equal(ValidationEngine.validRfc3339('2026-07-31T25:00:00Z'), false);
 
 const normalContext = ContextWindow.contextStatus({
   usage: { used: 64_000, contextLimit: 128_000 },
@@ -146,6 +151,14 @@ const runtimeEvidence = RuntimeRecords.recordRuntimeEvent(task, {
     unit: 'mm',
     value: 86,
     validTime: '2026-07-30T08:00:00.000Z',
+    expiresAt: '2026-07-31T08:00:00.000Z',
+    qcStatus: 'checked',
+    qcVersion: QcPolicy.POLICY_VERSION,
+    metadata: {
+      classification: 'production',
+      synthetic: false,
+      official: true,
+    },
   },
 }, { runId: 'run-runtime-fallback' }, { responseId: 'response-runtime-1' });
 assert.equal(runtimeEvidence.evidence.id, 'evidence-runtime-1');
@@ -182,6 +195,12 @@ const runtimeArtifact = RuntimeRecords.recordRuntimeEvent(task, {
     mediaType: 'text/html',
     status: 'ready',
     contentHash: 'a'.repeat(64),
+    evidenceIds: ['evidence-runtime-1'],
+    metadata: {
+      classification: 'production',
+      synthetic: false,
+      official: true,
+    },
   },
 }, { runId: 'run-runtime-1' });
 assert.equal(runtimeArtifact.artifact.id, 'artifact-runtime-1');
@@ -232,9 +251,12 @@ EvidenceLedger.registerEvidence(task, {
   value: 120,
   validTime: '2026-07-29T08:00:00.000Z',
   expiresAt: '2026-07-29T20:00:00.000Z',
+  qcStatus: 'checked',
+  qcVersion: QcPolicy.POLICY_VERSION,
   metadata: {
     classification: 'demo',
     synthetic: true,
+    official: false,
   },
 });
 assert.deepEqual(
@@ -254,18 +276,17 @@ assert.equal(
 const signablePublicationGate = PublicationState.evaluate(task, null, Date.parse('2026-07-30T09:00:00.000Z'));
 assert.deepEqual(signablePublicationGate.blockers, [PublicationState.SIGNOFF_BLOCKER]);
 assert.equal(PublicationState.signable(signablePublicationGate), true);
-const advisoryEvidenceGate = ValidationEngine.runPublicationGate({
+const unreferencedUnsafeEvidenceGate = ValidationEngine.runPublicationGate({
   analysis: task.publicationAnalysis,
   artifacts: task.artifacts,
   evidence: task.evidence,
   at: Date.parse('2026-07-30T09:00:00.000Z'),
 });
-assert.deepEqual(advisoryEvidenceGate.blockers, [PublicationState.SIGNOFF_BLOCKER]);
-assert.ok(advisoryEvidenceGate.warnings.some((warning) =>
-  warning.includes('evidence-unreferenced-demo') && warning.includes('synthetic')
+assert.ok(unreferencedUnsafeEvidenceGate.blockers.some((blocker) =>
+  blocker.includes('evidence-unreferenced-demo') && blocker.includes('synthetic')
 ));
-assert.ok(advisoryEvidenceGate.warnings.some((warning) =>
-  warning.includes('evidence-unreferenced-demo') && warning.includes('expired')
+assert.ok(unreferencedUnsafeEvidenceGate.blockers.some((blocker) =>
+  blocker.includes('evidence-unreferenced-demo') && blocker.includes('expired')
 ));
 const missingReferencedEvidenceGate = ValidationEngine.runPublicationGate({
   analysis: {
@@ -321,6 +342,10 @@ delete legacyCachedTask.publication.requestFingerprint;
 assert.equal(PublicationState.cachedRequestMatchesTask(legacyCachedTask), false);
 PublicationState.applyError(task, new Error('发布检查失败'));
 assert.equal(task.publication.error, '发布检查失败');
+assert.equal(task.publication.gate, null);
+assert.equal(task.publication.dirty, true);
+assert.equal(task.publication.requestFingerprint, null);
+assert.equal(task.publication.signoff.reviewerName, '测试预报员');
 PublicationState.updateAnalysis(task, {
   ...task.publicationAnalysis,
   conclusions: [...task.publicationAnalysis.conclusions, {
@@ -346,6 +371,42 @@ assert.equal(compactedTask.evidence[0].id, 'evidence-10');
 assert.equal(compactedTask.evidence.at(-1).id, 'evidence-259');
 assert.equal(compactedTask.harnessEvents.length, 30);
 assert.deepEqual(compactedTask.pendingPermissions, []);
+
+const artifactLineageCompactionTask = {
+  id: 'artifact-lineage-compaction-task',
+  workspace: '/data/artifact-lineage-workspace',
+  publicationAnalysis: {
+    conclusions: [{ text: '结论仅引用最新证据', evidenceIds: ['e-200'] }],
+  },
+  artifacts: [{
+    id: 'artifact-lineage-current',
+    path: '/data/artifact-lineage-workspace/forecast.pdf',
+    lineage: { evidenceIds: ['e-0'] },
+  }],
+  evidence: Array.from({ length: 201 }, (_unused, index) => ({ id: `e-${index}` })),
+};
+const artifactLineagePublicationRequest = PublicationState.requestForTask(
+  artifactLineageCompactionTask
+);
+artifactLineageCompactionTask.publication = {
+  dirty: false,
+  gate: { ready: false },
+  signoff: null,
+  requestFingerprint: PublicationState.requestFingerprint(artifactLineagePublicationRequest),
+};
+const artifactLineageCompactedTask = StateStore.compactTaskForStorage(
+  artifactLineageCompactionTask
+);
+assert.ok(artifactLineageCompactedTask.evidence.some((record) => record.id === 'e-0'));
+assert.ok(artifactLineageCompactedTask.evidence.some((record) => record.id === 'e-200'));
+assert.equal(
+  PublicationState.requestMatchesTask(
+    artifactLineageCompactedTask,
+    artifactLineagePublicationRequest
+  ),
+  true,
+);
+assert.equal(artifactLineageCompactedTask.publication.dirty, false);
 
 const compactedLegacyTask = StateStore.compactTaskForStorage({
   publicationAnalysis: {
@@ -655,6 +716,14 @@ const evidence = EvidenceLedger.registerEvidence(task, {
   unit: 'mm',
   value: 128.4,
   confidence: 0.84,
+  expiresAt: '2026-07-18T00:00:00Z',
+  qcStatus: 'checked',
+  qcVersion: QcPolicy.POLICY_VERSION,
+  metadata: {
+    classification: 'production',
+    synthetic: false,
+    official: true,
+  },
 });
 assert.equal(evidence.lineage.taskId, task.id);
 assert.equal(EvidenceLedger.validateEvidence(evidence).valid, true);
@@ -665,6 +734,11 @@ const artifact = ArtifactRegistry.registerArtifact(task, {
   path: '/data/heavy-rain/reports/天气形势分析.docx',
   type: 'docx',
   status: 'ready',
+  metadata: {
+    classification: 'production',
+    synthetic: false,
+    official: true,
+  },
 }, { evidenceIds: [evidence.id], expertId: expert.id });
 assert.equal(artifact.lineage.contextSnapshotId, task.contextSnapshotId);
 assert.equal(ArtifactRegistry.validateArtifact(artifact).valid, true);
@@ -680,6 +754,7 @@ const gate = ValidationEngine.runPublicationGate({
   artifacts: [artifact],
   evidence: [evidence],
   humanSignoff: { approved: true, userId: 'forecaster-01' },
+  at: Date.parse('2026-07-15T18:00:00Z'),
 });
 assert.equal(gate.ready, true);
 assert.equal(gate.status, 'ready');

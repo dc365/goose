@@ -14,6 +14,12 @@ const { createPublicationService } = require('./publication-service.cjs');
 const { createPublicationAttestor } = require('./publication-attestor.cjs');
 const SecurityMode = require('./security-mode.cjs');
 
+const ownsSingleInstanceLock = typeof electron.app.requestSingleInstanceLock === 'function'
+  ? electron.app.requestSingleInstanceLock()
+  : true;
+if (!ownsSingleInstanceLock) {
+  electron.app.quit();
+} else {
 const productRoot = path.resolve(__dirname, '..');
 const securityMode = SecurityMode.normalizeSecurityMode(process.env.METEOMATE_SECURITY_MODE);
 const profileContext = createProfileContext({
@@ -63,7 +69,9 @@ const publicationAttestor = createPublicationAttestor({ profileContext });
 const publicationService = createPublicationService({
   ipcMain: electron.ipcMain,
   profileContext,
+  dialog: electron.dialog,
   publicationAttestor,
+  safeStorage: electron.safeStorage,
   securityMode,
 });
 
@@ -92,3 +100,4 @@ electron.app.on('before-quit', () => {
 });
 
 require('../main.cjs');
+}

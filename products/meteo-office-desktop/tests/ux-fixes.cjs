@@ -6,6 +6,7 @@ const vm = require('node:vm');
 const root = path.resolve(__dirname, '..');
 const source = fs.readFileSync(path.join(root, 'renderer-actions.js'), 'utf8');
 const rendererSource = fs.readFileSync(path.join(root, 'renderer-core.js'), 'utf8');
+const QcPolicy = require(path.join(root, 'harness/qc-policy'));
 
 function extractNamedFunction(name, input = source) {
   const start = input.indexOf(`function ${name}(`);
@@ -165,10 +166,13 @@ const publicationContext = vm.createContext({
     open: true,
     taskId: publicationTask.id,
     busy: '',
+    busyTargetId: null,
     error: '',
+    qcWaiverReasons: {},
   },
   window: {
     MeteoMateHarness: {
+      QcPolicy,
       PublicationState: {
         analysisForTask(currentTask) {
           return currentTask.publicationAnalysis;
@@ -211,10 +215,15 @@ const publicationContext = vm.createContext({
   pathBaseName(value) {
     return String(value).split('/').at(-1);
   },
+  publicationEvidenceLabel(record = {}) {
+    return record.variable || record.evidenceType || record.id || '';
+  },
 });
 vm.runInContext(
   [
     extractNamedFunction('publicationGateForTask', rendererSource),
+    extractNamedFunction('publicationQcReasonKey', rendererSource),
+    extractNamedFunction('renderPublicationQcReview', rendererSource),
     extractNamedFunction('renderPublicationEvidence', rendererSource),
     extractNamedFunction('renderTaskPublicationPanel', rendererSource),
     extractNamedFunction('applyPublicationResult'),

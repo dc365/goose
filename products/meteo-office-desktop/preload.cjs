@@ -44,6 +44,8 @@ contextBridge.exposeInMainWorld('meteoDesktop', {
   setSharedProjectMember: (request) => ipcRenderer.invoke('shared-project:set-member', request),
   removeSharedProjectMember: (request) => ipcRenderer.invoke('shared-project:remove-member', request),
   checkPublicationGate: (request) => ipcRenderer.invoke('publication:check', request),
+  waivePublicationQc: (request) => ipcRenderer.invoke('publication:waive-qc', request),
+  revokePublicationQcWaiver: (request) => ipcRenderer.invoke('publication:revoke-qc-waiver', request),
   signPublication: (request) => ipcRenderer.invoke('publication:sign', request),
   revokePublicationSignoff: (request) => ipcRenderer.invoke('publication:revoke', request),
   importWorkflow: () => ipcRenderer.invoke('workflow:import'),

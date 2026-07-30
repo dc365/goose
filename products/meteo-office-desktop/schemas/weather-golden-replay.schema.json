@@ -71,6 +71,7 @@
       "required": [
         "diagnosisKind",
         "normalizerVersion",
+        "qcPolicy",
         "algorithm",
         "renderer"
       ],
@@ -80,6 +81,15 @@
           "enum": ["all", "synoptic", "heavy-rain", "convection"]
         },
         "normalizerVersion": { "type": "string", "minLength": 1 },
+        "qcPolicy": {
+          "type": "object",
+          "required": ["version", "digest"],
+          "additionalProperties": false,
+          "properties": {
+            "version": { "type": "string", "minLength": 1 },
+            "digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+          }
+        },
         "algorithm": { "$ref": "#/$defs/versionedComponent" },
         "renderer": {
           "type": "object",

@@ -1,15 +1,19 @@
 (function (root, factory) {
   const Shared = typeof module === 'object' && module.exports ? require('./shared') : root.MeteoMateHarness.Shared;
-  const api = factory(Shared);
+  const QcPolicy = typeof module === 'object' && module.exports ? require('./qc-policy') : root.MeteoMateHarness.QcPolicy;
+  const api = factory(Shared, QcPolicy);
   if (typeof module === 'object' && module.exports) module.exports = api;
   root.MeteoMateHarness = root.MeteoMateHarness || {};
   root.MeteoMateHarness.EvidenceLedger = api;
-})(typeof globalThis !== 'undefined' ? globalThis : this, function (Shared) {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (Shared, QcPolicy) {
   'use strict';
 
   function createEvidence(input = {}, lineage = {}) {
     if (!input.source) throw new Error('Evidence requires a source');
     const confidence = Shared.clampNumber(input.confidence, 0, 1, null);
+    const hasQcStatus = Object.prototype.hasOwnProperty.call(input, 'qcStatus');
+    const hasQcVersion = Object.prototype.hasOwnProperty.call(input, 'qcVersion');
+    const qc = QcPolicy.normalizeEvidenceQc(input);
     const record = {
       apiVersion: 'meteomate/v1',
       kind: 'Evidence',
@@ -29,6 +33,8 @@
       algorithm: input.algorithm ? Shared.deepClone(input.algorithm) : null,
       confidence,
       uncertainty: input.uncertainty || null,
+      ...(hasQcStatus ? { qcStatus: qc.qcStatus } : {}),
+      ...(hasQcVersion ? { qcVersion: qc.qcVersion } : {}),
       createdAt: input.createdAt || Date.now(),
       expiresAt: input.expiresAt || null,
       lineage: {
@@ -43,7 +49,7 @@
     return record;
   }
 
-  function semanticHash(record = {}) {
+  function semanticRecord(record = {}) {
     const metadata = Shared.deepClone(record.metadata || {});
     delete metadata.responseId;
     delete metadata.publicationAttestation;
@@ -55,7 +61,11 @@
     delete semantic.createdAt;
     delete semantic.lineage;
     delete semantic.recordHash;
-    return Shared.contentHash(semantic);
+    return semantic;
+  }
+
+  function semanticHash(record = {}) {
+    return Shared.contentHash(semanticRecord(record));
   }
 
   function registerEvidence(task, input, lineage = {}) {
@@ -101,5 +111,12 @@
     return { valid: errors.length === 0, errors, warnings };
   }
 
-  return { createEvidence, semanticHash, registerEvidence, isExpired, validateEvidence };
+  return {
+    createEvidence,
+    semanticRecord,
+    semanticHash,
+    registerEvidence,
+    isExpired,
+    validateEvidence,
+  };
 });

@@ -2,8 +2,9 @@
 
 const Contracts = require('./contracts.cjs');
 const SchemaValidator = require('./schema-validator.cjs');
+const QcPolicy = require('../../harness/qc-policy');
 
-const ALGORITHM_VERSION = 'meteomate-weather-diagnosis/1.0.0';
+const ALGORITHM_VERSION = 'meteomate-weather-diagnosis/1.1.0';
 
 function clamp(value, minimum, maximum) {
   return Math.max(minimum, Math.min(maximum, Contracts.number(value, 0)));
@@ -331,7 +332,7 @@ function diagnoseSynoptic(dataset) {
   };
 }
 
-function diagnosisEvidence(dataset, diagnosis) {
+function diagnosisEvidence(dataset, diagnosis, qcStatus) {
   const records = [];
   for (const dimension of diagnosis.heavyRain?.dimensions || []) {
     records.push(Contracts.createEvidence(dataset, {
@@ -342,6 +343,7 @@ function diagnosisEvidence(dataset, diagnosis) {
       algorithm: { name: 'heavy-rain-score', version: ALGORITHM_VERSION, max: dimension.max },
       confidence: dimension.evidence.length >= 2 ? 0.82 : 0.62,
       uncertainty: dimension.evidence.length ? null : '缺少该维度输入资料',
+      qcStatus,
       metadata: { evidenceText: dimension.evidence },
     }));
   }
@@ -353,6 +355,7 @@ function diagnosisEvidence(dataset, diagnosis) {
       value: hazard.probability,
       algorithm: { name: 'convection-classifier', version: ALGORITHM_VERSION },
       confidence: hazard.confidence === '高' ? 0.85 : hazard.confidence === '中' ? 0.68 : 0.48,
+      qcStatus,
     }));
   }
   for (const system of diagnosis.synoptic?.systems || []) {
@@ -363,6 +366,7 @@ function diagnosisEvidence(dataset, diagnosis) {
       value: true,
       algorithm: { name: 'synoptic-rule-diagnosis', version: ALGORITHM_VERSION },
       confidence: system.confidence,
+      qcStatus,
       metadata: { name: system.name, evidenceText: system.evidence },
     }));
   }
@@ -406,7 +410,12 @@ function diagnoseDataset(datasetInput, kind = 'all') {
   if (kind === 'all' || kind === 'synoptic') diagnosis.synoptic = diagnoseSynoptic(dataset);
   if (kind === 'all' || kind === 'heavy-rain') diagnosis.heavyRain = diagnoseHeavyRain(dataset);
   if (kind === 'all' || kind === 'convection') diagnosis.convection = diagnoseConvection(dataset);
-  const evidence = [...Contracts.datasetEvidence(dataset), ...diagnosisEvidence(dataset, diagnosis)];
+  const inputEvidence = Contracts.datasetEvidence(dataset);
+  const qcStatus = QcPolicy.aggregateStatus(inputEvidence);
+  const evidence = [
+    ...inputEvidence,
+    ...diagnosisEvidence(dataset, diagnosis, qcStatus),
+  ];
   if (evidence.length > Contracts.MAX_EVIDENCE_RECORDS) {
     throw new Contracts.WeatherContractError(
       'WEATHER_EVIDENCE_LIMIT_EXCEEDED',

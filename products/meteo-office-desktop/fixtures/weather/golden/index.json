@@ -4,11 +4,23 @@
   "cases": [
     {
       "id": "synthetic-fujian-rainstorm-001",
-      "latestRevision": 1,
-      "latestPath": "synthetic-fujian-rainstorm-001/v1/manifest.json",
-      "manifestSha256": "sha256:f15a2dc7ebb8e4b66fdd5a06c927d9e81e5366339b71f1f79a6bed09dd7b45ec",
+      "latestRevision": 2,
+      "latestPath": "synthetic-fujian-rainstorm-001/v2/manifest.json",
+      "manifestSha256": "sha256:a72aa3058a7b577f97bd38f1d212829e3c1e56aa2a7ddb6d0290ec237e920709",
       "dataPolicy": "fully-synthetic",
-      "status": "active"
+      "status": "active",
+      "revisions": [
+        {
+          "revision": 1,
+          "path": "synthetic-fujian-rainstorm-001/v1/manifest.json",
+          "manifestSha256": "sha256:f15a2dc7ebb8e4b66fdd5a06c927d9e81e5366339b71f1f79a6bed09dd7b45ec"
+        },
+        {
+          "revision": 2,
+          "path": "synthetic-fujian-rainstorm-001/v2/manifest.json",
+          "manifestSha256": "sha256:a72aa3058a7b577f97bd38f1d212829e3c1e56aa2a7ddb6d0290ec237e920709"
+        }
+      ]
     }
   ]
 }

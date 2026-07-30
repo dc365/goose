@@ -77,6 +77,13 @@ let computerPipController = null;
 const artifactPreviewEntries = new Map();
 let activeArtifactPreviewId = null;
 
+app.on('second-instance', () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+});
+
 const WINDOW_MODES = Object.freeze({
   account: { width: 480, height: 580, minWidth: 420, minHeight: 520 },
   workspace: { width: 1540, height: 960, minWidth: 1220, minHeight: 760 },
@@ -1013,7 +1020,7 @@ class GooseAcpRuntime {
       },
       clientInfo: {
         name: 'meteomate-desktop',
-        version: '0.2.0-beta.3',
+        version: '0.2.0-beta.4',
       },
     });
 
@@ -1938,6 +1945,7 @@ class GooseAcpRuntime {
             sessionId: notification.sessionId,
             toolCallId: update.toolCallId,
             extensionName: toolCall.extensionName,
+            toolName: toolCall.toolName,
           }
         ));
         const teamWeatherRecords = WeatherResultCollector.collectWeatherRecords(
@@ -1947,6 +1955,7 @@ class GooseAcpRuntime {
             sessionId: notification.sessionId,
             toolCallId: update.toolCallId,
             extensionName: toolCall.extensionName,
+            toolName: toolCall.toolName,
           }
         );
         artifacts.push(...teamWeatherRecords.artifacts);
@@ -1969,6 +1978,8 @@ class GooseAcpRuntime {
             ...common,
             type: 'artifact_created',
             toolCallId: update.toolCallId,
+            toolName: toolCall.toolName || null,
+            extensionName: toolCall.extensionName || null,
             artifact: {
               ...artifact,
               metadata: {
@@ -1984,6 +1995,8 @@ class GooseAcpRuntime {
             ...common,
             type: 'evidence_created',
             toolCallId: update.toolCallId,
+            toolName: toolCall.toolName || null,
+            extensionName: toolCall.extensionName || null,
             evidence: {
               ...record,
               metadata: {
@@ -2089,6 +2102,7 @@ class GooseAcpRuntime {
               sessionId: notification.sessionId,
               toolCallId: update.toolCallId,
               extensionName: toolCall.extensionName,
+              toolName: toolCall.toolName,
             }
           ));
           const weatherRecords = WeatherResultCollector.collectWeatherRecords(
@@ -2098,6 +2112,7 @@ class GooseAcpRuntime {
               sessionId: notification.sessionId,
               toolCallId: update.toolCallId,
               extensionName: toolCall.extensionName,
+              toolName: toolCall.toolName,
             }
           );
           artifacts.push(...weatherRecords.artifacts);
@@ -2117,6 +2132,8 @@ class GooseAcpRuntime {
             ...common,
             type: 'artifact_created',
             toolCallId: update.toolCallId,
+            toolName: toolCall.toolName || null,
+            extensionName: toolCall.extensionName || null,
             artifact,
           });
         });
@@ -2125,6 +2142,8 @@ class GooseAcpRuntime {
             ...common,
             type: 'evidence_created',
             toolCallId: update.toolCallId,
+            toolName: toolCall.toolName || null,
+            extensionName: toolCall.extensionName || null,
             evidence: record,
           });
         });
@@ -2613,18 +2632,25 @@ function runMockTeamTask(request) {
     }));
   }
   schedule(() => {
-    (fixture.evidence || []).forEach((evidence) => sendRuntimeEvent({
-      type: 'evidence_created',
-      taskId,
-      runtime: 'mock',
-      toolCallId: 'meteomate-weather-fixture-team',
-      evidence,
-    }));
+    (fixture.evidence || []).forEach((evidence) => {
+      const diagnosis = evidence.evidenceType === 'algorithm-diagnosis';
+      sendRuntimeEvent({
+        type: 'evidence_created',
+        taskId,
+        runtime: 'mock',
+        toolCallId: 'meteomate-weather-fixture-team',
+        extensionName: diagnosis ? 'weather-diagnosis' : 'weather-data',
+        toolName: diagnosis ? 'weather_diagnose_dataset' : 'weather_build_evidence',
+        evidence,
+      });
+    });
     artifacts.forEach((artifact) => sendRuntimeEvent({
       type: 'artifact_created',
       taskId,
       runtime: 'mock',
       toolCallId: 'meteomate-weather-fixture-team',
+      extensionName: 'gis-map',
+      toolName: 'weather_render_dataset_map',
       artifact,
     }));
     sendRuntimeEvent({

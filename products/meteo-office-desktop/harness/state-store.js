@@ -38,13 +38,16 @@
   function compactTaskForStorage(task = {}, limits = {}) {
     const configured = { ...DEFAULT_STORAGE_LIMITS, ...limits };
     const signed = task.publication?.signoff?.approved === true;
-    const referencedEvidenceIds = PublicationState.referencedEvidenceIds(
-      PublicationState.analysisForTask(task)
-    );
+    const authoritativeEvidenceIds = new Set([
+      ...PublicationState.referencedEvidenceIds(PublicationState.analysisForTask(task)),
+      ...PublicationState.artifactEvidenceIds(
+        PublicationState.currentArtifacts(task.artifacts)
+      ),
+    ]);
     const recentEvidence = tail(task.evidence, configured.evidence);
     const retainedEvidenceIds = new Set(recentEvidence.map((record) => record?.id).filter(Boolean));
     const evidence = (task.evidence || []).filter((record) =>
-      retainedEvidenceIds.has(record?.id) || referencedEvidenceIds.has(String(record?.id || ''))
+      retainedEvidenceIds.has(record?.id) || authoritativeEvidenceIds.has(String(record?.id || ''))
     );
     const compacted = {
       ...task,
@@ -153,14 +156,37 @@
     });
     const artifacts = (Array.isArray(task?.artifacts) ? task.artifacts : []).map((artifact) => {
       try {
-        return Artifact.createArtifact(artifact, { taskId: task.id, contextSnapshotId: task.contextSnapshotId });
+        const lineage = artifact?.lineage && typeof artifact.lineage === 'object'
+          ? artifact.lineage
+          : {};
+        return Artifact.createArtifact(artifact, {
+          taskId: lineage.taskId || task.id,
+          runId: lineage.runId || null,
+          contextSnapshotId: Object.hasOwn(lineage, 'contextSnapshotId')
+            ? lineage.contextSnapshotId
+            : task.contextSnapshotId,
+          expertId: lineage.expertId || null,
+          templateId: lineage.templateId || null,
+          evidenceIds: lineage.evidenceIds || [],
+          toolCallId: lineage.toolCallId || null,
+        });
       } catch {
         return { ...artifact };
       }
     });
     const evidence = (Array.isArray(task?.evidence) ? task.evidence : []).map((record) => {
       try {
-        return Evidence.createEvidence(record, { taskId: task.id, contextSnapshotId: task.contextSnapshotId });
+        const lineage = record?.lineage && typeof record.lineage === 'object'
+          ? record.lineage
+          : {};
+        return Evidence.createEvidence(record, {
+          taskId: lineage.taskId || task.id,
+          runId: lineage.runId || null,
+          contextSnapshotId: Object.hasOwn(lineage, 'contextSnapshotId')
+            ? lineage.contextSnapshotId
+            : task.contextSnapshotId,
+          toolCallId: lineage.toolCallId || null,
+        });
       } catch {
         return { ...record };
       }

@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meteomate.local/schemas/evidence-qc-waiver.schema.json",
+  "title": "MeteoMate Evidence QC Waiver",
+  "type": "object",
+  "additionalProperties": false,
+  "$defs": {
+    "confirmation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "action", "challengeId", "confirmedAt"],
+      "properties": {
+        "method": { "const": "electron-main-dialog" },
+        "action": { "enum": ["sign", "revoke", "waive-qc", "revoke-qc"] },
+        "challengeId": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$"
+        },
+        "confirmedAt": { "type": "string", "format": "date-time" }
+      }
+    }
+  },
+  "required": [
+    "apiVersion",
+    "kind",
+    "id",
+    "policyVersion",
+    "policyDigest",
+    "taskId",
+    "workspaceDigest",
+    "evidenceId",
+    "evidenceDigest",
+    "qcStatus",
+    "reason",
+    "reviewerId",
+    "reviewerName",
+    "reviewerRole",
+    "verification",
+    "securityMode",
+    "approvedAt",
+    "expiresAt",
+    "auditAttestation"
+  ],
+  "properties": {
+    "apiVersion": { "const": "meteomate/v1" },
+    "kind": { "const": "EvidenceQcWaiver" },
+    "id": {
+      "type": "string",
+      "pattern": "^qc-waiver-[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$"
+    },
+    "policyVersion": { "const": "meteomate.weather.qc/1.0.0" },
+    "policyDigest": {
+      "const": "91c64e11a4bb1157089359e8047a2626f12a1f01392820d19308a8888374a42f"
+    },
+    "taskId": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "workspaceDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "evidenceId": { "type": "string", "minLength": 1, "maxLength": 300 },
+    "evidenceDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "qcStatus": { "const": "suspect" },
+    "reason": { "type": "string", "minLength": 8, "maxLength": 1000 },
+    "reviewerId": { "type": "string", "minLength": 1, "maxLength": 300 },
+    "reviewerName": { "type": "string", "minLength": 1, "maxLength": 300 },
+    "reviewerRole": { "type": "string", "minLength": 1, "maxLength": 100 },
+    "verification": { "enum": ["account-profile", "local-profile"] },
+    "confirmation": { "$ref": "#/$defs/confirmation" },
+    "securityMode": { "enum": ["internal", "strict"] },
+    "approvedAt": { "type": "string", "format": "date-time" },
+    "expiresAt": { "type": "string", "format": "date-time" },
+    "revokedAt": { "type": "string", "format": "date-time" },
+    "revokedBy": { "type": "string", "minLength": 1, "maxLength": 300 },
+    "revokedByName": { "type": "string", "minLength": 1, "maxLength": 300 },
+    "revocationReason": { "type": "string", "minLength": 8, "maxLength": 1000 },
+    "revocationConfirmation": { "$ref": "#/$defs/confirmation" },
+    "auditAttestation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "kind", "taskId", "evidenceId", "approvedAt", "revokedAt", "value"],
+      "properties": {
+        "version": { "const": "meteomate-publication-audit/v1" },
+        "kind": { "const": "EvidenceQcWaiver" },
+        "taskId": { "type": "string", "minLength": 1 },
+        "evidenceId": { "type": "string", "minLength": 1 },
+        "approvedAt": { "type": "string", "format": "date-time" },
+        "revokedAt": { "type": ["string", "null"], "format": "date-time" },
+        "value": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      }
+    }
+  }
+}
