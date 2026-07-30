@@ -32,10 +32,10 @@
       createdAt: input.createdAt || Date.now(),
       expiresAt: input.expiresAt || null,
       lineage: {
-        taskId: lineage.taskId || input.taskId || null,
-        runId: lineage.runId || input.runId || null,
-        contextSnapshotId: lineage.contextSnapshotId || input.contextSnapshotId || null,
-        toolCallId: lineage.toolCallId || input.toolCallId || null,
+        taskId: lineage.taskId || input.lineage?.taskId || input.taskId || null,
+        runId: lineage.runId || input.lineage?.runId || input.runId || null,
+        contextSnapshotId: lineage.contextSnapshotId || input.lineage?.contextSnapshotId || input.contextSnapshotId || null,
+        toolCallId: lineage.toolCallId || input.lineage?.toolCallId || input.toolCallId || null,
       },
       metadata: Shared.deepClone(input.metadata || {}),
     };
@@ -43,11 +43,44 @@
     return record;
   }
 
+  function semanticHash(record = {}) {
+    const metadata = Shared.deepClone(record.metadata || {});
+    delete metadata.responseId;
+    delete metadata.publicationAttestation;
+    const semantic = {
+      ...record,
+      metadata,
+    };
+    delete semantic.id;
+    delete semantic.createdAt;
+    delete semantic.lineage;
+    delete semantic.recordHash;
+    return Shared.contentHash(semantic);
+  }
+
   function registerEvidence(task, input, lineage = {}) {
     task.evidence = Array.isArray(task.evidence) ? task.evidence : [];
     const record = createEvidence(input, { taskId: task.id, contextSnapshotId: task.contextSnapshotId, ...lineage });
-    const duplicate = task.evidence.find((item) => item.id === record.id || item.recordHash === record.recordHash);
-    if (duplicate) return duplicate;
+    const duplicateId = task.evidence.find((item) => item.id === record.id);
+    if (duplicateId) {
+      const reconciled = {
+        ...duplicateId,
+        metadata: {
+          ...(duplicateId.metadata || {}),
+          ...(input.metadata || {}),
+        },
+      };
+      for (const key of Object.keys(input)) {
+        if (['id', 'createdAt', 'lineage', 'recordHash', 'metadata'].includes(key)) continue;
+        if (Object.prototype.hasOwnProperty.call(record, key)) reconciled[key] = record[key];
+      }
+      if (semanticHash(duplicateId) !== semanticHash(reconciled)) {
+        throw new Error(`Evidence ID conflict: ${record.id}`);
+      }
+      return duplicateId;
+    }
+    const exactDuplicate = task.evidence.find((item) => item.recordHash === record.recordHash);
+    if (exactDuplicate) return exactDuplicate;
     task.evidence.push(record);
     task.evidenceIds = Shared.uniqueStrings([...(task.evidenceIds || []), record.id]);
     return record;
@@ -68,5 +101,5 @@
     return { valid: errors.length === 0, errors, warnings };
   }
 
-  return { createEvidence, registerEvidence, isExpired, validateEvidence };
+  return { createEvidence, semanticHash, registerEvidence, isExpired, validateEvidence };
 });

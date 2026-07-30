@@ -48,6 +48,26 @@
     "validationResults": { "type": "array", "items": { "type": "object" } },
     "evidenceIds": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
     "artifactIds": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
-    "expectedOutputs": { "type": "array", "items": { "type": "object" } }
+    "expectedOutputs": { "type": "array", "items": { "type": "object" } },
+    "publicationAnalysis": {
+      "type": ["object", "null"],
+      "properties": {
+        "region": { "type": ["string", "null"] },
+        "issueTime": { "type": ["string", "null"] },
+        "validPeriod": { "type": ["string", "null"] },
+        "conclusions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["text", "evidenceIds"],
+            "properties": {
+              "text": { "type": "string" },
+              "evidenceIds": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
+            }
+          }
+        }
+      }
+    },
+    "publication": { "type": ["object", "null"] }
   }
 }

@@ -63,7 +63,22 @@ result = Policy.classifyPermissionRequest(
   { workspace: root, connectors: [destructiveConnector], securityMode: 'internal' },
 );
 assert.equal(Policy.permissionHandling('artifact-approval', result), 'prompt');
-assert.equal(Policy.permissionHandling('workspace-approval', result), 'allow_always');
+assert.equal(Policy.permissionHandling('workspace-approval', result), 'prompt');
+assert.equal(Policy.permissionGrantReusable(result), false);
+
+const highRiskConnector = {
+  id: 'sensitive-reader', connectorType: 'managed', transport: 'streamable-http', riskClassification: 'high',
+  verified: true, explicitToolSelection: true, selectedTools: ['read_data'],
+  tools: [{ name: 'read_data', annotations: { readOnlyHint: true } }],
+};
+result = Policy.classifyPermissionRequest(
+  { toolCall: { title: 'sensitive-reader__read_data', kind: 'other', rawInput: {} } },
+  { workspace: root, connectors: [highRiskConnector], securityMode: 'internal' },
+);
+assert.equal(result.effectiveRisk, 'high');
+assert.equal(result.nonBypassableApproval, true);
+assert.equal(Policy.permissionHandling('workspace-approval', result), 'prompt');
+assert.equal(Policy.permissionGrantReusable(result), false);
 
 const blockedConnector = {
   id: 'blocked-service', connectorType: 'managed', transport: 'stdio',

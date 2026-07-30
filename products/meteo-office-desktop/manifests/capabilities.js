@@ -8,6 +8,7 @@ window.METEOMATE_SKILL_ROADMAP = Object.freeze([
     icon: 'NC',
     description: '检查变量、维度、单位、坐标、缺测值和时空范围。',
     status: 'planned',
+    maturity: 'planned',
     tags: ['NetCDF', 'GRIB', '元数据'],
   },
   {
@@ -17,6 +18,7 @@ window.METEOMATE_SKILL_ROADMAP = Object.freeze([
     icon: '模',
     description: '扫描模板锚点、管理版本并发布可复用的业务模板。',
     status: 'planned',
+    maturity: 'planned',
     tags: ['模板', '锚点', '版本'],
   },
   {
@@ -26,6 +28,7 @@ window.METEOMATE_SKILL_ROADMAP = Object.freeze([
     icon: '协',
     description: '在明确的所见即所得或协作需求下接入实时编辑能力。',
     status: 'planned',
+    maturity: 'planned',
     tags: ['编辑', '协作', 'Office'],
   },
 ]);
@@ -38,6 +41,7 @@ window.METEOMATE_CONNECTORS = Object.freeze([
     icon: '控',
     description: '读取本机应用窗口，并在授权后完成点击、输入和键盘操作。',
     status: 'available',
+    maturity: 'beta',
     tags: ['Cua Driver', '桌面', '自动化'],
     preset: window.MeteoMateComputerConnector.PRESET,
   },
@@ -48,6 +52,7 @@ window.METEOMATE_CONNECTORS = Object.freeze([
     icon: '览',
     description: '打开网页、读取内容、截图，并完成点击、输入和表单操作。',
     status: 'available',
+    maturity: 'beta',
     tags: ['Playwright', '网页', '自动化'],
     preset: window.MeteoMateBrowserConnector.PRESET,
   },
@@ -58,6 +63,7 @@ window.METEOMATE_CONNECTORS = Object.freeze([
     icon: '夹',
     description: '授权本地项目目录，使用真实路径与符号链接边界检查限制文件访问。',
     status: 'beta',
+    maturity: 'beta',
     tags: ['文件', '项目', '本机资源', '共享目录'],
   },
   {
@@ -67,6 +73,7 @@ window.METEOMATE_CONNECTORS = Object.freeze([
     icon: '数',
     description: '读取项目配置的本地 JSON/CSV/GeoJSON 或内网 HTTP/HTTPS 气象资料源，同时保留构造演示案例。',
     status: 'beta',
+    maturity: 'beta',
     tags: ['真实数据', '构造数据', '站点', '高空场', '模式', 'Evidence'],
     preset: {
       id: 'weather-data',
@@ -100,6 +107,7 @@ window.METEOMATE_CONNECTORS = Object.freeze([
     icon: '诊',
     description: '对标准化真实资料执行可解释的形势、强降水和强对流诊断；构造案例继续用于回归测试。',
     status: 'beta',
+    maturity: 'beta',
     tags: ['诊断', '天气系统', '强降水', '强对流', '评分', 'Evidence'],
     preset: {
       id: 'weather-diagnosis',
@@ -127,6 +135,7 @@ window.METEOMATE_CONNECTORS = Object.freeze([
     icon: '图',
     description: '把标准化气象资料、诊断评分和 Evidence 生成工作区内可预览的风险图。',
     status: 'beta',
+    maturity: 'beta',
     tags: ['GIS', '风险图', '站点标注', '成果物', '血缘'],
     preset: {
       id: 'gis-map',
@@ -149,6 +158,7 @@ window.METEOMATE_CONNECTORS = Object.freeze([
     icon: '文',
     description: '在项目内创建、编辑、渲染和校验 DOCX、PPTX、XLSX 与 PDF 成果物。',
     status: 'available',
+    maturity: 'beta',
     tags: ['DOCX', 'PPTX', 'XLSX', 'PDF', '渲染', '校验'],
     preset: window.MeteoMateOfficeConnector.PRESET,
   },
@@ -159,6 +169,7 @@ window.METEOMATE_CONNECTORS = Object.freeze([
     icon: '知',
     description: '检索业务规范、历史过程、技术手册、论文和内部资料。',
     status: 'beta',
+    maturity: 'beta',
     tags: ['知识库', 'RAG', '引用', '内网接口'],
   },
   {
@@ -168,6 +179,7 @@ window.METEOMATE_CONNECTORS = Object.freeze([
     icon: '监',
     description: '接入服务健康状态、主机与容器指标、告警、日志和发布变更记录。',
     status: 'planned',
+    maturity: 'planned',
     tags: ['监控', '日志', '告警'],
   },
 ]);

@@ -831,6 +831,7 @@ function bindEvents() {
 
   bindTaskComposerMenus();
   bindArtifactPreviewEvents();
+  bindPublicationEvents();
 
   const sendButton = document.getElementById('send-task');
   if (sendButton) sendButton.addEventListener('click', () => sendTaskMessage());
@@ -1391,6 +1392,211 @@ function bindArtifactPreviewEvents() {
     element.addEventListener('click', openActivePreviewExternally);
   });
   bindArtifactPreviewResizer();
+}
+
+function publicationAnalysisFromForm(task) {
+  const current = window.MeteoMateHarness.PublicationState.analysisForTask(task);
+  return {
+    ...current,
+    region: document.querySelector('[data-publication-region]')?.value.trim() || null,
+    issueTime: document.querySelector('[data-publication-issue-time]')?.value.trim() || null,
+    validPeriod: document.querySelector('[data-publication-valid-period]')?.value.trim() || null,
+  };
+}
+
+function savePublicationContext(task, { rerender = true } = {}) {
+  if (!task) return null;
+  const analysis = window.MeteoMateHarness.PublicationState.updateAnalysis(
+    task,
+    publicationAnalysisFromForm(task)
+  );
+  task.updatedAt = Date.now();
+  publicationUI.error = '';
+  saveState();
+  if (rerender) render();
+  return analysis;
+}
+
+function ensurePublicationFormCurrent(task) {
+  const api = window.MeteoMateHarness.PublicationState;
+  const formAnalysis = publicationAnalysisFromForm(task);
+  if (api.analysisMatchesTask(task, formAnalysis)) return true;
+  api.updateAnalysis(task, formAnalysis);
+  task.updatedAt = Date.now();
+  publicationUI.error = '发布上下文已修改，请重新运行发布检查后再签发。';
+  saveState();
+  render();
+  return false;
+}
+
+function applyPublicationResult(task, request, result) {
+  const api = window.MeteoMateHarness.PublicationState;
+  api.applyServiceResult(task, request, result);
+  if (api.requestMatchesTask(task, request)) return true;
+  const message = '审核期间分析、Evidence 或 Artifact 已发生变化，请重新运行发布检查。';
+  task.publication = {
+    ...task.publication,
+    dirty: true,
+    error: message,
+  };
+  publicationUI.error = message;
+  return false;
+}
+
+function addPublicationConclusion(task) {
+  if (!task) return;
+  const editor = document.querySelector('[data-publication-new-conclusion]');
+  const text = editor?.value.trim() || '';
+  const evidenceIds = [...document.querySelectorAll('[data-publication-new-evidence]:checked')]
+    .map((input) => input.value)
+    .filter(Boolean);
+  if (!text || !evidenceIds.length) {
+    if (editor) {
+      editor.setCustomValidity(text ? '请至少选择一条 Evidence' : '请输入预报结论');
+      editor.reportValidity();
+      editor.addEventListener('input', () => editor.setCustomValidity(''), { once: true });
+    }
+    return;
+  }
+  const analysis = publicationAnalysisFromForm(task);
+  analysis.conclusions = [
+    ...(analysis.conclusions || []),
+    { text, evidenceIds: [...new Set(evidenceIds)] },
+  ];
+  window.MeteoMateHarness.PublicationState.updateAnalysis(task, analysis);
+  task.updatedAt = Date.now();
+  publicationUI.error = '';
+  saveState();
+  render();
+}
+
+function removePublicationConclusion(task, index) {
+  if (!task || !Number.isInteger(index)) return;
+  const analysis = publicationAnalysisFromForm(task);
+  if (!analysis.conclusions[index]) return;
+  analysis.conclusions = analysis.conclusions.filter((_conclusion, itemIndex) => itemIndex !== index);
+  window.MeteoMateHarness.PublicationState.updateAnalysis(task, analysis);
+  task.updatedAt = Date.now();
+  publicationUI.error = '';
+  saveState();
+  render();
+}
+
+async function checkTaskPublication(task, { saveForm = true } = {}) {
+  if (!task || publicationUI.busy) return;
+  if (saveForm) savePublicationContext(task, { rerender: false });
+  publicationUI.busy = 'check';
+  publicationUI.error = '';
+  render();
+  try {
+    const request = window.MeteoMateHarness.PublicationState.requestForTask(task);
+    const result = await window.meteoDesktop.checkPublicationGate(request);
+    applyPublicationResult(task, request, result);
+  } catch (error) {
+    publicationUI.error = error?.message || String(error);
+    window.MeteoMateHarness.PublicationState.applyError(task, error);
+  } finally {
+    publicationUI.busy = '';
+    task.updatedAt = Date.now();
+    saveState();
+    render();
+  }
+}
+
+async function signTaskPublication(task) {
+  if (!task || publicationUI.busy) return;
+  if (!ensurePublicationFormCurrent(task)) return;
+  if (!confirm('确认以当前账户签发这份预报结论、证据和成果物吗？签发后任何内容变化都需要重新审核。')) return;
+  publicationUI.busy = 'sign';
+  publicationUI.error = '';
+  render();
+  try {
+    const request = window.MeteoMateHarness.PublicationState.requestForTask(task);
+    const result = await window.meteoDesktop.signPublication(request);
+    applyPublicationResult(task, request, result);
+  } catch (error) {
+    publicationUI.error = error?.message || String(error);
+    window.MeteoMateHarness.PublicationState.applyError(task, error);
+  } finally {
+    publicationUI.busy = '';
+    task.updatedAt = Date.now();
+    saveState();
+    render();
+  }
+}
+
+async function revokeTaskPublication(task) {
+  if (!task || publicationUI.busy) return;
+  if (!confirm('确认撤销当前签发吗？撤销后该任务将恢复为待审核状态。')) return;
+  publicationUI.busy = 'revoke';
+  publicationUI.error = '';
+  render();
+  try {
+    await window.meteoDesktop.revokePublicationSignoff({ taskId: task.id });
+    task.publication = {
+      signoff: null,
+      gate: null,
+      checkedAt: Date.now(),
+      error: null,
+      dirty: true,
+    };
+    saveState();
+    const request = window.MeteoMateHarness.PublicationState.requestForTask(task);
+    const result = await window.meteoDesktop.checkPublicationGate(request);
+    applyPublicationResult(task, request, result);
+  } catch (error) {
+    publicationUI.error = error?.message || String(error);
+    window.MeteoMateHarness.PublicationState.applyError(task, error);
+  } finally {
+    publicationUI.busy = '';
+    task.updatedAt = Date.now();
+    saveState();
+    render();
+  }
+}
+
+function bindPublicationEvents() {
+  document.querySelector('[data-publication-toggle]')?.addEventListener('click', () => {
+    const task = getActiveTask();
+    if (!task) return;
+    const isCurrent = publicationUI.open && publicationUI.taskId === task.id;
+    publicationUI.open = !isCurrent;
+    publicationUI.taskId = publicationUI.open ? task.id : null;
+    publicationUI.error = '';
+    render();
+    if (publicationUI.open) {
+      requestAnimationFrame(() => {
+        document.getElementById('publication-review-panel')?.scrollIntoView({
+          behavior: 'smooth',
+          block: 'start',
+        });
+        if (task.publication?.gate || task.publication?.signoff) {
+          void checkTaskPublication(task, { saveForm: false });
+        }
+      });
+    }
+  });
+  const task = getActiveTask();
+  document.querySelector('[data-publication-save-context]')?.addEventListener('click', () => {
+    savePublicationContext(task);
+  });
+  document.querySelector('[data-publication-add-conclusion]')?.addEventListener('click', () => {
+    addPublicationConclusion(task);
+  });
+  document.querySelectorAll('[data-publication-remove-conclusion]').forEach((button) => {
+    button.addEventListener('click', () => {
+      removePublicationConclusion(task, Number(button.dataset.publicationRemoveConclusion));
+    });
+  });
+  document.querySelector('[data-publication-check]')?.addEventListener('click', () => {
+    void checkTaskPublication(task);
+  });
+  document.querySelector('[data-publication-sign]')?.addEventListener('click', () => {
+    void signTaskPublication(task);
+  });
+  document.querySelector('[data-publication-revoke]')?.addEventListener('click', () => {
+    void revokeTaskPublication(task);
+  });
 }
 
 window.MeteoMatePreview = {
@@ -3387,6 +3593,12 @@ function scheduleRuntimeProgressCommit(task) {
   runtimeProgressCommitTimers.set(task.id, timer);
 }
 
+function runtimeEventCommitMode(eventType) {
+  if (['assistant_message_delta', 'thought_delta'].includes(eventType)) return 'stream';
+  if (['runtime_progress', 'artifact_created', 'evidence_created'].includes(eventType)) return 'progress';
+  return 'immediate';
+}
+
 function completeRunningThought(task) {
   const activity = task.activities.at(-1);
   if (activity?.type === 'thought' && activity.status === 'running') {
@@ -3600,6 +3812,9 @@ async function sendTaskMessage(options = {}) {
       transcript: previousTranscript,
       team: teamDefinition,
     });
+    if (typeof result.workspace === 'string' && result.workspace.trim()) {
+      task.workspace = result.workspace.trim();
+    }
     task.runtimeMode = result.runtime;
     if (result.sessionId) task.sessionId = result.sessionId;
     task.sessionCapabilityHash = result.capabilityHash || task.capabilityResolution?.id || null;
@@ -3672,18 +3887,49 @@ async function resendEditedMessage(messageId, text) {
   const removedArtifactIds = new Set(
     removedMessages.flatMap((message) => Array.isArray(message.artifactIds) ? message.artifactIds : [])
   );
+  const removedEvidenceIds = new Set(
+    removedMessages.flatMap((message) => Array.isArray(message.evidenceIds) ? message.evidenceIds : [])
+  );
+  const remainingArtifactIds = new Set(
+    task.messages.slice(0, messageIndex)
+      .flatMap((message) => Array.isArray(message.artifactIds) ? message.artifactIds : [])
+  );
+  const remainingEvidenceIds = new Set(
+    task.messages.slice(0, messageIndex)
+      .flatMap((message) => Array.isArray(message.evidenceIds) ? message.evidenceIds : [])
+  );
   task.messages = task.messages.slice(0, messageIndex);
   task.activities = (task.activities || []).filter(
     (activity) => !activity.responseId || !removedAssistantIds.has(activity.responseId)
   );
   task.artifacts = (task.artifacts || []).filter(
-    (artifact) => !removedArtifactIds.has(artifact.id)
-      && !removedAssistantIds.has(artifact.metadata?.responseId)
+    (artifact) => !(
+      (removedArtifactIds.has(artifact.id) && !remainingArtifactIds.has(artifact.id))
+      || (
+        removedAssistantIds.has(artifact.metadata?.responseId)
+        && !remainingArtifactIds.has(artifact.id)
+      )
+    )
   );
   if (Array.isArray(task.evidence)) {
     task.evidence = task.evidence.filter(
-      (entry) => !entry.responseId || !removedAssistantIds.has(entry.responseId)
+      (entry) => !(
+        (removedEvidenceIds.has(entry.id) && !remainingEvidenceIds.has(entry.id))
+        || (
+          removedAssistantIds.has(entry.metadata?.responseId)
+          && !remainingEvidenceIds.has(entry.id)
+        )
+      )
     );
+  }
+  task.artifactIds = [...new Set(task.artifacts.map((artifact) => artifact.id).filter(Boolean))];
+  task.evidenceIds = [...new Set((task.evidence || []).map((entry) => entry.id).filter(Boolean))];
+  if (removedArtifactIds.size || removedEvidenceIds.size || removedAssistantIds.size) {
+    task.publication = {
+      ...(task.publication || {}),
+      dirty: true,
+      error: null,
+    };
   }
   task.pendingPermissions = [];
   task.teamRun = null;
@@ -3744,13 +3990,24 @@ function registerArtifacts(task, source) {
       !isAbsolute && task.workspace
         ? `${task.workspace.replace(/[\\/]$/, '')}/${candidate.replace(/^[.\\/]+/, '')}`
         : candidate;
-    task.artifacts.push({
+    const record = window.MeteoMateHarness.ArtifactRegistry.registerArtifact(task, {
       id: cryptoRandomId(),
       name,
       path: pathValue,
       type: name.split('.').pop()?.toUpperCase() || 'FILE',
       createdAt: Date.now(),
     });
+    const assistant = currentStreamingAssistant(task) || latestAssistantMessage(task);
+    if (assistant) {
+      assistant.artifactIds = [...new Set([...(assistant.artifactIds || []), record.id])];
+    }
+    if (task.publication) {
+      task.publication = {
+        ...task.publication,
+        dirty: true,
+        error: null,
+      };
+    }
   }
 }
 
@@ -3760,7 +4017,7 @@ function registerCompletionArtifacts(task, artifacts) {
     if (!uri) continue;
     const name = String(artifact.name || pathBaseName(uri) || '成果');
     if (task.artifacts.some((item) => item.path === uri || item.uri === uri || item.name === name)) continue;
-    task.artifacts.push({
+    const record = window.MeteoMateHarness.ArtifactRegistry.registerArtifact(task, {
       id: cryptoRandomId(),
       name,
       path: uri,
@@ -3769,24 +4026,37 @@ function registerCompletionArtifacts(task, artifacts) {
       description: artifact.description || '',
       createdAt: Date.now(),
     });
+    const assistant = currentStreamingAssistant(task) || latestAssistantMessage(task);
+    if (assistant) {
+      assistant.artifactIds = [...new Set([...(assistant.artifactIds || []), record.id])];
+    }
+    if (task.publication) {
+      task.publication = {
+        ...task.publication,
+        dirty: true,
+        error: null,
+      };
+    }
   }
 }
 
-function registerRuntimeArtifact(task, event) {
-  const artifact = event.artifact || event.record || event.payload;
-  if (!artifact) return null;
-  const assistant = currentStreamingAssistant(task) || latestAssistantMessage(task);
-  const record = window.MeteoMateHarness.ArtifactRegistry.registerArtifact(task, {
-    ...artifact,
-    metadata: {
-      ...(artifact.metadata || {}),
-      responseId: assistant?.id || artifact.metadata?.responseId || null,
-    },
-  }, {
-    toolCallId: event.toolCallId || null,
-  });
+function linkRuntimeRecordToResponse(task, event, kind) {
+  const payload = event[kind] || event.record || event.payload;
+  if (!payload) return null;
+  const records = kind === 'artifact' ? task.artifacts || [] : task.evidence || [];
+  const record = records.find((item) =>
+    item.id === payload.id
+    || (kind === 'artifact' && payload.path && item.path === payload.path)
+    || (payload.recordHash && item.recordHash === payload.recordHash)
+  );
+  if (!record) return null;
+  const responseId = event.responseId || null;
+  const assistant = (task.messages || []).find((message) => message.id === responseId)
+    || currentStreamingAssistant(task)
+    || latestAssistantMessage(task);
   if (assistant) {
-    assistant.artifactIds = [...new Set([...(assistant.artifactIds || []), record.id])];
+    const key = kind === 'artifact' ? 'artifactIds' : 'evidenceIds';
+    assistant[key] = [...new Set([...(assistant[key] || []), record.id])];
   }
   return record;
 }
@@ -4217,7 +4487,11 @@ function handleRuntimeEvent(event) {
       break;
 
     case 'artifact_created':
-      registerRuntimeArtifact(task, event);
+      linkRuntimeRecordToResponse(task, event, 'artifact');
+      break;
+
+    case 'evidence_created':
+      linkRuntimeRecordToResponse(task, event, 'evidence');
       break;
 
     case 'permission_requested':
@@ -4415,11 +4689,12 @@ function handleRuntimeEvent(event) {
   task.updatedAt = Date.now();
   const project = getConversationProject(task);
   if (project) project.updatedAt = task.updatedAt;
-  if (event.type === 'runtime_progress') {
+  const commitMode = runtimeEventCommitMode(event.type);
+  if (commitMode === 'progress') {
     scheduleRuntimeProgressCommit(task);
     return;
   }
-  if (['assistant_message_delta', 'thought_delta'].includes(event.type)) {
+  if (commitMode === 'stream') {
     clearRuntimeProgressCommit(task.id);
     scheduleRuntimeStreamCommit(task);
     return;

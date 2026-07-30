@@ -28,31 +28,58 @@
       contentHash: input.contentHash || null,
       metadata: Shared.deepClone(input.metadata || {}),
       lineage: {
-        taskId: lineage.taskId || input.taskId || null,
-        runId: lineage.runId || input.runId || null,
-        contextSnapshotId: lineage.contextSnapshotId || input.contextSnapshotId || null,
-        expertId: lineage.expertId || input.expertId || null,
-        templateId: lineage.templateId || input.templateId || null,
-        evidenceIds: Shared.uniqueStrings(lineage.evidenceIds || input.evidenceIds),
-        toolCallId: lineage.toolCallId || input.toolCallId || null,
+        taskId: lineage.taskId || input.lineage?.taskId || input.taskId || null,
+        runId: lineage.runId || input.lineage?.runId || input.runId || null,
+        contextSnapshotId: lineage.contextSnapshotId || input.lineage?.contextSnapshotId || input.contextSnapshotId || null,
+        expertId: lineage.expertId || input.lineage?.expertId || input.expertId || null,
+        templateId: lineage.templateId || input.lineage?.templateId || input.templateId || null,
+        evidenceIds: Shared.uniqueStrings(lineage.evidenceIds || input.lineage?.evidenceIds || input.evidenceIds),
+        toolCallId: lineage.toolCallId || input.lineage?.toolCallId || input.toolCallId || null,
       },
     };
     record.recordHash = Shared.contentHash(record);
     return record;
   }
 
+  function semanticHash(record = {}) {
+    const metadata = Shared.deepClone(record.metadata || {});
+    delete metadata.responseId;
+    delete metadata.publicationAttestation;
+    const semantic = {
+      ...record,
+      metadata,
+    };
+    delete semantic.id;
+    delete semantic.createdAt;
+    delete semantic.updatedAt;
+    delete semantic.lineage;
+    delete semantic.recordHash;
+    return Shared.contentHash(semantic);
+  }
+
   function registerArtifact(task, input, lineage = {}) {
     task.artifacts = Array.isArray(task.artifacts) ? task.artifacts : [];
     const record = createArtifact(input, { taskId: task.id, contextSnapshotId: task.contextSnapshotId, ...lineage });
-    const duplicate = task.artifacts.find((artifact) =>
-      artifact.id === record.id ||
-      (record.contentHash && artifact.contentHash === record.contentHash) ||
-      (record.path && artifact.path === record.path)
-    );
-    if (duplicate) {
-      Object.assign(duplicate, record, { id: duplicate.id, updatedAt: Date.now() });
-      return duplicate;
+    const duplicateId = task.artifacts.find((artifact) => artifact.id === record.id);
+    if (duplicateId) {
+      const reconciled = {
+        ...duplicateId,
+        metadata: {
+          ...(duplicateId.metadata || {}),
+          ...(input.metadata || {}),
+        },
+      };
+      for (const key of Object.keys(input)) {
+        if (['id', 'createdAt', 'updatedAt', 'lineage', 'recordHash', 'metadata'].includes(key)) continue;
+        if (Object.prototype.hasOwnProperty.call(record, key)) reconciled[key] = record[key];
+      }
+      if (semanticHash(duplicateId) !== semanticHash(reconciled)) {
+        throw new Error(`Artifact ID conflict: ${record.id}`);
+      }
+      return duplicateId;
     }
+    const duplicateSemantic = task.artifacts.find((artifact) => semanticHash(artifact) === semanticHash(record));
+    if (duplicateSemantic) return duplicateSemantic;
     task.artifacts.push(record);
     task.artifactIds = Shared.uniqueStrings([...(task.artifactIds || []), record.id]);
     return record;
@@ -67,5 +94,5 @@
     return { valid: errors.length === 0, errors };
   }
 
-  return { ARTIFACT_STATUSES, createArtifact, registerArtifact, validateArtifact };
+  return { ARTIFACT_STATUSES, createArtifact, semanticHash, registerArtifact, validateArtifact };
 });

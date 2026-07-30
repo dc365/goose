@@ -1,10 +1,10 @@
-# 气象智伴 MeteoMate Desktop Beta
+# 气象智伴 MeteoMate Desktop 0.2.0 Beta 2
 
 **MeteoMate — AI Workspace for Meteorological Operations**
 
 气象智伴是一个基于 Goose 的气象办公桌面 Agent。产品桌面保持独立，不修改 Goose Core，便于持续同步 `aaif-goose/goose` 上游。
 
-当前 Beta 聚焦把上一版展示型 MVP 升级为可持续使用的单用户桌面工作空间：
+当前 Beta 2 聚焦把已有工作空间能力收拢为可验证、不可冒充正式业务的气象闭环：
 
 - WorkBuddy 风格的信息架构：任务、助理、项目、专家、技能、工具和自动化；
 - Goose ACP 作为首选运行时，支持多轮会话、会话恢复、流式消息和取消；
@@ -19,7 +19,12 @@
 - 桌面应用操作使用内嵌 Cua Driver，继承 MeteoMate 的系统权限，并经过 Driver 策略与 ACP 审批；
 - Office 成果物通过本地 MCP Runtime 创建、编辑、渲染和校验 DOCX、PPTX、XLSX 与 PDF；
 - HTML、网页、PDF、图片、Markdown 和代码文件可在任务右侧直接预览，支持刷新、前进后退、外部打开和拖拽调宽；
-- 后续气象数据、天气诊断、GIS 和 Office 模板中心能力继续通过 MCP/Artifact Service 接入。
+- 本地 JSON/CSV/GeoJSON 与内网 HTTP/HTTPS 气象资料可按统一 Dataset 契约读取、校验、诊断并生成 Evidence；
+- 工具产出的 Evidence 与 Artifact 实时进入任务 Ledger，发布审核支持结构化结论、门禁检查、人工签发和撤销；
+- 固定 Fixture Weather Run 使用真实诊断与制图代码，但永久标记为构造数据，正式发布门禁必定阻止签发；
+- 工具卡同时显示连接状态与 `planned / demo / experimental / beta / production / deprecated` 成熟度，连接成功不等于生产可用。
+
+Beta 2 不内置任何单位的真实气象接口地址或生产凭据。接入真实业务前，仍需由部署方配置受信资料源、允许主机和凭据引用。
 
 所有产品代码仍位于：
 
@@ -194,6 +199,41 @@ Headless 模式无法进行逐次权限审批，因此会自动关闭文件工�
 
 找不到 Goose 二进制，或设置 `METEOMATE_MOCK=1` 时，应用会输出明确标识的演示结果，不会伪装成真实模型输出。
 
+演示任务会运行固定 Dataset → Diagnosis → Evidence → Artifact → Publication Gate 链路。Fixture 的
+`classification=demo` 与 `synthetic=true` 会随 Evidence 和成果物保留；无论人工操作如何，正式发布门禁都不会把它当作生产资料。
+
+## 气象资料源凭据
+
+生产或官方 HTTP 资料源不能在项目文件中直接填写 Token、API Key、敏感 Header 或 URL 用户名密码。
+项目配置只保存固定引用：
+
+```json
+{
+  "id": "operations-api",
+  "type": "http-json",
+  "baseUrl": "https://weather.internal",
+  "credentialRef": "weather:operations-api",
+  "classification": "production",
+  "official": true
+}
+```
+
+Beta 2 的兼容运行时把该引用映射到固定派生环境变量，且不允许项目任意指定其他宿主环境变量。
+部署方还必须用 `METEOMATE_WEATHER_CREDENTIAL_BINDINGS` 把引用绑定到精确 Origin 和认证方案：
+
+```bash
+export METEOMATE_WEATHER_CREDENTIAL_BINDINGS='{
+  "weather:operations-api": {
+    "origin": "https://weather.internal",
+    "authScheme": "Bearer"
+  }
+}'
+export METEOMATE_WEATHER_TOKEN_OPERATIONS_DASH_API='...'
+```
+
+带凭据的请求不接受通配 `allowedHosts`，也不跟随重定向，避免项目把受信凭据转发到其他服务。
+这是一条防止明文凭据、任意环境变量读取和 Token 跨 Origin 外传的边界，不是完整企业 Vault；正式部署仍应接入系统安全存储或服务端 Secret Provider。
+
 ## Manifest
 
 ```text
@@ -232,13 +272,16 @@ Beta 已实现：
 - Cua Driver 使用私有嵌入进程、固定版本、托管工具策略，并关闭遥测和独立更新检查；
 - Headless 降级模式禁止文件工具；
 - 进程使用参数数组启动，不经过系统 Shell。
+- 严格模式下使用真实路径和符号链接检查限制工作区访问；
+- 高风险、破坏性、发布和明确要求审批的工具不能被“完全访问”或旧的 Always grant 绕过；
+- 生产/官方气象资料源使用固定 Credential Reference，并由部署方绑定精确 Origin；拒绝项目内联敏感凭据、通配凭据主机和凭据请求重定向；
+- Evidence/Artifact 由主进程使用本机每 Profile 密钥证明来源；正式签发只接受证明有效的记录和工作区内摘要一致的真实普通文件；
 
-尚未实现操作系统级企业沙箱。正式团队版仍需：
+尚未实现完整操作系统级企业沙箱。正式团队版仍需：
 
-- Safe Workspace MCP；
-- 路径和符号链接强校验；
 - Diff、快照和回滚；
-- 网络域名策略；
+- 由组织集中管理的网络域名策略；
+- OS Secret Store / Vault 的统一凭据生命周期；
 - Windows/Linux 隔离 Worker；
 - 审计与集中权限策略。
 
@@ -250,6 +293,8 @@ npm run test:browser
 ```
 
 `npm run check` 执行产品 JavaScript 语法检查和本地契约测试；`npm run test:browser` 会启动真实 Playwright MCP 和浏览器，验证导航、输入、点击、快照与截图链路。
+
+Beta 2 的边界、验收项与下一阶段工作见 [`docs/BETA2_HARDENING.md`](docs/BETA2_HARDENING.md)。
 
 更多信息：
 

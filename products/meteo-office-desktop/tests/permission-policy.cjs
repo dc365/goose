@@ -193,8 +193,12 @@ const computerApps = PermissionPolicy.classifyPermissionRequest(
   computerContext
 );
 assert.equal(computerApps.computerRisk, 'observe');
-assert.equal(computerApps.safeRemoteRead, true);
-assert.equal(PermissionPolicy.permissionHandling('analysis-readonly', computerApps), 'allow_once');
+assert.equal(computerApps.effectiveRisk, 'high');
+assert.equal(computerApps.safeRemoteRead, false);
+assert.equal(computerApps.nonBypassableApproval, true);
+assert.equal(PermissionPolicy.permissionHandling('analysis-readonly', computerApps), 'prompt');
+assert.equal(PermissionPolicy.permissionHandling('workspace-approval', computerApps), 'prompt');
+assert.equal(PermissionPolicy.permissionGrantReusable(computerApps), false);
 
 const computerDesktop = PermissionPolicy.classifyPermissionRequest(
   { toolCall: { title: 'cua-desktop__get_desktop_state', kind: 'other', rawInput: {} } },
@@ -203,7 +207,8 @@ const computerDesktop = PermissionPolicy.classifyPermissionRequest(
 assert.equal(computerDesktop.computerRisk, 'inspect');
 assert.equal(computerDesktop.requiresSmartApproval, true);
 assert.equal(PermissionPolicy.permissionHandling('artifact-approval', computerDesktop), 'prompt');
-assert.equal(PermissionPolicy.permissionHandling('workspace-approval', computerDesktop), 'allow_always');
+assert.equal(PermissionPolicy.permissionHandling('workspace-approval', computerDesktop), 'prompt');
+assert.equal(PermissionPolicy.permissionGrantReusable(computerDesktop), false);
 
 const computerClick = PermissionPolicy.classifyPermissionRequest(
   { toolCall: { title: 'cua-desktop__click', kind: 'other', rawInput: { pid: 100, x: 10, y: 10 } } },
@@ -214,7 +219,7 @@ assert.equal(computerClick.kind, 'execute');
 assert.equal(computerClick.requiresSmartApproval, true);
 assert.equal(PermissionPolicy.permissionHandling('analysis-readonly', computerClick), 'prompt');
 assert.equal(PermissionPolicy.permissionHandling('artifact-approval', computerClick), 'prompt');
-assert.equal(PermissionPolicy.permissionHandling('workspace-approval', computerClick), 'allow_always');
+assert.equal(PermissionPolicy.permissionHandling('workspace-approval', computerClick), 'prompt');
 
 const computerType = PermissionPolicy.classifyPermissionRequest(
   { toolCall: { title: 'cua-desktop__type_text', kind: 'other', rawInput: { pid: 100, text: 'forecast' } } },
@@ -223,7 +228,7 @@ const computerType = PermissionPolicy.classifyPermissionRequest(
 assert.equal(computerType.computerRisk, 'sensitive');
 assert.equal(computerType.requiresSmartApproval, true);
 assert.equal(PermissionPolicy.permissionHandling('artifact-approval', computerType), 'prompt');
-assert.equal(PermissionPolicy.permissionHandling('workspace-approval', computerType), 'allow_always');
+assert.equal(PermissionPolicy.permissionHandling('workspace-approval', computerType), 'prompt');
 
 const computerBlocked = PermissionPolicy.classifyPermissionRequest(
   { toolCall: { title: 'cua-desktop__kill_app', kind: 'other', rawInput: { pid: 100 } } },
@@ -313,10 +318,61 @@ const officeBlocked = PermissionPolicy.classifyPermissionRequest(
 assert.equal(officeBlocked.officeRisk, 'blocked');
 assert.equal(PermissionPolicy.permissionHandling('workspace-approval', officeBlocked), 'deny');
 
+const internalDestructive = PermissionPolicy.classifyPermissionRequest({
+  toolCall: {
+    title: 'weather-data__publish_warning',
+    kind: 'other',
+    rawInput: { region: '华南' },
+  },
+}, {
+  workspace,
+  securityMode: 'internal',
+  connectors: [{
+    id: 'weather-data',
+    verified: true,
+    explicitToolSelection: true,
+    selectedTools: ['publish_warning'],
+    tools: [{
+      name: 'publish_warning',
+      effects: { publish: true, destructive: true, requiresApproval: true },
+    }],
+  }],
+});
+for (const profile of ['analysis-readonly', 'artifact-approval', 'workspace-approval']) {
+  assert.equal(PermissionPolicy.permissionHandling(profile, internalDestructive), 'prompt');
+}
+assert.equal(internalDestructive.nonBypassableApproval, true);
+assert.equal(PermissionPolicy.permissionGrantReusable(internalDestructive), false);
+assert.equal(PermissionPolicy.permissionGrantReusable(tree), true);
+assert.equal(PermissionPolicy.permissionGrantReusable(destructiveShell), false);
+
+const highRiskRead = PermissionPolicy.classifyPermissionRequest(
+  { toolCall: { title: 'high-risk-data__read_observation', kind: 'other', rawInput: {} } },
+  {
+    ...strictContext,
+    connectors: [{
+      id: 'high-risk-data',
+      transport: 'streamable-http',
+      riskClassification: 'high',
+      verified: true,
+      explicitToolSelection: true,
+      selectedTools: ['read_observation'],
+      tools: [{ name: 'read_observation', annotations: { readOnlyHint: true } }],
+    }],
+  },
+);
+assert.equal(highRiskRead.effectiveRisk, 'high');
+assert.equal(highRiskRead.nonBypassableApproval, true);
+assert.equal(PermissionPolicy.permissionHandling('workspace-approval', highRiskRead), 'prompt');
+assert.equal(PermissionPolicy.permissionGrantReusable(highRiskRead), false);
+
 const mainSource = fs.readFileSync(path.resolve(__dirname, '..', 'main.cjs'), 'utf8');
 assert.ok(mainSource.includes('对于问候、寒暄、能力介绍、一般知识问答'));
 assert.ok(mainSource.includes("PermissionPolicy.permissionHandling("));
+assert.ok(mainSource.includes('PermissionPolicy.permissionGrantReusable(assessment)'));
 assert.ok(mainSource.includes("handling === 'deny'"));
+assert.ok(mainSource.indexOf('PermissionPolicy.permissionHandling(') < mainSource.indexOf('this.sessionPermissionGrants.get(grantKey.sessionId)'));
+assert.ok(!mainSource.includes('automaticPermissionResponse(request, true)'));
 assert.ok(mainSource.includes('完全访问下，已允许的桌面操作无需再次请求审批'));
 
 console.log('permission policy tests passed');

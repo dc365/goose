@@ -75,6 +75,12 @@
       evidenceIds: Shared.uniqueStrings(task.evidenceIds),
       artifactIds: Shared.uniqueStrings(task.artifactIds || (task.artifacts || []).map((artifact) => artifact.id)),
       expectedOutputs: Array.isArray(task.expectedOutputs) ? task.expectedOutputs : [],
+      publicationAnalysis: task.publicationAnalysis && typeof task.publicationAnalysis === 'object'
+        ? Shared.deepClone(task.publicationAnalysis)
+        : null,
+      publication: task.publication && typeof task.publication === 'object'
+        ? Shared.deepClone(task.publication)
+        : null,
     };
   }
 
