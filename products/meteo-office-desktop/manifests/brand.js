@@ -3,7 +3,7 @@ window.METEOMATE_BRAND = Object.freeze({
   name: 'MeteoMate',
   chineseName: '气象智伴',
   productName: 'MeteoMate Desktop',
-  version: '0.2.0 Beta',
+  version: '0.2.0 Beta 2',
   tagline: '从气象数据，到业务决策',
   englishTagline: 'From meteorological data to operational decisions.',
   description: '面向气象业务的智能工作空间',

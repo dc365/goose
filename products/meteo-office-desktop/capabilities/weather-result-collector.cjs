@@ -1,6 +1,7 @@
 'use strict';
 
 const MAX_JSON_CHARS = 2 * 1024 * 1024;
+const TRUSTED_WEATHER_EXTENSIONS = new Set(['weather-data', 'weather-diagnosis', 'gis-map']);
 
 function parseJSONText(value) {
   const text = String(value || '').trim();
@@ -65,16 +66,10 @@ function collectWeatherRecords(values = [], context = {}) {
   const evidenceKeys = new Set();
   const artifactKeys = new Set();
   const extension = String(context.extensionName || '').toLowerCase();
-  const likelyWeather = extension.includes('weather') || extension.includes('gis-map');
+  if (!TRUSTED_WEATHER_EXTENSIONS.has(extension)) return { evidence, artifacts };
 
   for (const value of values) {
     visit(value, (candidate) => {
-      const weatherPayload = likelyWeather
-        || String(candidate.schemaVersion || '').startsWith('meteomate.weather')
-        || candidate.metadata?.source === 'meteomate-weather-provider'
-        || candidate.metadata?.source === 'meteomate-weather-demo';
-      if (!weatherPayload) return;
-
       const candidateEvidence = [];
       if (Array.isArray(candidate.evidence)) candidateEvidence.push(...candidate.evidence);
       if (candidate.kind === 'Evidence') candidateEvidence.push(candidate);
@@ -104,4 +99,4 @@ function collectWeatherRecords(values = [], context = {}) {
   return { evidence, artifacts };
 }
 
-module.exports = { collectWeatherRecords, parseJSONText };
+module.exports = { TRUSTED_WEATHER_EXTENSIONS, collectWeatherRecords, parseJSONText };

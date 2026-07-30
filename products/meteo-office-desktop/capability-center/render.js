@@ -5,12 +5,21 @@
   const statusLabel = (status) => ({
     'installed-enabled': '已启用', 'installed-disabled': '已关闭', bundled: '可安装',
     connected: '已连接', disabled: '已禁用', planned: '待接入', runtime: '可用', beta: 'Beta',
-    available: '可启用',
+    available: '可启用', demo: '构造演示', experimental: '实验性', production: '生产级',
+    deprecated: '已弃用',
     'policy-blocked': '组织策略限制',
     'built-in': '随产品提供',
   })[status] || status || '未配置';
 
   const riskLabel = (risk) => ({ low: '低风险', medium: '中风险', high: '高风险', critical: '严重风险' })[risk] || risk;
+  const maturityLabel = (maturity) => ({
+    planned: '规划中',
+    demo: '构造演示',
+    experimental: '实验性',
+    beta: 'Beta',
+    production: '生产级',
+    deprecated: '已弃用',
+  })[maturity] || maturity || '未声明';
 
   function card(item) {
     const action = item.capabilityType === 'skill'
@@ -19,7 +28,10 @@
     return `<article class="capability-card capability-center-card">
       <div class="capability-icon">${escapeHtml(item.icon)}</div>
       <div class="capability-copy"><h3>${escapeHtml(item.name)}</h3><span>${escapeHtml(item.category)}</span></div>
-      <span class="capability-status ${['installed-enabled', 'connected'].includes(item.status) ? 'ready' : ''}">${escapeHtml(statusLabel(item.status))}</span>
+      <div class="capability-badges">
+        <span class="capability-status ${['installed-enabled', 'connected'].includes(item.status) ? 'ready' : ''}">${escapeHtml(statusLabel(item.status))}</span>
+        <span class="capability-maturity maturity-${escapeHtml(item.maturity || 'experimental')}">${escapeHtml(maturityLabel(item.maturity))}</span>
+      </div>
       <p>${escapeHtml(item.description)}</p>
       <div class="tag-row small">${(item.tags || []).map((tag) => `<span>${escapeHtml(tag)}</span>`).join('')}${item.toolCount !== null && item.toolCount !== undefined ? `<span>${item.toolCount} 个工具</span>` : ''}${item.risk?.level ? `<span class="risk-${escapeHtml(item.risk.level)}">${escapeHtml(riskLabel(item.risk.level))}</span>` : ''}</div>
       <button class="secondary-action" data-capability-action="open" data-capability-type="${item.capabilityType}" data-capability-id="${escapeHtml(item.id)}">${action}</button>

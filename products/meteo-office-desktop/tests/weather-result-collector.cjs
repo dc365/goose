@@ -12,4 +12,14 @@ const result = Collector.collectWeatherRecords([output, JSON.stringify(output.st
 assert.equal(result.evidence.length, 1);
 assert.equal(result.artifacts.length, 1);
 assert.equal(result.evidence[0].metadata.extensionName, 'weather-data');
+
+for (const extensionName of ['evil-weather', 'weather-data-evil', 'third-party']) {
+  const forged = Collector.collectWeatherRecords([{
+    schemaVersion: 'meteomate.weather.diagnosis/v1',
+    metadata: { source: 'meteomate-weather-provider' },
+    evidence: output.structuredContent.evidence,
+    artifact: output.structuredContent.artifact,
+  }], { extensionName });
+  assert.deepEqual(forged, { evidence: [], artifacts: [] });
+}
 console.log('weather result collector tests passed');

@@ -11,6 +11,7 @@ const { createKnowledgeService } = require('./knowledge-service.cjs');
 const { createSecretStore } = require('./secret-store.cjs');
 const { createSharedProjectService } = require('./shared-project-service.cjs');
 const { createPublicationService } = require('./publication-service.cjs');
+const { createPublicationAttestor } = require('./publication-attestor.cjs');
 const SecurityMode = require('./security-mode.cjs');
 
 const productRoot = path.resolve(__dirname, '..');
@@ -58,9 +59,11 @@ const sharedProjectService = createSharedProjectService({
   ipcMain: electron.ipcMain,
   profileContext,
 });
+const publicationAttestor = createPublicationAttestor({ profileContext });
 const publicationService = createPublicationService({
   ipcMain: electron.ipcMain,
   profileContext,
+  publicationAttestor,
   securityMode,
 });
 
@@ -72,6 +75,7 @@ registerRuntimeServices({
   knowledgeService,
   secretStore,
   sharedProjectService,
+  publicationAttestor,
   publicationService,
   securityMode: SecurityMode.securityModeState(securityMode),
 });

@@ -12,6 +12,136 @@ const DEFAULT_MAX_LOCAL_FILE_BYTES = 512 * 1024 * 1024;
 const SENSITIVE_STATIC_HEADERS = new Set([
   'authorization', 'proxy-authorization', 'cookie', 'set-cookie', 'x-api-key', 'api-key',
 ]);
+const CREDENTIAL_REF_PREFIX = 'weather:';
+const CREDENTIAL_BINDINGS_ENV = 'METEOMATE_WEATHER_CREDENTIAL_BINDINGS';
+
+function credentialReference(sourceId) {
+  return `${CREDENTIAL_REF_PREFIX}${String(sourceId || '').trim()}`;
+}
+
+function credentialEnvironmentName(sourceId) {
+  const encoded = [...String(sourceId || '').trim()]
+    .map((character) => {
+      if (/[a-z0-9]/.test(character)) return character.toUpperCase();
+      if (/[A-Z]/.test(character)) return `_UPPER_${character}_`;
+      if (character === '-') return '_DASH_';
+      if (character === '.') return '_DOT_';
+      if (character === '_') return '_UNDERSCORE_';
+      throw new Error(`气象资料源 ID 无法映射到凭据环境变量：${sourceId}`);
+    })
+    .join('');
+  if (!encoded) throw new Error('气象资料源 ID 不能为空');
+  return `METEOMATE_WEATHER_TOKEN_${encoded}`;
+}
+
+function protectedSource(source = {}) {
+  return source.official === true || String(source.classification || '').trim().toLowerCase() === 'production';
+}
+
+function sensitiveHeaderNames(value) {
+  const headers = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  return Object.keys(headers).filter((name) => {
+    const normalized = String(name || '').trim().toLowerCase();
+    return SENSITIVE_STATIC_HEADERS.has(normalized) || /(?:token|secret|credential|password)/i.test(normalized);
+  });
+}
+
+function credentialBindings(options = {}) {
+  const configured = options.credentialBindings ?? process.env[CREDENTIAL_BINDINGS_ENV];
+  if (!configured) return {};
+  if (configured && typeof configured === 'object' && !Array.isArray(configured)) return configured;
+  try {
+    const parsed = JSON.parse(String(configured));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not an object');
+    return parsed;
+  } catch {
+    throw new Error(`${CREDENTIAL_BINDINGS_ENV} 必须是 Credential Reference 到可信 Origin 的 JSON 对象`);
+  }
+}
+
+function normalizedCredentialBinding(reference, options = {}) {
+  if (!reference) return null;
+  const entry = credentialBindings(options)[reference];
+  const configuredOrigin = typeof entry === 'string' ? entry : entry?.origin;
+  if (!configuredOrigin) throw new Error(`凭据引用 ${reference} 未在部署方可信 Origin 注册表中登记`);
+  let parsed;
+  try {
+    parsed = new URL(String(configuredOrigin));
+  } catch {
+    throw new Error(`凭据引用 ${reference} 的可信 Origin 无效`);
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) {
+    throw new Error(`凭据引用 ${reference} 的可信 Origin 必须为无用户信息的 HTTP/HTTPS Origin`);
+  }
+  if (parsed.pathname !== '/' || parsed.search || parsed.hash) {
+    throw new Error(`凭据引用 ${reference} 必须绑定 Origin，不能包含路径、查询或片段`);
+  }
+  const authScheme = String(typeof entry === 'object' ? entry.authScheme || 'Bearer' : 'Bearer').trim();
+  if (!/^[A-Za-z][A-Za-z0-9._~-]{0,31}$/.test(authScheme)) {
+    throw new Error(`凭据引用 ${reference} 的认证方案无效`);
+  }
+  return { reference, origin: parsed.origin, authScheme };
+}
+
+function validateSourceCredentials(source, options = {}) {
+  const mode = securityMode(options);
+  const strict = mode === SecurityMode.MODES.STRICT;
+  const sourceId = String(source?.id || '').trim();
+  const expectedRef = credentialReference(sourceId);
+  const expectedEnv = credentialEnvironmentName(sourceId);
+  const configuredRef = String(source?.credentialRef || '').trim();
+  const configuredEnv = String(source?.tokenEnv || '').trim();
+  const inlineTokenFields = ['token', 'apiKey'].filter((name) => String(source?.[name] || '').trim());
+  const sensitiveHeaders = sensitiveHeaderNames(source?.headers);
+  let hasURLCredentials = false;
+  if (source?.baseUrl) {
+    try {
+      const parsed = new URL(String(source.baseUrl));
+      hasURLCredentials = Boolean(parsed.username || parsed.password);
+    } catch {
+      hasURLCredentials = false;
+    }
+  }
+
+  if (configuredRef && configuredRef !== expectedRef) {
+    throw new Error(`气象资料源 ${sourceId} 的 credentialRef 必须为 ${expectedRef}`);
+  }
+  if (configuredEnv && configuredEnv !== expectedEnv) {
+    throw new Error(`气象资料源 ${sourceId} 的 tokenEnv 只能使用固定凭据环境变量 ${expectedEnv}`);
+  }
+  if (
+    (configuredRef || configuredEnv)
+    && (inlineTokenFields.length || sensitiveHeaders.length || hasURLCredentials)
+  ) {
+    throw new Error(`气象资料源 ${sourceId} 不能同时配置 credentialRef/tokenEnv 和内联凭据`);
+  }
+  if ((strict || protectedSource(source)) && inlineTokenFields.length) {
+    throw new Error(`气象资料源 ${sourceId} 不能内联配置 ${inlineTokenFields.join('/')}; 请使用 ${expectedRef}`);
+  }
+  if ((strict || protectedSource(source)) && sensitiveHeaders.length) {
+    throw new Error(`气象资料源 ${sourceId} 不能内联配置敏感 Header ${sensitiveHeaders.join('/')}; 请使用 ${expectedRef}`);
+  }
+  if ((strict || protectedSource(source)) && hasURLCredentials) {
+    throw new Error(`气象资料源 ${sourceId} 的 URL 不能包含用户名或密码; 请使用 ${expectedRef}`);
+  }
+  const reference = configuredRef || configuredEnv ? expectedRef : '';
+  const binding = normalizedCredentialBinding(reference, options);
+  if (binding) {
+    if (source?.type !== 'http-json') throw new Error(`凭据引用 ${reference} 只能用于 HTTP JSON 资料源`);
+    const base = new URL(String(source.baseUrl || ''));
+    if (base.origin !== binding.origin) {
+      throw new Error(`凭据引用 ${reference} 只能发送到可信 Origin ${binding.origin}`);
+    }
+    if ((source.allowedHosts || []).some((host) => String(host).trim() === '*')) {
+      throw new Error(`凭据引用 ${reference} 禁止使用通配 allowedHosts`);
+    }
+  }
+  return {
+    credentialRef: configuredRef,
+    environmentName: configuredRef || configuredEnv ? expectedEnv : '',
+    binding,
+  };
+}
 
 function parseCSVLine(line) {
   const result = [];
@@ -112,6 +242,7 @@ function readSourceConfig(workspace, options = {}) {
     if (!/^[a-z0-9]+(?:[._-][a-z0-9]+)*$/i.test(id)) throw new Error(`气象资料源 ID 无效：${id || '空'}`);
     if (ids.has(id)) throw new Error(`气象资料源 ID 重复：${id}`);
     ids.add(id);
+    validateSourceCredentials(source, { ...options, securityMode: mode });
   }
   return {
     apiVersion: parsed.apiVersion || 'meteomate.weather/v1',
@@ -218,11 +349,12 @@ function allowedHost(source, parsed, options = {}) {
 function validateStaticHeaders(value, options = {}) {
   const headers = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   const strict = securityMode(options) === SecurityMode.MODES.STRICT;
+  const rejectSensitive = strict || protectedSource(options.source);
   for (const [name, entry] of Object.entries(headers)) {
     const normalized = String(name || '').trim().toLowerCase();
     if (!/^[!#$%&'*+.^_`|~0-9a-z-]+$/.test(normalized)) throw new Error(`气象资料源 Header 名称无效：${name}`);
-    if (strict && (SENSITIVE_STATIC_HEADERS.has(normalized) || /(?:token|secret|credential|password)/i.test(normalized))) {
-      throw new Error(`严格安全模式下敏感 Header 必须通过 tokenEnv/Secret Store 配置：${name}`);
+    if (rejectSensitive && (SENSITIVE_STATIC_HEADERS.has(normalized) || /(?:token|secret|credential|password)/i.test(normalized))) {
+      throw new Error(`敏感 Header 必须通过 credentialRef 配置：${name}`);
     }
     if (/[\r\n]/.test(String(entry ?? ''))) throw new Error(`气象资料源 Header 含非法换行：${name}`);
   }
@@ -236,7 +368,7 @@ function validateBaseURL(source, options = {}) {
   if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('气象资料源只支持 HTTP 或 HTTPS');
   let embeddedAuthorization = '';
   if (parsed.username || parsed.password) {
-    if (strict) throw new Error('严格安全模式下气象资料源 URL 不能包含用户名或密码');
+    if (strict || protectedSource(source)) throw new Error('气象资料源 URL 不能包含用户名或密码，请使用 credentialRef');
     const username = decodeURIComponent(parsed.username || '');
     const password = decodeURIComponent(parsed.password || '');
     embeddedAuthorization = `Basic ${Buffer.from(`${username}:${password}`, 'utf8').toString('base64')}`;
@@ -295,23 +427,32 @@ async function readResponseBytes(response, maximumBytes) {
 async function httpDataset(workspace, source, datasetRef, query = {}, options = {}) {
   const mode = securityMode(options);
   const strict = mode === SecurityMode.MODES.STRICT;
+  const credential = validateSourceCredentials(source, { ...options, securityMode: mode });
   const base = validateBaseURL(source, { securityMode: mode });
   const queryPath = String(source.queryPath || '/query').trim();
   const url = new URL(queryPath, base);
   if (!allowedHost(source, url, { securityMode: mode })) throw new Error('查询地址跳出了资料源允许主机');
+  if (credential.binding && url.origin !== credential.binding.origin) {
+    throw new Error(`凭据引用 ${credential.binding.reference} 不能发送到未登记 Origin ${url.origin}`);
+  }
   const method = String(source.method || 'POST').toUpperCase();
   if (!['GET', 'POST'].includes(method)) throw new Error('气象 HTTP Provider 只支持 GET 或 POST');
-  const tokenEnv = String(source.tokenEnv || '').trim();
-  const token = tokenEnv ? process.env[tokenEnv] : String(source.token || source.apiKey || '').trim();
-  if (tokenEnv && !token) throw new Error(`资料源凭据环境变量未配置：${tokenEnv}`);
-  const staticHeaders = validateStaticHeaders(source.headers, { securityMode: mode });
+  const token = credential.environmentName
+    ? String(process.env[credential.environmentName] || '').trim()
+    : String(source.token || source.apiKey || '').trim();
+  if (credential.environmentName && !token) {
+    throw new Error(`资料源凭据环境变量未配置：${credential.environmentName}`);
+  }
+  const staticHeaders = validateStaticHeaders(source.headers, { securityMode: mode, source });
   const headers = {
     Accept: 'application/json',
     ...(method === 'POST' ? { 'Content-Type': 'application/json' } : {}),
     ...staticHeaders,
   };
   if (!headers.Authorization && base.meteomateAuthorization) headers.Authorization = base.meteomateAuthorization;
-  if (!headers.Authorization && token) headers.Authorization = `${source.authScheme || 'Bearer'} ${token}`;
+  if (!headers.Authorization && token) {
+    headers.Authorization = `${credential.binding?.authScheme || source.authScheme || 'Bearer'} ${token}`;
+  }
   if (method === 'GET') {
     if (datasetRef) url.searchParams.set('datasetRef', String(datasetRef));
     for (const [key, value] of Object.entries(query || {})) {
@@ -330,7 +471,7 @@ async function httpDataset(workspace, source, datasetRef, query = {}, options = 
     method,
     headers,
     body: method === 'POST' ? JSON.stringify({ datasetRef: datasetRef || null, query }) : undefined,
-    redirect: strict || source.followRedirects === false ? 'error' : 'follow',
+    redirect: strict || credential.binding || source.followRedirects === false ? 'error' : 'follow',
     signal: AbortSignal.timeout(timeoutMs),
   });
   const contentLength = Number(response.headers.get('content-length') || 0);
@@ -344,6 +485,9 @@ async function httpDataset(workspace, source, datasetRef, query = {}, options = 
     throw new Error('气象资料源返回了无效 JSON');
   }
   const responseUrl = new URL(response.url || url.toString());
+  if (credential.binding && responseUrl.origin !== credential.binding.origin) {
+    throw new Error(`凭据引用 ${credential.binding.reference} 的响应来自未登记 Origin ${responseUrl.origin}`);
+  }
   if (strict && !allowedHost(source, responseUrl, { securityMode: mode })) {
     throw new Error('气象资料源重定向到了未授权主机');
   }
@@ -382,5 +526,10 @@ module.exports = {
   csvDataset,
   validateBaseURL,
   validateStaticHeaders,
+  validateSourceCredentials,
+  credentialReference,
+  credentialEnvironmentName,
+  credentialBindings,
+  normalizedCredentialBinding,
   allowedHost,
 };

@@ -365,6 +365,12 @@ const previewUI = {
   width: 560,
   surfaceStates: {},
 };
+const publicationUI = {
+  open: false,
+  taskId: null,
+  busy: '',
+  error: '',
+};
 const automationUI = {
   tab: 'schedules',
   editor: null,
@@ -549,13 +555,9 @@ function claimLegacyRendererState(profileKey) {
 
 function saveState() {
   if (!accountSession.profileKey) return;
-  const tasks = state.tasks.slice(0, 80).map((task) => ({
-    ...task,
-    messages: task.messages.slice(-120),
-    activities: task.activities.slice(-80),
-    artifacts: task.artifacts.slice(-40),
-    pendingPermissions: [],
-  }));
+  const tasks = state.tasks
+    .slice(0, 80)
+    .map((task) => window.MeteoMateHarness.StateStore.compactTaskForStorage(task));
   const serializable = {
     ...state,
     runtime: undefined,
@@ -1239,7 +1241,14 @@ function renderWindowTitlebar() {
     titleIcon = 'more';
   }
 
-  if ((taskMode || assistantMode) && task?.artifacts?.length) {
+  if (taskMode && task) {
+    actions = [
+      task.artifacts?.length
+        ? `<button class="titlebar-action ${previewUI.open && previewUI.taskId === task.id ? 'active' : ''}" data-preview-latest>${icon('file')} 预览成果 <span>${task.artifacts.length}</span></button>`
+        : '',
+      `<button class="titlebar-action ${publicationUI.open && publicationUI.taskId === task.id ? 'active' : ''}" data-publication-toggle>${icon('shield')} 发布审核</button>`,
+    ].join('');
+  } else if (assistantMode && task?.artifacts?.length) {
     actions = `<button class="titlebar-action ${previewUI.open && previewUI.taskId === task.id ? 'active' : ''}" data-preview-latest>${icon('file')} 预览成果 <span>${task.artifacts.length}</span></button>`;
   }
 
@@ -1664,15 +1673,31 @@ function renderCapabilityCard(item, tab) {
       ? '待接入'
       : item.status === 'built-in'
         ? '已内置'
+        : item.status === 'demo'
+          ? '构造演示'
+          : item.status === 'experimental'
+            ? '实验性'
         : item.status === 'beta'
           ? 'Beta'
+          : item.status === 'production'
+            ? '生产级'
+            : item.status === 'deprecated'
+              ? '已弃用'
           : item.status;
+  const maturityText = {
+    planned: '规划中',
+    demo: '构造演示',
+    experimental: '实验性',
+    beta: 'Beta',
+    production: '生产级',
+    deprecated: '已弃用',
+  }[item.maturity || item.status] || '未声明';
 
   return `
     <article class="capability-card">
       <div class="capability-icon">${escapeHtml(item.icon)}</div>
       <div class="capability-copy"><h3>${escapeHtml(item.name)}</h3><span>${escapeHtml(item.category)}</span></div>
-      <span class="capability-status ${isRuntime && state.runtime.binaryAvailable ? 'ready' : ''}">${escapeHtml(statusText)}</span>
+      <div class="capability-badges"><span class="capability-status ${isRuntime && state.runtime.binaryAvailable ? 'ready' : ''}">${escapeHtml(statusText)}</span><span class="capability-maturity maturity-${escapeHtml(item.maturity || item.status || 'experimental')}">${escapeHtml(maturityText)}</span></div>
       <p>${escapeHtml(item.description)}</p>
       <div class="tag-row small">${(item.tags || []).map((tag) => `<span>${escapeHtml(tag)}</span>`).join('')}</div>
       <button class="secondary-action" disabled>${tab === 'skills' ? '查看技能' : '配置工具服务'}</button>
@@ -1860,6 +1885,179 @@ function renderArtifactPreviewPanel(task) {
   `;
 }
 
+function publicationGateForTask(task) {
+  const api = window.MeteoMateHarness.PublicationState;
+  const publication = task?.publication || {};
+  try {
+    if (!publication.dirty && api.cachedRequestMatchesTask(task) && publication.gate) {
+      return publication.gate;
+    }
+    return api.evaluate(task, null);
+  } catch (error) {
+    return {
+      ready: false,
+      blockers: [error?.message || String(error)],
+      warnings: [],
+      checkedAt: null,
+    };
+  }
+}
+
+function renderPublicationEvidence(record) {
+  const metadata = record.metadata || {};
+  const value = record.value == null
+    ? '无数值'
+    : `${typeof record.value === 'object' ? JSON.stringify(record.value) : record.value}${record.unit ? ` ${record.unit}` : ''}`;
+  const algorithm = record.algorithm
+    ? `${record.algorithm.name || record.algorithm.id || '算法'}${record.algorithm.version ? ` ${record.algorithm.version}` : ''}`
+    : '';
+  const flags = [
+    metadata.synthetic === true ? '构造数据' : '',
+    metadata.classification ? String(metadata.classification) : '',
+    record.expiresAt && new Date(record.expiresAt).getTime() <= Date.now() ? '已过期' : '',
+  ].filter(Boolean);
+  return `
+    <label class="publication-evidence-row">
+      <input type="checkbox" data-publication-new-evidence value="${escapeHtml(record.id)}" />
+      <span class="publication-evidence-main">
+        <strong>${escapeHtml(record.variable || record.evidenceType || record.id)}</strong>
+        <small>${escapeHtml(value)}</small>
+      </span>
+      <span class="publication-evidence-source">
+        <strong>${escapeHtml(record.source || '未知来源')}</strong>
+        <small>${escapeHtml([
+          record.sourceVersion || '',
+          record.validTime ? formatDateTime(record.validTime) : '无有效时间',
+          algorithm,
+        ].filter(Boolean).join(' · '))}</small>
+      </span>
+      ${flags.length ? `<span class="publication-evidence-flags">${flags.map((flag) => `<em>${escapeHtml(flag)}</em>`).join('')}</span>` : ''}
+    </label>`;
+}
+
+function renderTaskPublicationPanel(task) {
+  if (!task || !publicationUI.open || publicationUI.taskId !== task.id) return '';
+  const api = window.MeteoMateHarness.PublicationState;
+  const analysis = api.analysisForTask(task);
+  const publication = task.publication || {};
+  const cacheCurrent = api.cachedRequestMatchesTask(task);
+  const stale = Boolean(publication.gate || publication.signoff) && !cacheCurrent;
+  const needsRecheck = publication.dirty || stale;
+  const gate = publicationGateForTask(task);
+  const checked = Boolean(publication.gate) && !publication.dirty && cacheCurrent;
+  const approved = checked && publication.signoff?.approved === true && gate.ready;
+  const signable = checked && !publication.signoff?.approved && api.signable(gate);
+  const status = publicationUI.busy
+    ? 'processing'
+    : publicationUI.error || publication.error
+      ? 'error'
+      : approved
+        ? 'approved'
+        : needsRecheck
+          ? 'dirty'
+          : signable
+            ? 'signable'
+            : 'blocked';
+  const statusText = {
+    processing: '正在处理',
+    error: '检查失败',
+    approved: '已签发',
+    dirty: '内容待复核',
+    signable: '可签发',
+    blocked: '未满足发布条件',
+  }[status];
+  const conclusions = analysis.conclusions || [];
+  const evidence = task.evidence || [];
+  const artifacts = api.currentArtifacts(task.artifacts);
+  const error = publicationUI.error || publication.error || '';
+  const reviewer = checked
+    ? publication.signoff?.reviewerName || publication.signoff?.reviewerId || ''
+    : '';
+
+  return `
+    <section class="publication-review-panel ${escapeHtml(status)}" id="publication-review-panel" aria-labelledby="publication-review-title">
+      <header class="publication-review-heading">
+        <div>
+          <span class="publication-review-icon">${icon('shield')}</span>
+          <span><strong id="publication-review-title">发布审核</strong><small>结构化结论、证据与成果物共同决定是否可签发</small></span>
+        </div>
+        <span class="publication-status ${escapeHtml(status)}">${escapeHtml(statusText)}</span>
+      </header>
+
+      <div class="publication-summary-grid">
+        <span><small>预报结论</small><strong>${conclusions.length}</strong></span>
+        <span><small>证据记录</small><strong>${evidence.length}</strong></span>
+        <span><small>成果物</small><strong>${artifacts.length}</strong></span>
+        <span><small>最近检查</small><strong>${checked && publication.checkedAt ? escapeHtml(formatDateTime(publication.checkedAt)) : '尚未检查'}</strong></span>
+      </div>
+
+      ${needsRecheck ? `<p class="publication-notice">${stale ? '缓存的发布审核结果与当前任务不匹配，当前显示本地预检查。请重新运行发布检查。' : '分析、证据或成果物已经变化，请重新运行发布检查。已有签发不会被静默复用。'}</p>` : ''}
+      ${error ? `<p class="publication-error" role="alert">${escapeHtml(error)}</p>` : ''}
+      ${reviewer ? `<p class="publication-signoff">签发人：<strong>${escapeHtml(reviewer)}</strong>${publication.signoff.approvedAt ? ` · ${escapeHtml(formatDateTime(publication.signoff.approvedAt))}` : ''}</p>` : ''}
+
+      <div class="publication-review-columns">
+        <section class="publication-editor">
+          <div class="publication-section-title"><strong>发布上下文</strong><small>使用明确的业务时间，不从对话文本猜测</small></div>
+          <div class="publication-context-fields">
+            <label><span>区域</span><input data-publication-region value="${escapeHtml(analysis.region || '')}" placeholder="例如：华南" /></label>
+            <label><span>发布时间</span><input data-publication-issue-time value="${escapeHtml(analysis.issueTime || '')}" placeholder="ISO 8601，例如 2026-07-30T08:00:00+08:00" /></label>
+            <label><span>有效时段</span><input data-publication-valid-period value="${escapeHtml(analysis.validPeriod || '')}" placeholder="例如：未来 24 小时或 ISO 时间区间" /></label>
+          </div>
+          <button type="button" class="publication-secondary-button" data-publication-save-context ${publicationUI.busy ? 'disabled' : ''}>保存发布上下文</button>
+
+          <div class="publication-section-title"><strong>预报结论</strong><small>每条结论必须引用至少一条 Evidence</small></div>
+          <div class="publication-conclusion-list">
+            ${conclusions.length
+              ? conclusions.map((conclusion, index) => `
+                  <article class="publication-conclusion">
+                    <span>${index + 1}</span>
+                    <div><strong>${escapeHtml(conclusion.text || '空结论')}</strong><small>Evidence：${escapeHtml((conclusion.evidenceIds || []).join('、') || '未引用')}</small></div>
+                    <button type="button" data-publication-remove-conclusion="${index}" aria-label="移除第 ${index + 1} 条结论" ${publicationUI.busy ? 'disabled' : ''}>${icon('close')}</button>
+                  </article>`).join('')
+              : '<p class="publication-empty">尚无结构化结论。MeteoMate 不会把助手自然语言自动当作可发布结论。</p>'}
+          </div>
+
+          <div class="publication-conclusion-editor">
+            <label><span>新增人工确认结论</span><textarea data-publication-new-conclusion placeholder="输入经业务确认的预报结论"></textarea></label>
+            <div class="publication-evidence-picker">
+              ${evidence.length
+                ? evidence.map(renderPublicationEvidence).join('')
+                : '<p class="publication-empty">当前任务没有 Evidence，暂不能新增可发布结论。</p>'}
+            </div>
+            <button type="button" class="publication-secondary-button" data-publication-add-conclusion ${!evidence.length || publicationUI.busy ? 'disabled' : ''}>添加结论并关联所选证据</button>
+          </div>
+        </section>
+
+        <aside class="publication-gate">
+          <div class="publication-section-title"><strong>门禁结果</strong><small>${checked ? '服务端校验结果' : '本地预检查，签发前需正式检查'}</small></div>
+          <div class="publication-gate-group blockers">
+            <span>阻塞项</span>
+            ${(gate.blockers || []).length
+              ? `<ul>${gate.blockers.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>`
+              : '<p>无阻塞项</p>'}
+          </div>
+          <div class="publication-gate-group warnings">
+            <span>提醒</span>
+            ${(gate.warnings || []).length
+              ? `<ul>${gate.warnings.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>`
+              : '<p>无提醒</p>'}
+          </div>
+          <div class="publication-artifact-list">
+            <span>成果物</span>
+            ${artifacts.length
+              ? artifacts.map((artifact) => `<button type="button" data-open-artifact="${escapeHtml(artifact.id || artifact.path || artifact.uri)}">${icon('file')}<span><strong>${escapeHtml(artifact.name || pathBaseName(artifact.path || artifact.uri))}</strong><small>${escapeHtml(artifact.contentHash ? `SHA-256 ${artifact.contentHash.slice(0, 12)}…` : '缺少内容摘要')}</small></span></button>`).join('')
+              : '<p>尚无可交付成果物</p>'}
+          </div>
+          <div class="publication-actions">
+            <button type="button" class="publication-secondary-button" data-publication-check ${publicationUI.busy ? 'disabled' : ''}>${publicationUI.busy === 'check' ? '检查中…' : '运行发布检查'}</button>
+            ${signable ? `<button type="button" class="publication-primary-button" data-publication-sign ${publicationUI.busy ? 'disabled' : ''}>${publicationUI.busy === 'sign' ? '签发中…' : '确认签发'}</button>` : ''}
+            ${checked && publication.signoff?.approved ? `<button type="button" class="publication-danger-button" data-publication-revoke ${publicationUI.busy ? 'disabled' : ''}>${publicationUI.busy === 'revoke' ? '撤销中…' : '撤销签发'}</button>` : ''}
+          </div>
+        </aside>
+      </div>
+    </section>`;
+}
+
 function renderTaskView({ assistantMode = false } = {}) {
   const task = getActiveTask();
   const isNewTask = !assistantMode && !task;
@@ -1950,6 +2148,7 @@ function renderTaskView({ assistantMode = false } = {}) {
                 ? renderNewTaskWelcome(expert)
                 : renderConversationWelcome(expert)
           }
+          ${assistantMode ? '' : renderTaskPublicationPanel(task)}
           ${
             pendingPermissions.length
               ? `<section class="inline-permission-stack">

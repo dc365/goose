@@ -129,6 +129,15 @@ const SYNTHETIC_CASE = Object.freeze({
   },
 });
 
+const BETA_TOOL_NAMES = new Set([
+  'weather_list_sources',
+  'weather_query_dataset',
+  'weather_validate_dataset',
+  'weather_build_evidence',
+  'weather_diagnose_dataset',
+  'weather_render_dataset_map',
+]);
+
 const TOOL_DEFINITIONS = Object.freeze([
   { name: 'weather_list_sources', group: 'weather-data', description: '列出当前项目配置的本地或内网气象资料源及成熟度。', parameters: [], annotations: { readOnlyHint: true }, effects: { filesystemRead: 'workspace', risk: 'low' } },
   { name: 'weather_query_dataset', group: 'weather-data', description: '从本地 JSON/CSV 或内网 HTTP/HTTPS JSON Provider 读取标准化气象资料集。', parameters: ['sourceId', 'datasetRef', 'query'], annotations: { readOnlyHint: true }, effects: { filesystemRead: 'workspace', networkRead: true, risk: 'medium' } },
@@ -146,7 +155,10 @@ const TOOL_DEFINITIONS = Object.freeze([
   { name: 'weather_diagnose_heavy_rain', group: 'weather-diagnosis', description: '按水汽、抬升、不稳定、持续性和模式一致性输出强降水评分。', parameters: ['caseId'], annotations: { readOnlyHint: true }, effects: { risk: 'low' } },
   { name: 'weather_diagnose_convection', group: 'weather-diagnosis', description: '输出短时强降水、雷暴大风和冰雹的分类风险与证据。', parameters: ['caseId'], annotations: { readOnlyHint: true }, effects: { risk: 'low' } },
   { name: 'weather_render_risk_map', group: 'gis-map', description: '在项目工作区生成带数据声明、站点雨量和风险落区的可预览 HTML 示意图。', parameters: ['caseId', 'layer', 'outputPath'], annotations: { readOnlyHint: false }, effects: { filesystemWrite: 'workspace', risk: 'medium' } },
-]);
+].map((tool) => Object.freeze({
+  ...tool,
+  maturity: BETA_TOOL_NAMES.has(tool.name) ? 'beta' : 'demo',
+})));
 
 const GROUP_TOOLS = Object.freeze({
   'weather-data': TOOL_DEFINITIONS.filter((tool) => tool.group === 'weather-data').map((tool) => tool.name),
@@ -383,6 +395,120 @@ function createDemoArtifacts(workspace) {
   ];
 }
 
+function fixtureDataset() {
+  return WeatherContracts.normalizeDataset({
+    ...clone(SYNTHETIC_CASE),
+    metadata: {
+      classification: 'demo',
+      synthetic: true,
+      fixture: true,
+      caseId: CASE_ID,
+    },
+  }, {
+    id: 'meteomate-synthetic-fixture',
+    name: 'MeteoMate synthetic fixture',
+    type: 'fixture',
+    version: CASE_ID,
+    uri: `fixture://${CASE_ID}`,
+    classification: 'demo',
+    synthetic: true,
+    official: false,
+  });
+}
+
+function fixturePublicationAnalysis(dataset, result) {
+  const idsFor = (prefix) => result.evidence
+    .filter((record) => String(record.variable || '').startsWith(prefix))
+    .map((record) => record.id);
+  const synoptic = result.diagnosis.synoptic;
+  const heavyRain = result.diagnosis.heavyRain;
+  const convection = result.diagnosis.convection;
+  const hotspots = heavyRain.hotspots
+    .map((item) => `${item.name} ${item.rain24h} mm`)
+    .join('、');
+  const hazards = convection.hazards
+    .map((item) => `${item.type} ${(item.probability * 100).toFixed(0)}%`)
+    .join('、');
+  return {
+    region: dataset.region.name,
+    issueTime: dataset.issueTime,
+    validPeriod: [dataset.validTime?.start, dataset.validTime?.end].filter(Boolean).join('/'),
+    conclusions: [
+      {
+        text: `识别出${synoptic.systems.map((item) => item.name).join('、')}。`,
+        evidenceIds: idsFor('synoptic.'),
+      },
+      {
+        text: `强降水综合评分 ${heavyRain.total}/100（${heavyRain.level}），高值站点为${hotspots}。`,
+        evidenceIds: idsFor('heavy-rain.'),
+      },
+      {
+        text: `强对流分类风险为${hazards}。`,
+        evidenceIds: idsFor('convection.'),
+      },
+    ],
+  };
+}
+
+function createFixtureWeatherRun(workspace) {
+  const dataset = fixtureDataset();
+  const result = WeatherDiagnosis.diagnoseDataset(dataset, 'all');
+  const diagnosis = {
+    ...result.diagnosis,
+    algorithm: result.algorithm,
+  };
+  const artifact = WeatherRender.renderDatasetMap({
+    workspace,
+    dataset,
+    diagnosis,
+    evidence: result.evidence,
+    outputPath: 'artifacts/meteomate-demo/fixture-risk-map.html',
+  });
+  return {
+    schemaVersion: result.schemaVersion,
+    caseId: CASE_ID,
+    dataset,
+    validation: result.validation,
+    diagnosis: result.diagnosis,
+    algorithm: result.algorithm,
+    evidence: result.evidence,
+    artifacts: [artifact],
+    publication: result.publication,
+    publicationAnalysis: fixturePublicationAnalysis(dataset, result),
+  };
+}
+
+function fixtureRuntimeEvents({
+  taskId,
+  fixture,
+  runtime = 'mock',
+  toolCallId = 'meteomate-weather-fixture',
+} = {}) {
+  return [
+    ...fixture.evidence.map((evidence) => ({
+      type: 'evidence_created',
+      taskId,
+      runtime,
+      toolCallId,
+      evidence: clone(evidence),
+    })),
+    ...fixture.artifacts.map((artifact) => ({
+      type: 'artifact_created',
+      taskId,
+      runtime,
+      toolCallId,
+      artifact: clone(artifact),
+    })),
+    {
+      type: 'turn_completed',
+      taskId,
+      runtime,
+      sessionId: null,
+      publicationAnalysis: clone(fixture.publicationAnalysis),
+    },
+  ];
+}
+
 function getCase(sections) {
   if (!Array.isArray(sections) || !sections.length) return clone(SYNTHETIC_CASE);
   const result = {
@@ -484,12 +610,14 @@ function toolOutput(name, input = {}) {
   }
 }
 
-function markdownSections(prompt) {
+function markdownSections(prompt, fixture = null) {
   const text = String(prompt || '');
-  const wantsData = /数据|资料|实况|模式|探空|雷达|站点|完整|演示|介绍/.test(text);
-  const wantsRain = /强降水|暴雨|降水|风险|完整|演示|介绍/.test(text);
-  const wantsConvection = /强对流|雷暴|大风|冰雹|完整|演示|介绍/.test(text);
-  const wantsProduct = /预报|写稿|产品|材料|报告|完整|演示|介绍/.test(text);
+  const fixtureRun = Boolean(fixture?.diagnosis);
+  const wantsData = fixtureRun || /数据|资料|实况|模式|探空|雷达|站点|完整|演示|介绍/.test(text);
+  const wantsRain = fixtureRun || /强降水|暴雨|降水|风险|完整|演示|介绍/.test(text);
+  const wantsConvection = fixtureRun || /强对流|雷暴|大风|冰雹|完整|演示|介绍/.test(text);
+  const wantsProduct = fixtureRun || /预报|写稿|产品|材料|报告|完整|演示|介绍/.test(text);
+  const diagnosis = fixture?.diagnosis || SYNTHETIC_CASE.diagnoses;
   const blocks = [];
   if (wantsData || (!wantsRain && !wantsConvection && !wantsProduct)) {
     blocks.push(`### 资料清单与质量
@@ -501,25 +629,35 @@ function markdownSections(prompt) {
 - **模式对比：** 三套构造模式区域最大 24 小时雨量为 112–168 mm，均指向永泰—闽侯附近`);
   }
   if (wantsRain) {
+    const rain = diagnosis.heavyRain;
+    const synopticSystems = diagnosis.synoptic.systems.map((item) => item.name).join('、');
+    const hotspots = rain.hotspots.map((item) =>
+      `${item.name} ${item.expected24h || `${item.rain24h} mm`}`
+    ).join('；');
     blocks.push(`### 天气形势与强降水诊断
 
-副热带高压西北侧西南气流、东移短波槽、850hPa 低空急流和沿海低压倒槽共同构成水汽—抬升配置。
+${synopticSystems}共同构成水汽—抬升配置。
 
 | 维度 | 得分 | 主要证据 |
 | --- | ---: | --- |
-${SYNTHETIC_CASE.diagnoses.heavyRain.dimensions.map((item) => `| ${item.name} | ${item.score}/${item.max} | ${item.evidence} |`).join('\n')}
+${rain.dimensions.map((item) => `| ${item.name} | ${item.score}/${item.max} | ${Array.isArray(item.evidence) ? item.evidence.join('；') : item.evidence} |`).join('\n')}
 
-**综合评分：${SYNTHETIC_CASE.diagnoses.heavyRain.total}/100（${SYNTHETIC_CASE.diagnoses.heavyRain.level}）**。重点落区为永泰—闽侯，构造 24 小时雨量 100–160 mm；福州西部—福清北部为较高风险。`);
+**综合评分：${rain.total}/100（${rain.level}）**。高值站点或重点落区为${hotspots}。`);
   }
   if (wantsConvection) {
+    const convection = diagnosis.convection;
     blocks.push(`### 强对流分类风险
 
-${SYNTHETIC_CASE.diagnoses.convection.hazards.map((item) => `- **${item.type}：** 概率 ${(item.probability * 100).toFixed(0)}%，置信度${item.confidence}；${item.evidence}`).join('\n')}
+${convection.hazards.map((item) => `- **${item.type}：** 概率 ${(item.probability * 100).toFixed(0)}%，置信度${item.confidence}${item.evidence ? `；${item.evidence}` : ''}`).join('\n')}
 
 触发条件为低压倒槽辐合叠加地形抬升；缺少真实径向速度、云顶温度和高频探空，不能把旋转或大风风险写成确定结论。`);
   }
   if (wantsProduct) {
-    blocks.push(`### 可审核的预报初稿
+    blocks.push(fixtureRun ? `### 可审核的预报初稿
+
+${fixture.publicationAnalysis.conclusions.map((item) => `- ${item.text}`).join('\n')}
+
+发布门禁将把本次构造、演示和已过期资料保持为草稿，不能签发。` : `### 可审核的预报初稿
 
 ${SYNTHETIC_CASE.forecastDraft.summary}重点时段为 **${SYNTHETIC_CASE.forecastDraft.keyPeriod}**，需关注城乡积涝、山洪地质灾害、低能见度和局地雷暴大风。
 
@@ -528,7 +666,7 @@ ${SYNTHETIC_CASE.forecastDraft.summary}重点时段为 **${SYNTHETIC_CASE.foreca
   return blocks;
 }
 
-function buildDemoResponse({ prompt, expertName, workspace, artifacts = [] } = {}) {
+function buildDemoResponse({ prompt, expertName, workspace, artifacts = [], fixture = null } = {}) {
   const artifactList = artifacts.length
     ? `### 已生成演示成果物\n\n${artifacts.map((artifact) => `- \`${artifact.path}\``).join('\n')}`
     : `### 成果物\n\n当前未绑定可写工作区；选择项目后可生成案例 JSON、站点 CSV、分析 Markdown 和 HTML 风险图。`;
@@ -536,7 +674,7 @@ function buildDemoResponse({ prompt, expertName, workspace, artifacts = [] } = {
     '## MeteoMate 可运行演示 · 构造案例',
     `> **数据声明：** ${SYNTHETIC_CASE.dataNotice}`,
     `**已选择专家：** ${expertName || 'MeteoMate 助理'}  \n**案例：** ${SYNTHETIC_CASE.name}（\`${CASE_ID}\`）  \n**工作区：** ${workspace ? `\`${workspace}\`` : 'MeteoMate 内置演示工作区'}`,
-    ...markdownSections(prompt),
+    ...markdownSections(prompt, fixture),
     artifactList,
     `### 不确定性与下一步
 
@@ -546,11 +684,26 @@ function buildDemoResponse({ prompt, expertName, workspace, artifacts = [] } = {
   ].join('\n\n');
 }
 
-function teamMemberSummary(expertId) {
+function teamMemberSummary(expertId, fixture = null) {
+  const diagnosis = fixture?.diagnosis || {};
+  const synoptic = diagnosis.synoptic || {};
+  const heavyRain = diagnosis.heavyRain || {};
+  const convection = diagnosis.convection || {};
+  const systems = (synoptic.systems || []).map((item) => item.name).filter(Boolean).join('、');
+  const hotspots = (heavyRain.hotspots || []).map((item) => item.name).filter(Boolean).slice(0, 3).join('、');
+  const hazards = (convection.hazards || [])
+    .map((item) => `${item.type} ${Number.isFinite(item.probability) ? `${Math.round(item.probability * 100)}%` : ''}`.trim())
+    .join('，');
   const summaries = {
-    'synoptic-expert': '识别出副高西北侧、东移短波槽、850hPa 西南低空急流和沿海低压倒槽，形势置信度 0.82。',
-    'heavy-rain-expert': '按五维证据链得到强降水 85/100，高风险中心位于永泰—闽侯。',
-    'convection-expert': '短时强降水概率 82%，雷暴大风 46%，冰雹 18%；对缺测资料保留不确定性。',
+    'synoptic-expert': systems
+      ? `识别出${systems}，形势置信度 ${synoptic.confidence ?? '待复核'}。`
+      : '已完成天气形势诊断，具体系统与置信度以本次 Fixture 算法结果为准。',
+    'heavy-rain-expert': Number.isFinite(heavyRain.total)
+      ? `按五维证据链得到强降水 ${heavyRain.total}/100（${heavyRain.level || '待分级'}）${hotspots ? `，高值站点为${hotspots}` : ''}。`
+      : '已完成五维强降水诊断，评分以本次 Fixture 算法结果为准。',
+    'convection-expert': hazards
+      ? `强对流分类风险为${hazards}；对缺测资料保留不确定性。`
+      : '已完成强对流分类诊断，风险概率以本次 Fixture 算法结果为准。',
     'writing-expert': '已把诊断结论整理为带构造数据声明、重点时段和发布前复核项的预报初稿。',
     'gis-expert': '已生成站点雨量、风险落区、诊断评分和非官方水印完整的 HTML 示意图。',
   };
@@ -605,9 +758,14 @@ function discoveryResult(id) {
     .map((tool) => ({
       name: tool.name,
       description: tool.description,
+      maturity: tool.maturity,
       parameters: [...tool.parameters],
       requiredParameters: [],
-      annotations: { ...(tool.annotations || {}), effects: { ...(tool.effects || {}) } },
+      annotations: {
+        ...(tool.annotations || {}),
+        maturity: tool.maturity,
+        effects: { ...(tool.effects || {}) },
+      },
       effects: { ...(tool.effects || {}) },
     }));
   return {
@@ -757,7 +915,15 @@ async function startServer() {
   for (const definition of TOOL_DEFINITIONS) {
     server.registerTool(
       definition.name,
-      { description: definition.description, inputSchema: schemas[definition.name], annotations: { ...(definition.annotations || {}), effects: { ...(definition.effects || {}) } } },
+      {
+        description: definition.description,
+        inputSchema: schemas[definition.name],
+        annotations: {
+          ...(definition.annotations || {}),
+          maturity: definition.maturity,
+          effects: { ...(definition.effects || {}) },
+        },
+      },
       async (input) => {
         try {
           const result = await executeTool(definition.name, input);
@@ -798,6 +964,8 @@ module.exports = Object.freeze({
   writeRiskMap,
   exportDemoBundle,
   createDemoArtifacts,
+  createFixtureWeatherRun,
+  fixtureRuntimeEvents,
   buildDemoResponse,
   teamMemberSummary,
   startServer,

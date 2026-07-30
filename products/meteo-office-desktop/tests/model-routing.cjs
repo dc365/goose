@@ -132,9 +132,11 @@ assert.ok(mainSource.includes("type: 'session_capabilities'"));
 assert.ok(mainSource.includes('request.sessionCapabilityHash !== request.capabilityHash'));
 assert.ok(mainSource.includes('this.sessionPermissionGrants.get(grantKey.sessionId)?.has(grantKey.toolName)'));
 assert.ok(mainSource.includes('grants.add(grantKey.toolName)'));
-assert.ok(mainSource.includes("const effectiveAction = action === 'always_allow' && protectedDesktopAction"));
+assert.ok(mainSource.includes("const effectiveAction = action === 'always_allow' && pending.allowAlways !== true"));
 assert.ok(mainSource.includes("effectiveAction === 'always_allow'\n      ? automaticPermissionResponse(pending.request)"));
-assert.ok(mainSource.includes('allowAlways: !protectedDesktopAction'));
+assert.ok(mainSource.includes('PermissionPolicy.permissionGrantReusable(assessment)'));
+assert.ok(mainSource.includes('allowAlways: reusableGrant'));
+assert.ok(mainSource.indexOf('PermissionPolicy.permissionHandling(') < mainSource.indexOf('this.sessionPermissionGrants.get(grantKey.sessionId)'));
 assert.equal(
   runtimeContext.openAiChatCompletionsPath('https://ark.cn-beijing.volces.com/api/v3'),
   'api/v3/chat/completions'

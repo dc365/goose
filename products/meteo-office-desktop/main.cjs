@@ -287,9 +287,15 @@ async function navigateArtifactPreview(request = {}) {
 }
 
 function sendRuntimeEvent(payload) {
-  computerPipController?.handleRuntimeEvent(payload);
+  let event = payload;
+  try {
+    event = runtimeServices().publicationAttestor?.attestRuntimeEvent(payload) || payload;
+  } catch {
+    event = payload;
+  }
+  computerPipController?.handleRuntimeEvent(event);
   if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('runtime:event', payload);
+    mainWindow.webContents.send('runtime:event', event);
   }
 }
 
@@ -1007,7 +1013,7 @@ class GooseAcpRuntime {
       },
       clientInfo: {
         name: 'meteomate-desktop',
-        version: '0.2.0-beta.1',
+        version: '0.2.0-beta.2',
       },
     });
 
@@ -1773,24 +1779,25 @@ class GooseAcpRuntime {
       workspace: os.homedir(),
     };
     const assessment = PermissionPolicy.classifyPermissionRequest(request, context);
-    const protectedDesktopAction = ['inspect', 'interaction', 'sensitive'].includes(assessment.computerRisk);
+    const handling = PermissionPolicy.permissionHandling(
+      context.permissionProfileId,
+      assessment
+    );
+    const reusableGrant = PermissionPolicy.permissionGrantReusable(assessment);
     const grantKey = sessionPermissionGrantKey(request);
     if (
-      !protectedDesktopAction
+      handling === 'prompt'
+      && reusableGrant
       && grantKey
       && this.sessionPermissionGrants.get(grantKey.sessionId)?.has(grantKey.toolName)
     ) {
       return Promise.resolve(automaticPermissionResponse(request));
     }
-    const handling = PermissionPolicy.permissionHandling(
-      context.permissionProfileId,
-      assessment
-    );
     if (handling === 'deny') {
       return Promise.resolve({ outcome: { outcome: 'cancelled' } });
     }
     if (handling === 'allow_always') {
-      return Promise.resolve(automaticPermissionResponse(request, true));
+      return Promise.resolve(automaticPermissionResponse(request));
     }
     if (handling === 'allow_once') {
       return Promise.resolve(automaticPermissionResponse(request));
@@ -1798,7 +1805,13 @@ class GooseAcpRuntime {
 
     const key = permissionKey(request);
     return new Promise((resolve) => {
-      pendingPermissions.set(key, { request, resolve, taskId, assessment });
+      pendingPermissions.set(key, {
+        request,
+        resolve,
+        taskId,
+        assessment,
+        allowAlways: reusableGrant,
+      });
       sendRuntimeEvent({
         type: 'permission_requested',
         taskId,
@@ -1809,7 +1822,7 @@ class GooseAcpRuntime {
         toolCallId: request.toolCall?.toolCallId || request.toolCall?.id || null,
         toolCall: safeJson(request.toolCall),
         options: safeJson(request.options || []),
-        allowAlways: !protectedDesktopAction,
+        allowAlways: reusableGrant,
       });
     });
   }
@@ -1819,10 +1832,7 @@ class GooseAcpRuntime {
     if (!pending) return false;
     pendingPermissions.delete(permissionId);
     const teamMember = this.sessionTeamMemberMap.get(pending.request.sessionId) || null;
-    const protectedDesktopAction = ['inspect', 'interaction', 'sensitive'].includes(
-      pending.assessment?.computerRisk
-    );
-    const effectiveAction = action === 'always_allow' && protectedDesktopAction
+    const effectiveAction = action === 'always_allow' && pending.allowAlways !== true
       ? 'allow_once'
       : action;
     const response = effectiveAction === 'always_allow'
@@ -2454,26 +2464,27 @@ function runMockTask(request) {
   const demoWorkspace = request.workspace && path.isAbsolute(request.workspace)
     ? request.workspace
     : path.join(app.getPath('userData'), 'demo-workspace');
-  let artifacts = [];
-  let artifactError = '';
+  let fixture = { evidence: [], artifacts: [], publicationAnalysis: null };
+  let fixtureError = '';
   try {
-    artifacts = WeatherConnector.createDemoArtifacts(demoWorkspace);
+    fixture = WeatherConnector.createFixtureWeatherRun(demoWorkspace);
   } catch (error) {
-    artifactError = String(error?.message || error);
+    fixtureError = String(error?.message || error);
   }
   const response = WeatherConnector.buildDemoResponse({
     prompt: request.prompt,
     expertName: request.expertName,
     workspace: demoWorkspace,
-    artifacts,
+    artifacts: fixture.artifacts,
+    fixture,
   }).replace('## MeteoMate 可运行演示 · 构造案例', '## MeteoMate 演示模式 · 可运行构造案例');
   const firstBreak = response.indexOf('\n\n### ', Math.floor(response.length / 3));
   const secondBreak = response.indexOf('\n\n### ', Math.floor(response.length * 0.7));
   const chunks = firstBreak > 0 && secondBreak > firstBreak
     ? [response.slice(0, firstBreak), response.slice(firstBreak, secondBreak), response.slice(secondBreak)]
     : [response];
-  if (artifactError) {
-    chunks.push(`\n\n> 演示成果物写入失败：${artifactError}\n`);
+  if (fixtureError) {
+    chunks.push(`\n\n> 固定天气 Fixture 运行失败：${fixtureError}\n`);
   }
 
   sendRuntimeEvent({ type: 'turn_started', taskId, runtime: 'mock', sessionId: null });
@@ -2482,14 +2493,11 @@ function runMockTask(request) {
       if (cancelled) return;
       sendRuntimeEvent({ type: 'assistant_message_delta', taskId, runtime: 'mock', text: chunk });
       if (index === chunks.length - 1) {
-        artifacts.forEach((artifact) => sendRuntimeEvent({
-          type: 'artifact_created',
+        WeatherConnector.fixtureRuntimeEvents({
           taskId,
-          runtime: 'mock',
-          toolCallId: 'meteomate-weather-demo',
-          artifact,
-        }));
-        sendRuntimeEvent({ type: 'turn_completed', taskId, runtime: 'mock', sessionId: null });
+          fixture,
+          toolCallId: 'meteomate-weather-fixture',
+        }).forEach(sendRuntimeEvent);
         activeHeadlessRuns.delete(taskId);
       }
     }, 180 + index * 280);
@@ -2505,7 +2513,7 @@ function runMockTask(request) {
     },
   });
 
-  return { accepted: true, runtime: 'mock', sessionId: null };
+  return { accepted: true, runtime: 'mock', sessionId: null, workspace: demoWorkspace };
 }
 
 function runMockTeamTask(request) {
@@ -2514,12 +2522,14 @@ function runMockTeamTask(request) {
   const demoWorkspace = request.workspace && path.isAbsolute(request.workspace)
     ? request.workspace
     : path.join(app.getPath('userData'), 'demo-workspace');
-  let artifacts = [];
+  let fixture = { evidence: [], artifacts: [], publicationAnalysis: null, diagnosis: null };
+  let fixtureError = '';
   try {
-    artifacts = WeatherConnector.createDemoArtifacts(demoWorkspace);
-  } catch {
-    artifacts = [];
+    fixture = WeatherConnector.createFixtureWeatherRun(demoWorkspace);
+  } catch (error) {
+    fixtureError = String(error?.message || error);
   }
+  const artifacts = fixture.artifacts || [];
   const teamRun = ExpertTeam.createRunState(team, {
     id: request.runAttemptId || `team-run-${crypto.randomUUID()}`,
   });
@@ -2569,7 +2579,7 @@ function runMockTeamTask(request) {
         runtime: 'mock',
         runId: teamRun.id,
         teamMemberId: node.id,
-        summary: WeatherConnector.teamMemberSummary(node.expert.id),
+        summary: WeatherConnector.teamMemberSummary(node.expert.id, fixture),
         completedAt: Date.now(),
       }));
     });
@@ -2591,14 +2601,30 @@ function runMockTeamTask(request) {
       expertName: team.name,
       workspace: demoWorkspace,
       artifacts,
+      fixture,
     }).replace('## MeteoMate 可运行演示 · 构造案例', `## ${team.name} · 演示模式联合研判`),
   }), 320);
+  if (fixtureError) {
+    schedule(() => sendRuntimeEvent({
+      type: 'assistant_message_delta',
+      taskId,
+      runtime: 'mock',
+      text: `\n\n> 固定天气 Fixture 运行失败：${fixtureError}\n`,
+    }));
+  }
   schedule(() => {
+    (fixture.evidence || []).forEach((evidence) => sendRuntimeEvent({
+      type: 'evidence_created',
+      taskId,
+      runtime: 'mock',
+      toolCallId: 'meteomate-weather-fixture-team',
+      evidence,
+    }));
     artifacts.forEach((artifact) => sendRuntimeEvent({
       type: 'artifact_created',
       taskId,
       runtime: 'mock',
-      toolCallId: 'meteomate-weather-demo-team',
+      toolCallId: 'meteomate-weather-fixture-team',
       artifact,
     }));
     sendRuntimeEvent({
@@ -2611,7 +2637,13 @@ function runMockTeamTask(request) {
       failedCount: 0,
       completedAt: Date.now(),
     });
-    sendRuntimeEvent({ type: 'turn_completed', taskId, runtime: 'mock', sessionId: null });
+    sendRuntimeEvent({
+      type: 'turn_completed',
+      taskId,
+      runtime: 'mock',
+      sessionId: null,
+      publicationAnalysis: fixture.publicationAnalysis,
+    });
     activeHeadlessRuns.delete(taskId);
   }, 260);
 
@@ -2630,7 +2662,13 @@ function runMockTeamTask(request) {
       activeHeadlessRuns.delete(taskId);
     },
   });
-  return { accepted: true, runtime: 'mock', sessionId: null, teamRunId: teamRun.id };
+  return {
+    accepted: true,
+    runtime: 'mock',
+    sessionId: null,
+    teamRunId: teamRun.id,
+    workspace: demoWorkspace,
+  };
 }
 
 async function runHeadlessTask(request) {

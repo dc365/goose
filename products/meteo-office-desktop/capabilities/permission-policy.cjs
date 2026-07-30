@@ -14,6 +14,14 @@ const EDIT_TOOLS = new Set(['write', 'edit', 'write_file', 'edit_file']);
 const EXECUTE_TOOLS = new Set(['shell', 'execute', 'run_command']);
 const REMOTE_READ_PREFIX = /^(?:get|list|search|read|query|fetch|lookup|describe|inspect|check|validate)_/;
 const REMOTE_MUTATION_PREFIX = /^(?:make|create|update|delete|remove|write|edit|publish|send|upload|install|uninstall|execute|run|trigger|set|manage|apply|import|export|generate|render)_/;
+const RISK_RANK = Object.freeze({ low: 0, medium: 1, high: 2, critical: 3 });
+
+function maximumRisk(...values) {
+  return values
+    .map((value) => String(value || '').trim().toLowerCase())
+    .filter((value) => Object.hasOwn(RISK_RANK, value))
+    .reduce((current, value) => RISK_RANK[value] > RISK_RANK[current] ? value : current, 'low');
+}
 
 function normalizedToolName(toolCall = {}) {
   const value = String(toolCall.name || toolCall.title || '').trim().toLowerCase();
@@ -142,6 +150,7 @@ function remoteToolAssessment(toolCall, toolName, context) {
   const computerRisk = connector.connectorType === 'computer' ? ComputerConnector.toolRisk(catalogToolName) : null;
   const officeRisk = connector.connectorType === 'office' ? OfficeConnector.toolRisk(catalogToolName) : null;
   const effects = normalizedEffects(tool || {});
+  const effectiveRisk = maximumRisk(risk, effects.risk);
   const inferredReadOnly = Boolean(tool) && (
     browserRisk === 'observe'
     || computerRisk === 'observe'
@@ -156,7 +165,9 @@ function remoteToolAssessment(toolCall, toolName, context) {
     transport: connector.transport,
     verified: connector.verified === true,
     explicitlySelected: connector.explicitToolSelection === true && selectedTools.includes(catalogToolName),
-    acceptableRisk: computerRisk === 'observe' || !['high', 'critical'].includes(effects.risk || risk),
+    acceptableRisk: !['high', 'critical'].includes(effectiveRisk),
+    connectorRisk: risk,
+    effectiveRisk,
     readOnly,
     browserRisk,
     computerRisk,
@@ -235,6 +246,16 @@ function classifyPermissionRequest(request = {}, context = {}) {
     || remoteTool?.browserRisk === 'blocked'
     || remoteTool?.computerRisk === 'blocked'
     || remoteTool?.officeRisk === 'blocked';
+  const protectedDesktopAction = ['inspect', 'interaction', 'sensitive'].includes(remoteTool?.computerRisk);
+  const effectiveRisk = maximumRisk(remoteTool?.effectiveRisk, effects.risk);
+  const nonBypassableApproval = Boolean(
+    effects.requiresApproval
+    || effects.destructive
+    || effects.publish
+    || dangerousCommand
+    || protectedDesktopAction
+    || ['high', 'critical'].includes(effectiveRisk)
+  );
 
   let requiresSmartApproval;
   if (strict) {
@@ -245,6 +266,7 @@ function classifyPermissionRequest(request = {}, context = {}) {
       || effects.requiresApproval
       || effects.destructive
       || effects.publish
+      || ['high', 'critical'].includes(effectiveRisk)
       || ['inspect', 'interaction', 'sensitive'].includes(remoteTool?.computerRisk);
     if (!requiresSmartApproval) {
       if (safeRemoteRead || safeLocalRead) requiresSmartApproval = false;
@@ -260,6 +282,7 @@ function classifyPermissionRequest(request = {}, context = {}) {
       || effects.publish
       || dangerousCommand
       || remoteTool?.computerRisk === 'sensitive';
+    requiresSmartApproval ||= ['high', 'critical'].includes(effectiveRisk);
   }
 
   return {
@@ -279,12 +302,18 @@ function classifyPermissionRequest(request = {}, context = {}) {
     networkHostBlocked,
     sensitiveTarget,
     hardDeny,
+    dangerousCommand,
+    mutatingNetworkRequest,
+    protectedDesktopAction,
+    effectiveRisk,
+    nonBypassableApproval,
     requiresSmartApproval,
   };
 }
 
 function permissionHandling(permissionProfileId, assessment) {
   if (assessment.hardDeny) return 'deny';
+  if (assessment.nonBypassableApproval) return 'prompt';
   const strict = SecurityMode.normalizeSecurityMode(assessment.securityMode) === SecurityMode.MODES.STRICT;
 
   if (!strict) {
@@ -317,9 +346,19 @@ function permissionHandling(permissionProfileId, assessment) {
   return 'prompt';
 }
 
+function permissionGrantReusable(assessment = {}) {
+  return !assessment.hardDeny
+    && !assessment.nonBypassableApproval
+    && !assessment.outsideWorkspace
+    && !assessment.sensitiveTarget
+    && !assessment.networkHostBlocked
+    && !['high', 'critical'].includes(String(assessment.effectiveRisk || assessment.effects?.risk || '').toLowerCase());
+}
+
 module.exports = {
   classifyPermissionRequest,
   permissionHandling,
+  permissionGrantReusable,
   normalizedEffects,
   locationInsideWorkspace,
 };

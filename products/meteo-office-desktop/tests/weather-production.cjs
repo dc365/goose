@@ -67,7 +67,18 @@ const WeatherConnector = require('../capabilities/weather-connector.js');
   let secondWorkspace;
   let outsideArtifacts;
   const previousWeatherWorkspace = process.env.METEOMATE_WEATHER_WORKSPACE;
+  const bindingsEnvironment = 'METEOMATE_WEATHER_CREDENTIAL_BINDINGS';
+  const previousBindings = process.env[bindingsEnvironment];
+  const credentialEnvironment = Providers.credentialEnvironmentName('http-products');
+  const previousCredential = process.env[credentialEnvironment];
   try {
+  process.env[credentialEnvironment] = 'production-weather-token';
+  process.env[bindingsEnvironment] = JSON.stringify({
+    'weather:http-products': {
+      origin: `http://127.0.0.1:${port}`,
+      authScheme: 'Bearer',
+    },
+  });
   workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'meteomate-weather-'));
   fs.mkdirSync(path.join(workspace, '.meteomate'), { recursive: true });
   fs.mkdirSync(path.join(workspace, 'data'), { recursive: true });
@@ -88,10 +99,11 @@ const WeatherConnector = require('../capabilities/weather-connector.js');
         id: 'http-products',
         name: '内网 HTTP 资料',
         type: 'http-json',
-        baseUrl: `http://reader:password@127.0.0.1:${port}`,
-        queryPath: '/redirect',
+        baseUrl: `http://127.0.0.1:${port}`,
+        queryPath: '/query',
         method: 'GET',
-        headers: { 'X-Api-Key': 'plain-intranet-key' },
+        headers: { 'X-Meteo-Tenant': 'operations' },
+        credentialRef: 'weather:http-products',
         version: '2026.07',
         classification: 'production',
         official: true,
@@ -123,13 +135,28 @@ const WeatherConnector = require('../capabilities/weather-connector.js');
     },
   }, null, 2));
 
-  const internalURL = Providers.validateBaseURL({ baseUrl: 'http://user:password@weather.example' }, { securityMode: 'internal' });
+  const internalURL = Providers.validateBaseURL({
+    id: 'beta-weather',
+    baseUrl: 'http://user:password@weather.example',
+    classification: 'beta',
+  }, { securityMode: 'internal' });
   assert.equal(internalURL.protocol, 'http:');
   assert.equal(internalURL.username, '');
   assert.ok(internalURL.meteomateAuthorization.startsWith('Basic '));
-  assert.deepEqual(
-    Providers.validateStaticHeaders({ Authorization: 'Bearer plaintext', 'X-Api-Key': 'plain-key' }, { securityMode: 'internal' }),
-    { Authorization: 'Bearer plaintext', 'X-Api-Key': 'plain-key' },
+  assert.throws(
+    () => Providers.validateBaseURL({
+      id: 'production-weather',
+      baseUrl: 'http://user:password@weather.example',
+      classification: 'production',
+    }, { securityMode: 'internal' }),
+    /credentialRef/,
+  );
+  assert.throws(
+    () => Providers.validateStaticHeaders(
+      { Authorization: 'Bearer plaintext', 'X-Api-Key': 'plain-key' },
+      { securityMode: 'internal', source: { classification: 'production' } },
+    ),
+    /credentialRef/,
   );
   assert.throws(
     () => Providers.validateBaseURL({ baseUrl: 'http://weather.example', allowedHosts: ['weather.example'] }, { securityMode: 'strict' }),
@@ -137,7 +164,7 @@ const WeatherConnector = require('../capabilities/weather-connector.js');
   );
   assert.throws(
     () => Providers.validateStaticHeaders({ Authorization: 'Bearer plaintext' }, { securityMode: 'strict' }),
-    /严格安全模式/,
+    /credentialRef/,
   );
 
   const synthetic = Contracts.normalizeDataset({
@@ -190,8 +217,8 @@ const WeatherConnector = require('../capabilities/weather-connector.js');
   const httpQueried = await Providers.queryDataset({ workspace, sourceId: 'http-products', datasetRef: 'latest', securityMode: 'internal' });
   assert.equal(httpQueried.validation.valid, true);
   assert.equal(httpQueried.dataset.source.type, 'http-json');
-  assert.ok(receivedAuthorization.startsWith('Basic '));
-  assert.equal(receivedApiKey, 'plain-intranet-key');
+  assert.equal(receivedAuthorization, 'Bearer production-weather-token');
+  assert.equal(receivedApiKey, '');
   await assert.rejects(
     Providers.queryDataset({ workspace, sourceId: 'http-too-large', datasetRef: 'latest', securityMode: 'internal' }),
     /响应超过/,
@@ -251,6 +278,10 @@ const WeatherConnector = require('../capabilities/weather-connector.js');
   } finally {
     if (previousWeatherWorkspace == null) delete process.env.METEOMATE_WEATHER_WORKSPACE;
     else process.env.METEOMATE_WEATHER_WORKSPACE = previousWeatherWorkspace;
+    if (previousCredential == null) delete process.env[credentialEnvironment];
+    else process.env[credentialEnvironment] = previousCredential;
+    if (previousBindings == null) delete process.env[bindingsEnvironment];
+    else process.env[bindingsEnvironment] = previousBindings;
     await new Promise((resolve) => server.close(resolve));
     for (const target of [workspace, secondWorkspace, outsideArtifacts]) {
       if (target) fs.rmSync(target, { recursive: true, force: true });

@@ -160,14 +160,19 @@
   runtimeRouter.subscribe = (listener) =>
     originalSubscribe((event) => {
       const task = state.tasks.find((candidate) => candidate.id === event.taskId);
+      let forwardedEvent = event;
       if (task) {
         const attempt = latestRunningAttempt(task);
-        const normalizedEvent = harness.EventNormalizer.normalizeRuntimeEvent(event, {
-          taskId: task.id,
+        const responseId = event.responseId || [...(task.messages || [])]
+          .reverse()
+          .find((message) => message.role === 'assistant')?.id || null;
+        if (responseId && !event.responseId) forwardedEvent = { ...event, responseId };
+        harness.RuntimeRecords.recordRuntimeEvent(task, forwardedEvent, {
           runId: attempt?.id || null,
           runtime: event.runtime || task.runtimeMode || null,
+        }, {
+          responseId,
         });
-        task.harnessEvents = [...(task.harnessEvents || []), normalizedEvent].slice(-200);
 
         if (event.type === 'turn_started' && attempt) {
           attempt.runtime = event.runtime || attempt.runtime;
@@ -184,23 +189,15 @@
           harness.TaskStateMachine.transition(task, harness.TaskStateMachine.STATES.RUNNING, {
             reason: 'permission_resolved',
           });
-        } else if (event.type === 'artifact_created') {
-          const artifact = event.artifact || event.record || event.payload;
-          if (artifact) {
-            harness.ArtifactRegistry.registerArtifact(task, artifact, {
-              runId: attempt?.id || null,
-              toolCallId: event.toolCallId || null,
-            });
-          }
-        } else if (event.type === 'evidence_created') {
-          const evidence = event.evidence || event.record || event.payload;
-          if (evidence) {
-            harness.EvidenceLedger.registerEvidence(task, evidence, {
-              runId: attempt?.id || null,
-              toolCallId: event.toolCallId || null,
-            });
-          }
         } else if (event.type === 'turn_completed' && attempt) {
+          if (event.publicationAnalysis && typeof event.publicationAnalysis === 'object') {
+            task.publicationAnalysis = structuredClone(event.publicationAnalysis);
+            task.publication = {
+              ...(task.publication || {}),
+              dirty: true,
+              error: null,
+            };
+          }
           const contract = task.contextSnapshot?.completionContract;
           const completion = event.runtime === 'acp'
             ? harness.ContextCompiler.evaluateCompletion(contract, latestAssistantText(task))
@@ -218,7 +215,7 @@
           harness.TaskStateMachine.finishRunAttempt(task, attempt.id, 'failed', event.message || 'runtime failed');
         }
       }
-      listener(event);
+      listener(forwardedEvent);
     });
 
   root.MeteoMateHarnessRuntime = Object.freeze({

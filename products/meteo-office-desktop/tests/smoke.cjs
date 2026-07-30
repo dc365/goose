@@ -47,7 +47,9 @@ const harnessAssets = [
   'harness/artifact-registry.js',
   'harness/artifact-preview.js',
   'harness/evidence-ledger.js',
+  'harness/runtime-records.js',
   'harness/validation-engine.js',
+  'harness/publication-state.js',
   'harness/state-store.js',
   'harness/state-bootstrap.js',
   'harness/state-restore.js',
@@ -97,6 +99,9 @@ assert.ok(!context.window.METEOMATE_CONNECTORS.some((item) => item.id === 'goose
 assert.ok(context.window.METEOMATE_CONNECTORS.some((item) => item.id === 'playwright-browser'));
 assert.ok(context.window.METEOMATE_CONNECTORS.some((item) => item.id === 'cua-desktop'));
 assert.ok(context.window.METEOMATE_CONNECTORS.some((item) => item.id === 'office-artifacts'));
+assert.ok(context.window.METEOMATE_CONNECTORS.every((item) =>
+  ['planned', 'demo', 'experimental', 'beta', 'production', 'deprecated'].includes(item.maturity)
+));
 assert.ok(!context.window.METEOMATE_SKILL_ROADMAP.some((item) => item.id === 'docx-template'));
 assert.ok(!context.window.METEOMATE_SKILL_ROADMAP.some((item) => item.id === 'pdf-research'));
 assert.ok(!context.window.METEOMATE_SKILL_ROADMAP.some((item) => item.id === 'spreadsheet-analysis'));
@@ -139,6 +144,11 @@ for (const team of context.window.METEOMATE_TEAMS) {
 }
 
 const mainSource = fs.readFileSync(path.join(root, 'main.cjs'), 'utf8');
+const mainWrapperSource = fs.readFileSync(path.join(root, 'capabilities/main-wrapper.cjs'), 'utf8');
+const publicationAttestorSource = fs.readFileSync(
+  path.join(root, 'capabilities/publication-attestor.cjs'),
+  'utf8'
+);
 const preloadSource = fs.readFileSync(path.join(root, 'preload.cjs'), 'utf8');
 const rendererSource = fs.readFileSync(path.join(root, 'renderer-core.js'), 'utf8');
 const rendererActionsSource = fs.readFileSync(path.join(root, 'renderer-actions.js'), 'utf8');
@@ -171,21 +181,35 @@ assert.deepEqual(
   [{ type: 'image', data: 'cG5n', mimeType: 'image/png' }]
 );
 assert.ok(mainSource.includes("type: 'artifact_created'"));
+assert.ok(mainSource.includes('publicationAttestor?.attestRuntimeEvent(payload)'));
+assert.ok(mainWrapperSource.includes('createPublicationAttestor'));
+assert.ok(mainWrapperSource.includes('publicationAttestor,'));
+assert.ok(publicationAttestorSource.includes("createHmac('sha256'"));
+assert.ok(publicationAttestorSource.includes('timingSafeEqual'));
+assert.ok(mainSource.includes('WeatherConnector.createFixtureWeatherRun'));
+assert.ok(mainSource.includes('WeatherConnector.fixtureRuntimeEvents'));
 assert.ok(mainSource.includes("type: 'team_member_started'"));
 assert.ok(mainSource.includes('async runTeamTurn('));
 assert.ok(mainSource.includes('sanitizeAcpPayload(update.content)'));
 assert.ok(rendererActionsSource.includes("case 'artifact_created'"));
+assert.ok(rendererActionsSource.includes("case 'evidence_created'"));
 assert.ok(rendererActionsSource.includes("case 'team_synthesis_started'"));
-assert.ok(rendererActionsSource.includes('assistant.artifactIds ='));
+assert.ok(rendererActionsSource.includes("const key = kind === 'artifact' ? 'artifactIds' : 'evidenceIds'"));
+assert.ok(rendererActionsSource.includes('assistant[key] ='));
 assert.ok(rendererSource.includes('function renderMessageArtifacts(message, task)'));
 assert.ok(rendererSource.includes('function renderTeamCollaborationBar(task, expert)'));
 assert.ok(rendererSource.includes('function renderArtifactPreviewPanel(task)'));
+assert.ok(rendererSource.includes('function renderTaskPublicationPanel(task)'));
+assert.ok(rendererSource.includes('data-publication-toggle'));
+assert.ok(rendererSource.includes('data-publication-sign'));
+assert.ok(rendererSource.includes('data-publication-revoke'));
 assert.ok(rendererSource.includes("'专家协作中'"));
 assert.ok(rendererSource.includes('class="message-artifact-gallery"'));
 assert.ok(responseStylesSource.includes('.message-artifact-image img'));
 const capabilityRenderSource = fs.readFileSync(path.join(root, 'capability-center/render.js'), 'utf8');
 const stateStoreSource = fs.readFileSync(path.join(root, 'harness/state-store.js'), 'utf8');
 const stateRestoreSource = fs.readFileSync(path.join(root, 'harness/state-restore.js'), 'utf8');
+const runtimeRecordsSource = fs.readFileSync(path.join(root, 'harness/runtime-records.js'), 'utf8');
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 const documentsManifest = JSON.parse(
   fs.readFileSync(path.join(root, 'bundled-skills/documents/meteomate.json'), 'utf8')
@@ -197,6 +221,12 @@ const documentsSkill = fs.readFileSync(
 assert.ok(documentsSkill.includes(`version: "${documentsManifest.version}"`));
 
 assert.ok(rendererActionsSource.includes('function latestAssistantMessage(task)'));
+assert.ok(rendererActionsSource.includes('async function checkTaskPublication(task,'));
+assert.ok(rendererActionsSource.includes('async function signTaskPublication(task)'));
+assert.ok(rendererActionsSource.includes('async function revokeTaskPublication(task)'));
+assert.ok(preloadSource.includes("ipcRenderer.invoke('publication:check'"));
+assert.ok(preloadSource.includes("ipcRenderer.invoke('publication:sign'"));
+assert.ok(preloadSource.includes("ipcRenderer.invoke('publication:revoke'"));
 assert.ok(rendererActionsSource.includes('const assistant = currentStreamingAssistant(task);\n  if (!assistant) return null;'));
 assert.ok(rendererActionsSource.includes("task.status === 'running' ? ensureStreamingAssistant(task) : null"));
 assert.ok(rendererActionsSource.includes('currentStreamingAssistant(task) || latestAssistantMessage(task)'));
@@ -456,9 +486,10 @@ assert.ok(stateStoreSource.includes('function migrateLegacyState'));
 assert.ok(stateRestoreSource.includes('ContextCompiler.compileTaskContext'));
 assert.ok(stateRestoreSource.includes('TaskStateMachine.beginRunAttempt'));
 assert.ok(stateRestoreSource.includes('TaskStateMachine.finishRunAttempt'));
-assert.ok(stateRestoreSource.includes("event.type === 'artifact_created'"));
-assert.ok(stateRestoreSource.includes("event.type === 'evidence_created'"));
-assert.equal(packageJson.version, '0.2.0-beta.1');
+assert.ok(stateRestoreSource.includes('RuntimeRecords.recordRuntimeEvent'));
+assert.ok(runtimeRecordsSource.includes("event.type === 'artifact_created'"));
+assert.ok(runtimeRecordsSource.includes("event.type === 'evidence_created'"));
+assert.equal(packageJson.version, '0.2.0-beta.2');
 assert.ok(packageJson.scripts.check.includes('tests/harness.cjs'));
 assert.ok(packageJson.scripts.check.includes('tests/schema-contracts.cjs'));
 

@@ -79,6 +79,10 @@ assert.ok(connectorsSource.includes('data-tool-search-input'));
 assert.ok(connectorsSource.includes('该工具服务未提供描述'));
 assert.ok(capabilityRenderSource.includes('item.toolCount'));
 assert.ok(capabilityRenderSource.includes('tool.description'));
+assert.ok(capabilityRenderSource.includes('maturityLabel(item.maturity)'));
+assert.ok(capabilityCoreSource.includes("binding ? 'experimental'"));
+assert.ok(connectorsSource.includes('toolMaturityLabel'));
+assert.ok(connectorsSource.includes('connector-tool-maturity'));
 assert.ok(![rendererSource, capabilityRenderSource, connectorsSource].some((source) => source.includes('连接器')));
 assert.ok(rendererSource.includes('new-task-launchpad'));
 assert.ok(rendererSource.includes('composer-more-popover'));
@@ -161,7 +165,7 @@ const managedConnectorPersistence = managedConnectorUiContext.MeteoMateCapabilit
 const capabilityContext = {
   catalog: {
     skills: [{ id: 'docx-template', name: 'Word 模板填充', status: 'planned' }],
-    connectors: [],
+    connectors: [{ id: 'weather-data', name: '气象数据中心', status: 'beta', maturity: 'beta' }],
   },
   state: { projects: [] },
   getActiveProject: () => ({ id: 'project-a' }),
@@ -223,6 +227,22 @@ assert.deepEqual(
 assert.equal(projectSelectableSkills.find((item) => item.id === 'synoptic-analysis').status, 'skillhub');
 assert.equal(projectSelectableSkills.find((item) => item.id === 'synoptic-analysis').remoteSkill.latestVersion, '1.0.0');
 assert.ok(!projectSelectableSkills.some((item) => item.id === 'docx-template'));
+assert.equal(capabilityApi.connectorCatalog().find((item) => item.id === 'weather-data').maturity, 'beta');
+
+const normalizedToolTest = ConnectorClient.normalizeLastTest({
+  ok: true,
+  result: {
+    tools: [
+      { name: 'weather_query_dataset', annotations: { maturity: 'beta' } },
+      { name: 'weather_get_case', maturity: 'demo' },
+      { name: 'third_party_tool', maturity: 'unknown' },
+    ],
+  },
+});
+assert.deepEqual(
+  normalizedToolTest.result.tools.map((tool) => tool.maturity),
+  ['beta', 'demo', null],
+);
 
 const runtimeRequests = [];
 const runtimeSkillContext = {

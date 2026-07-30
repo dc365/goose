@@ -9,6 +9,17 @@
     return new Date(value).toLocaleString('zh-CN', { hour12: false });
   }
 
+  function toolMaturityLabel(value) {
+    return {
+      planned: '规划中',
+      demo: '构造 Demo',
+      experimental: '实验',
+      beta: 'Beta',
+      production: '生产',
+      deprecated: '已弃用',
+    }[value] || '';
+  }
+
   function managedRuntimeSummary(lastTest) {
     const runtime = lastTest?.result?.runtime;
     if (!runtime) return '';
@@ -55,6 +66,10 @@
     const toolItems = tools.map((tool) => {
       const name = String(tool.name || '未命名工具');
       const description = String(tool.description || '').trim();
+      const maturity = String(tool.maturity || '').trim().toLowerCase();
+      const maturityBadge = toolMaturityLabel(maturity)
+        ? `<span class="connector-tool-maturity maturity-${escapeHtml(maturity)}">${escapeHtml(toolMaturityLabel(maturity))}</span>`
+        : '';
       const parameters = Array.isArray(tool.parameters) ? tool.parameters : [];
       const required = new Set(Array.isArray(tool.requiredParameters) ? tool.requiredParameters : []);
       const parameterSummary = parameters.length
@@ -62,7 +77,7 @@
         : '';
       return `<article class="connector-tool-item" data-tool-search="${escapeHtml(`${name} ${description}`.toLocaleLowerCase())}">
         <div class="connector-tool-glyph" aria-hidden="true">ƒ</div>
-        <div class="connector-tool-content"><code class="connector-tool-name">${escapeHtml(name)}</code><p class="${description ? '' : 'is-empty'}">${escapeHtml(description || '该工具服务未提供描述。')}</p>${parameterSummary}</div>
+        <div class="connector-tool-content"><div class="connector-tool-heading"><code class="connector-tool-name">${escapeHtml(name)}</code>${maturityBadge}</div><p class="${description ? '' : 'is-empty'}">${escapeHtml(description || '该工具服务未提供描述。')}</p>${parameterSummary}</div>
       </article>`;
     }).join('');
     const checkedAt = discoveryTime(lastTest.checkedAt);

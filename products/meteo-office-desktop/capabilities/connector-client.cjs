@@ -161,9 +161,15 @@ function normalizeDiscoveredTool(tool = {}) {
     : annotations.effects && typeof annotations.effects === 'object'
       ? { ...annotations.effects }
       : {};
+  const declaredMaturity = String(tool.maturity || annotations.maturity || '').trim().toLowerCase();
+  const maturity = ['planned', 'demo', 'experimental', 'beta', 'production', 'deprecated']
+    .includes(declaredMaturity)
+    ? declaredMaturity
+    : null;
   return {
     name: String(tool.name || '').slice(0, 512),
     description: String(tool.description || '').slice(0, 12000),
+    maturity,
     parameters,
     requiredParameters: required,
     annotations,

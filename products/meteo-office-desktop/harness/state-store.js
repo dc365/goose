@@ -5,16 +5,72 @@
   const Task = isNode ? require('./task-state-machine') : root.MeteoMateHarness.TaskStateMachine;
   const Artifact = isNode ? require('./artifact-registry') : root.MeteoMateHarness.ArtifactRegistry;
   const Evidence = isNode ? require('./evidence-ledger') : root.MeteoMateHarness.EvidenceLedger;
-  const api = factory(Shared, Project, Task, Artifact, Evidence);
+  const PublicationState = isNode ? require('./publication-state') : root.MeteoMateHarness.PublicationState;
+  const api = factory(Shared, Project, Task, Artifact, Evidence, PublicationState);
   if (isNode) module.exports = api;
   root.MeteoMateHarness = root.MeteoMateHarness || {};
   root.MeteoMateHarness.StateStore = api;
-})(typeof globalThis !== 'undefined' ? globalThis : this, function (Shared, Project, Task, Artifact, Evidence) {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (
+  Shared,
+  Project,
+  Task,
+  Artifact,
+  Evidence,
+  PublicationState
+) {
   'use strict';
 
   const STORAGE_KEY = 'meteomate-desktop-state-v2';
   const LEGACY_STORAGE_KEY = 'meteo-office-desktop-state-v1';
   const BACKUP_KEY = 'meteomate-desktop-state-bootstrap-backup-v1';
+  const DEFAULT_STORAGE_LIMITS = Object.freeze({
+    messages: 120,
+    activities: 80,
+    artifacts: 40,
+    evidence: 200,
+    harnessEvents: 200,
+  });
+
+  function tail(value, limit) {
+    return (Array.isArray(value) ? value : []).slice(-Math.max(0, Number(limit) || 0));
+  }
+
+  function compactTaskForStorage(task = {}, limits = {}) {
+    const configured = { ...DEFAULT_STORAGE_LIMITS, ...limits };
+    const signed = task.publication?.signoff?.approved === true;
+    const referencedEvidenceIds = PublicationState.referencedEvidenceIds(
+      PublicationState.analysisForTask(task)
+    );
+    const recentEvidence = tail(task.evidence, configured.evidence);
+    const retainedEvidenceIds = new Set(recentEvidence.map((record) => record?.id).filter(Boolean));
+    const evidence = (task.evidence || []).filter((record) =>
+      retainedEvidenceIds.has(record?.id) || referencedEvidenceIds.has(String(record?.id || ''))
+    );
+    const compacted = {
+      ...task,
+      messages: tail(task.messages, configured.messages),
+      activities: tail(task.activities, configured.activities),
+      artifacts: signed ? [...(task.artifacts || [])] : tail(task.artifacts, configured.artifacts),
+      evidence,
+      harnessEvents: tail(task.harnessEvents, configured.harnessEvents),
+      pendingPermissions: [],
+    };
+    if (
+      task.id
+      && task.publication
+      && !PublicationState.requestMatchesTask(task, PublicationState.requestForTask(compacted))
+    ) {
+      compacted.publication = {
+        ...task.publication,
+        signoff: null,
+        gate: null,
+        checkedAt: null,
+        error: null,
+        dirty: true,
+      };
+    }
+    return compacted;
+  }
 
   function clonePlan(planFactory, completed = false) {
     const source = typeof planFactory === 'function' ? planFactory() : [];
@@ -237,6 +293,8 @@
     STORAGE_KEY,
     LEGACY_STORAGE_KEY,
     BACKUP_KEY,
+    DEFAULT_STORAGE_LIMITS,
+    compactTaskForStorage,
     normalizeStoredTask,
     normalizeStoredState,
     migrateLegacyState,
