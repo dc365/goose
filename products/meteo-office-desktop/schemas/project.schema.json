@@ -11,6 +11,7 @@
     "name": { "type": "string", "minLength": 1 },
     "version": { "type": "string", "minLength": 1 },
     "workspace": { "type": "string" },
+    "sharing": { "$ref": "#/$defs/sharing" },
     "spec": {
       "type": "object",
       "required": ["instructions", "workspaces", "meteorologicalContext", "capabilities", "assets", "policies", "outputs"],
@@ -24,8 +25,10 @@
             "properties": {
               "id": { "type": "string" },
               "root": { "type": "string" },
+              "uri": { "type": "string" },
               "access": { "enum": ["read-only", "read-write-approved", "trusted-workspace"] }
-            }
+            },
+            "additionalProperties": true
           }
         },
         "meteorologicalContext": {
@@ -71,8 +74,37 @@
             "modelPolicy": { "type": "string" }
           }
         },
-        "outputs": { "type": "object" }
+        "outputs": { "type": "object" },
+        "sharing": { "$ref": "#/$defs/sharing" }
       }
+    }
+  },
+  "$defs": {
+    "sharing": {
+      "type": "object",
+      "properties": {
+        "remoteId": { "type": "string" },
+        "revision": { "type": "integer", "minimum": 0 },
+        "ownerId": { "type": "string" },
+        "orgId": { "type": "string" },
+        "visibility": { "enum": ["private", "organization"] },
+        "workspaceURI": { "type": "string" },
+        "syncStatus": { "enum": ["local", "synced", "pending", "conflict", "error"] },
+        "syncedAt": { "type": ["string", "null"] },
+        "syncError": { "type": ["string", "null"] },
+        "members": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["userId", "role"],
+            "properties": {
+              "userId": { "type": "string" },
+              "role": { "enum": ["viewer", "editor", "owner"] }
+            }
+          }
+        }
+      },
+      "additionalProperties": false
     }
   }
 }

@@ -153,11 +153,21 @@ function normalizeDiscoveredTool(tool = {}) {
   const required = Array.isArray(declaredRequired)
     ? declaredRequired.map(String).filter((name) => parameters.includes(name))
     : [];
+  const annotations = tool.annotations && typeof tool.annotations === 'object' && !Array.isArray(tool.annotations)
+    ? { ...tool.annotations }
+    : {};
+  const effects = tool.effects && typeof tool.effects === 'object' && !Array.isArray(tool.effects)
+    ? { ...tool.effects }
+    : annotations.effects && typeof annotations.effects === 'object'
+      ? { ...annotations.effects }
+      : {};
   return {
     name: String(tool.name || '').slice(0, 512),
     description: String(tool.description || '').slice(0, 12000),
     parameters,
     requiredParameters: required,
+    annotations,
+    effects,
   };
 }
 

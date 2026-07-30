@@ -7,6 +7,7 @@ const ComputerConnector = require('../capabilities/computer-connector.js');
 const OfficeConnector = require('../capabilities/office-connector.js');
 
 const workspace = '/Users/test/Documents/MeteoMate/Claw/session';
+const strictContext = { workspace, securityMode: 'strict' };
 
 const tree = PermissionPolicy.classifyPermissionRequest(
   {
@@ -16,7 +17,7 @@ const tree = PermissionPolicy.classifyPermissionRequest(
       rawInput: { path: workspace, depth: 2 },
     },
   },
-  { workspace }
+  strictContext
 );
 assert.equal(tree.kind, 'read');
 assert.equal(tree.safeLocalRead, true);
@@ -33,7 +34,7 @@ const outsideTree = PermissionPolicy.classifyPermissionRequest(
       rawInput: { path: '/Users/test/Documents/Other', depth: 2 },
     },
   },
-  { workspace }
+  strictContext
 );
 assert.equal(outsideTree.outsideWorkspace, true);
 assert.equal(outsideTree.requiresSmartApproval, true);
@@ -41,25 +42,26 @@ assert.equal(PermissionPolicy.permissionHandling('artifact-approval', outsideTre
 
 const safeShell = PermissionPolicy.classifyPermissionRequest(
   { toolCall: { title: 'shell', kind: 'other', rawInput: { command: 'pwd' } } },
-  { workspace }
+  strictContext
 );
 assert.equal(safeShell.kind, 'execute');
 assert.equal(safeShell.requiresSmartApproval, false);
 
 const destructiveShell = PermissionPolicy.classifyPermissionRequest(
   { toolCall: { title: 'shell', kind: 'other', rawInput: { command: 'rm -rf output' } } },
-  { workspace }
+  strictContext
 );
 assert.equal(destructiveShell.requiresSmartApproval, true);
 
 const unknownTool = PermissionPolicy.classifyPermissionRequest(
   { toolCall: { title: 'custom action', kind: 'other', rawInput: {} } },
-  { workspace }
+  strictContext
 );
 assert.equal(unknownTool.requiresSmartApproval, true);
 
 const trustedHttpContext = {
   workspace,
+  securityMode: 'strict',
   connectors: [{
     id: 'fz-weather-mcp',
     transport: 'streamable-http',
@@ -115,6 +117,7 @@ assert.equal(PermissionPolicy.permissionHandling('analysis-readonly', sensitiveH
 
 const browserContext = {
   workspace,
+  securityMode: 'strict',
   connectors: [{
     id: BrowserConnector.ID,
     connectorType: 'browser',
@@ -172,6 +175,7 @@ assert.equal(PermissionPolicy.permissionHandling('artifact-approval', browserUns
 
 const computerContext = {
   workspace,
+  securityMode: 'strict',
   connectors: [{
     id: ComputerConnector.ID,
     connectorType: 'computer',
@@ -230,6 +234,7 @@ assert.equal(PermissionPolicy.permissionHandling('workspace-approval', computerB
 
 const officeContext = {
   workspace,
+  securityMode: 'strict',
   connectors: [{
     id: OfficeConnector.ID,
     connectorType: 'office',

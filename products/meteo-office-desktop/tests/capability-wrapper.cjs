@@ -28,7 +28,7 @@ for (const excludedPath of [
 assert.ok(!macPackageScript.includes("^/services($|/)"), 'Office MCP service must enter the desktop bundle');
 assert.ok(fs.existsSync(path.join(root, 'services', 'office-mcp', 'src', 'server.mjs')));
 assert.ok(macPackageScript.includes('cmp assets/icons/MeteoMate.icns'), 'packaging must verify the installed app icon bytes');
-assert.ok(!wrapperSource.includes('electron.safeStorage'), 'production startup must not access macOS Keychain');
+assert.ok(wrapperSource.includes('safeStorage: electron.safeStorage'), 'strict mode must receive the OS secure-storage backend');
 assert.ok(!knowledgeSource.includes('safeStorage'), 'knowledge sources must not access macOS Keychain');
 assert.ok(wrapperSource.includes('createProfileContext'));
 assert.ok(wrapperSource.includes('profileContext.registerIpc()'));
@@ -46,6 +46,7 @@ assert.ok(!mainSource.includes('global.__METEOMATE'));
 assert.ok(mainSource.includes('filterModelSettings(settings)'));
 assert.ok(mainSource.includes('saveModelPreference(request)'));
 assert.ok(mainSource.includes('enforceRuntimePolicy(request)'));
+assert.ok(mainSource.includes('!resolved.outsideWorkspace && resolved.relative !=='));
 assert.ok(preloadSource.includes('listCapabilities'));
 assert.ok(preloadSource.includes('inspectSkill'));
 assert.ok(preloadSource.includes('saveConnector'));

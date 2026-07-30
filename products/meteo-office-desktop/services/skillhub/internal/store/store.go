@@ -132,14 +132,20 @@ func ensureMaps(state *State) {
 	if state.Installations == nil {
 		state.Installations = map[string]*Installation{}
 	}
+	if state.Projects == nil {
+		state.Projects = map[string]*SharedProject{}
+	}
+	if state.ProjectRevisions == nil {
+		state.ProjectRevisions = map[string]*ProjectRevision{}
+	}
 	if state.APIVersion == "" {
 		state.APIVersion = "meteomate.ai/v1"
 	}
 	if state.Kind == "" {
 		state.Kind = "SkillHubState"
 	}
-	if state.Version < 2 {
-		state.Version = 2
+	if state.Version < 3 {
+		state.Version = 3
 	}
 }
 

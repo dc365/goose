@@ -1,7 +1,13 @@
 'use strict';
 
+const SafeWorkspace = require('./safe-workspace.cjs');
+const WeatherContracts = require('./weather/contracts.cjs');
+const WeatherProviders = require('./weather/providers.cjs');
+const WeatherDiagnosis = require('./weather/diagnosis.cjs');
+const WeatherRender = require('./weather/render.cjs');
+
 const SCHEMA_VERSION = 'meteomate.weather/v1';
-const SERVER_VERSION = '1.0.0';
+const SERVER_VERSION = '1.1.0';
 const CASE_ID = 'synthetic-fujian-rainstorm-001';
 
 const SYNTHETIC_CASE = Object.freeze({
@@ -124,16 +130,22 @@ const SYNTHETIC_CASE = Object.freeze({
 });
 
 const TOOL_DEFINITIONS = Object.freeze([
-  { name: 'weather_list_cases', group: 'weather-data', description: '列出内置可重复运行的气象演示案例及数据声明。', parameters: [] },
-  { name: 'weather_get_case', group: 'weather-data', description: '读取构造案例的元数据、实况、高空场、雷达、模式或预报稿。', parameters: ['caseId', 'sections'] },
-  { name: 'weather_get_station_observations', group: 'weather-data', description: '按站点或 24 小时降水阈值查询构造站点实况。', parameters: ['caseId', 'stationIds', 'minimumRain24h'] },
-  { name: 'weather_get_upper_air', group: 'weather-data', description: '读取构造高空层结、风场、水汽与对流参数。', parameters: ['caseId', 'levels'] },
-  { name: 'weather_compare_guidance', group: 'weather-data', description: '比较三套构造模式的雨量中心、时段与一致性。', parameters: ['caseId'] },
-  { name: 'weather_export_demo_bundle', group: 'weather-data', description: '把案例 JSON、站点 CSV 和分析 Markdown 导出到项目工作区。', parameters: ['caseId', 'outputDirectory'] },
-  { name: 'weather_diagnose_synoptic', group: 'weather-diagnosis', description: '识别构造案例中的副高、短波槽、低空急流和辐合系统。', parameters: ['caseId'] },
-  { name: 'weather_diagnose_heavy_rain', group: 'weather-diagnosis', description: '按水汽、抬升、不稳定、持续性和模式一致性输出强降水评分。', parameters: ['caseId'] },
-  { name: 'weather_diagnose_convection', group: 'weather-diagnosis', description: '输出短时强降水、雷暴大风和冰雹的分类风险与证据。', parameters: ['caseId'] },
-  { name: 'weather_render_risk_map', group: 'gis-map', description: '在项目工作区生成带数据声明、站点雨量和风险落区的可预览 HTML 示意图。', parameters: ['caseId', 'layer', 'outputPath'] },
+  { name: 'weather_list_sources', group: 'weather-data', description: '列出当前项目配置的本地或内网气象资料源及成熟度。', parameters: [], annotations: { readOnlyHint: true }, effects: { filesystemRead: 'workspace', risk: 'low' } },
+  { name: 'weather_query_dataset', group: 'weather-data', description: '从本地 JSON/CSV 或内网 HTTP/HTTPS JSON Provider 读取标准化气象资料集。', parameters: ['sourceId', 'datasetRef', 'query'], annotations: { readOnlyHint: true }, effects: { filesystemRead: 'workspace', networkRead: true, risk: 'medium' } },
+  { name: 'weather_validate_dataset', group: 'weather-data', description: '校验气象资料的来源、时次、区域、单位、质控与可发布性。', parameters: ['dataset'], annotations: { readOnlyHint: true }, effects: { risk: 'low' } },
+  { name: 'weather_build_evidence', group: 'weather-data', description: '把标准化气象资料转换为可登记、可过期和可追溯的 Evidence。', parameters: ['dataset'], annotations: { readOnlyHint: true }, effects: { risk: 'low' } },
+  { name: 'weather_diagnose_dataset', group: 'weather-diagnosis', description: '对真实资料执行可解释的形势、强降水和强对流算法，并生成诊断 Evidence。', parameters: ['dataset', 'kind'], annotations: { readOnlyHint: true }, effects: { risk: 'low' } },
+  { name: 'weather_render_dataset_map', group: 'gis-map', description: '在项目工作区内生成带来源、成熟度、诊断和 Evidence 血缘的 HTML 风险图。', parameters: ['dataset', 'diagnosis', 'evidence', 'outputPath'], annotations: { readOnlyHint: false }, effects: { filesystemWrite: 'workspace', risk: 'medium' } },
+  { name: 'weather_list_cases', group: 'weather-data', description: '列出内置可重复运行的气象演示案例及数据声明。', parameters: [], annotations: { readOnlyHint: true }, effects: { risk: 'low' } },
+  { name: 'weather_get_case', group: 'weather-data', description: '读取构造案例的元数据、实况、高空场、雷达、模式或预报稿。', parameters: ['caseId', 'sections'], annotations: { readOnlyHint: true }, effects: { risk: 'low' } },
+  { name: 'weather_get_station_observations', group: 'weather-data', description: '按站点或 24 小时降水阈值查询构造站点实况。', parameters: ['caseId', 'stationIds', 'minimumRain24h'], annotations: { readOnlyHint: true }, effects: { risk: 'low' } },
+  { name: 'weather_get_upper_air', group: 'weather-data', description: '读取构造高空层结、风场、水汽与对流参数。', parameters: ['caseId', 'levels'], annotations: { readOnlyHint: true }, effects: { risk: 'low' } },
+  { name: 'weather_compare_guidance', group: 'weather-data', description: '比较三套构造模式的雨量中心、时段与一致性。', parameters: ['caseId'], annotations: { readOnlyHint: true }, effects: { risk: 'low' } },
+  { name: 'weather_export_demo_bundle', group: 'weather-data', description: '把案例 JSON、站点 CSV 和分析 Markdown 导出到项目工作区。', parameters: ['caseId', 'outputDirectory'], annotations: { readOnlyHint: false }, effects: { filesystemWrite: 'workspace', risk: 'medium' } },
+  { name: 'weather_diagnose_synoptic', group: 'weather-diagnosis', description: '识别构造案例中的副高、短波槽、低空急流和辐合系统。', parameters: ['caseId'], annotations: { readOnlyHint: true }, effects: { risk: 'low' } },
+  { name: 'weather_diagnose_heavy_rain', group: 'weather-diagnosis', description: '按水汽、抬升、不稳定、持续性和模式一致性输出强降水评分。', parameters: ['caseId'], annotations: { readOnlyHint: true }, effects: { risk: 'low' } },
+  { name: 'weather_diagnose_convection', group: 'weather-diagnosis', description: '输出短时强降水、雷暴大风和冰雹的分类风险与证据。', parameters: ['caseId'], annotations: { readOnlyHint: true }, effects: { risk: 'low' } },
+  { name: 'weather_render_risk_map', group: 'gis-map', description: '在项目工作区生成带数据声明、站点雨量和风险落区的可预览 HTML 示意图。', parameters: ['caseId', 'layer', 'outputPath'], annotations: { readOnlyHint: false }, effects: { filesystemWrite: 'workspace', risk: 'medium' } },
 ]);
 
 const GROUP_TOOLS = Object.freeze({
@@ -145,8 +157,8 @@ const GROUP_TOOLS = Object.freeze({
 const PRESETS = Object.freeze({
   'weather-data': Object.freeze({
     id: 'weather-data',
-    name: '气象数据中心（演示数据）',
-    description: '读取 MeteoMate 内置构造案例的站点、高空场、雷达摘要和模式对比数据。',
+    name: '气象数据中心',
+    description: '读取项目配置的本地与内网 HTTP/HTTPS 资料源，并保留构造案例用于回归测试。',
     version: SERVER_VERSION,
     transport: 'stdio',
     command: 'MeteoMate Runtime',
@@ -158,8 +170,8 @@ const PRESETS = Object.freeze({
   }),
   'weather-diagnosis': Object.freeze({
     id: 'weather-diagnosis',
-    name: '天气诊断算法服务（演示）',
-    description: '对同一构造案例执行天气系统、强降水和强对流诊断，返回可追溯评分。',
+    name: '天气诊断算法服务',
+    description: '对标准化气象资料执行天气形势、强降水和强对流诊断，返回可追溯 Evidence。',
     version: SERVER_VERSION,
     transport: 'stdio',
     command: 'MeteoMate Runtime',
@@ -171,8 +183,8 @@ const PRESETS = Object.freeze({
   }),
   'gis-map': Object.freeze({
     id: 'gis-map',
-    name: 'GIS 制图服务（演示）',
-    description: '把构造站点雨量和风险落区生成带水印的 HTML 业务示意图。',
+    name: 'GIS 制图服务',
+    description: '把标准化资料、诊断和 Evidence 生成工作区内可预览的 HTML 风险图。',
     version: SERVER_VERSION,
     transport: 'stdio',
     command: 'MeteoMate Runtime',
@@ -205,10 +217,10 @@ function workspaceRoot(requestedWorkspace) {
   const { fs, path } = nodeModules();
   const workspace = path.resolve(String(requestedWorkspace || process.env.METEOMATE_WEATHER_WORKSPACE || ''));
   if (!requestedWorkspace && !process.env.METEOMATE_WEATHER_WORKSPACE) {
-    throw new Error('气象演示工具未绑定项目工作区');
+    throw new Error('气象工具服务未绑定项目工作区');
   }
   fs.mkdirSync(workspace, { recursive: true, mode: 0o700 });
-  return workspace;
+  return SafeWorkspace.canonicalRoot(workspace);
 }
 
 function resolveOutput(workspace, relativePath) {
@@ -574,10 +586,12 @@ function materialize(input = {}, { productRoot, workspace } = {}) {
       METEOMATE_WEATHER_WORKSPACE: root,
     },
     runtimeInfo: {
-      source: 'bundled-weather-demo',
+      source: 'bundled-weather-runtime',
       serverVersion: SERVER_VERSION,
       caseId: CASE_ID,
-      synthetic: true,
+      synthetic: false,
+      includesDemoFixture: true,
+      productionProviders: true,
     },
     managedPreset: preset.id,
     toolAllowlist: [...preset.toolAllowlist],
@@ -593,6 +607,8 @@ function discoveryResult(id) {
       description: tool.description,
       parameters: [...tool.parameters],
       requiredParameters: [],
+      annotations: { ...(tool.annotations || {}), effects: { ...(tool.effects || {}) } },
+      effects: { ...(tool.effects || {}) },
     }));
   return {
     ok: true,
@@ -601,16 +617,85 @@ function discoveryResult(id) {
     result: {
       ok: true,
       transport: 'stdio',
-      serverInfo: { name: 'meteomate-weather-demo', version: SERVER_VERSION },
+      serverInfo: { name: 'meteomate-weather-runtime', version: SERVER_VERSION },
       tools,
       runtime: {
-        source: 'bundled-weather-demo',
+        source: 'bundled-weather-runtime',
         serverVersion: SERVER_VERSION,
         caseId: CASE_ID,
         synthetic: true,
       },
     },
   };
+}
+
+
+async function executeTool(name, input = {}) {
+  const workspace = workspaceRoot();
+  switch (name) {
+    case 'weather_list_sources':
+      return WeatherProviders.listSources(workspace);
+    case 'weather_query_dataset':
+      return WeatherProviders.queryDataset({
+        workspace,
+        sourceId: input.sourceId,
+        datasetRef: input.datasetRef,
+        query: input.query || {},
+      });
+    case 'weather_validate_dataset': {
+      const dataset = WeatherContracts.normalizeDataset(input.dataset);
+      const validation = WeatherContracts.validateDataset(dataset);
+      return {
+        schemaVersion: WeatherContracts.DATASET_SCHEMA_VERSION,
+        dataset,
+        validation,
+        evidence: WeatherContracts.datasetEvidence(dataset),
+        publication: WeatherContracts.publicationAssessment(dataset, validation),
+      };
+    }
+    case 'weather_build_evidence': {
+      const dataset = WeatherContracts.normalizeDataset(input.dataset);
+      const validation = WeatherContracts.validateDataset(dataset);
+      return {
+        schemaVersion: WeatherContracts.DATASET_SCHEMA_VERSION,
+        datasetId: dataset.id,
+        datasetHash: dataset.contentHash,
+        validation,
+        evidence: WeatherContracts.datasetEvidence(dataset),
+        publication: WeatherContracts.publicationAssessment(dataset, validation),
+      };
+    }
+    case 'weather_diagnose_dataset':
+      return WeatherDiagnosis.diagnoseDataset(input.dataset, input.kind || 'all');
+    case 'weather_render_dataset_map': {
+      const dataset = WeatherContracts.normalizeDataset(input.dataset);
+      const validation = WeatherContracts.validateDataset(dataset);
+      const calculated = WeatherDiagnosis.diagnoseDataset(dataset, 'all');
+      const diagnosis = {
+        ...calculated.diagnosis,
+        algorithm: calculated.algorithm,
+      };
+      const evidence = calculated.evidence;
+      const artifact = WeatherRender.renderDatasetMap({
+        workspace,
+        dataset,
+        diagnosis,
+        evidence,
+        outputPath: input.outputPath,
+      });
+      return {
+        schemaVersion: WeatherContracts.DIAGNOSIS_SCHEMA_VERSION,
+        dataset,
+        validation,
+        diagnosis,
+        evidence,
+        artifact,
+        publication: WeatherContracts.publicationAssessment(dataset, validation),
+      };
+    }
+    default:
+      return toolOutput(name, input);
+  }
 }
 
 async function startServer() {
@@ -620,7 +705,26 @@ async function startServer() {
     import('zod/v4'),
   ]);
   const caseId = z.string().optional().default(CASE_ID);
+  const objectValue = z.record(z.string(), z.any());
   const schemas = {
+    weather_list_sources: {},
+    weather_query_dataset: {
+      sourceId: z.string().min(1).max(128),
+      datasetRef: z.string().max(1024).optional(),
+      query: objectValue.optional(),
+    },
+    weather_validate_dataset: { dataset: objectValue },
+    weather_build_evidence: { dataset: objectValue },
+    weather_diagnose_dataset: {
+      dataset: objectValue,
+      kind: z.enum(['all', 'synoptic', 'heavy-rain', 'convection']).optional().default('all'),
+    },
+    weather_render_dataset_map: {
+      dataset: objectValue,
+      diagnosis: objectValue.optional(),
+      evidence: z.array(objectValue).max(5000).optional(),
+      outputPath: z.string().max(512).optional().default('artifacts/weather/risk-map.html'),
+    },
     weather_list_cases: {},
     weather_get_case: {
       caseId,
@@ -649,14 +753,14 @@ async function startServer() {
       outputPath: z.string().max(512).optional().default('artifacts/meteomate-demo/risk-map.html'),
     },
   };
-  const server = new McpServer({ name: 'meteomate-weather-demo', version: SERVER_VERSION });
+  const server = new McpServer({ name: 'meteomate-weather-runtime', version: SERVER_VERSION });
   for (const definition of TOOL_DEFINITIONS) {
     server.registerTool(
       definition.name,
-      { description: definition.description, inputSchema: schemas[definition.name] },
+      { description: definition.description, inputSchema: schemas[definition.name], annotations: { ...(definition.annotations || {}), effects: { ...(definition.effects || {}) } } },
       async (input) => {
         try {
-          const result = toolOutput(definition.name, input);
+          const result = await executeTool(definition.name, input);
           return {
             content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
             structuredContent: result,
@@ -664,7 +768,7 @@ async function startServer() {
         } catch (error) {
           const result = {
             schemaVersion: SCHEMA_VERSION,
-            error: { code: 'WEATHER_DEMO_TOOL_FAILED', message: String(error?.message || error) },
+            error: { code: 'WEATHER_TOOL_FAILED', message: String(error?.message || error) },
           };
           return {
             isError: true,
@@ -690,6 +794,7 @@ module.exports = Object.freeze({
   materialize,
   discoveryResult,
   toolOutput,
+  executeTool,
   writeRiskMap,
   exportDemoBundle,
   createDemoArtifacts,

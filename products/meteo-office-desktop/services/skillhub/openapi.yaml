@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: MeteoMate SkillHub API
-  version: 1.5.0
+  version: 1.6.0
   description: Self-hosted registry for MeteoMate Experts and Agent Skills packages.
 servers:
   - url: http://127.0.0.1:8088
@@ -490,6 +490,92 @@ paths:
       security: [{bearerAuth: []}]
       responses:
         '200': {description: Installation metrics, version distribution, upgrade readiness, and pending publication reviews}
+  /v1/projects:
+    get:
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: query, in: query, required: false, schema: {type: string}}
+      responses:
+        '200': {description: Shared projects visible to the current actor}
+        '401': {description: Authentication required}
+    post:
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, visibility, spec]
+              properties:
+                name: {type: string, minLength: 1, maxLength: 120}
+                description: {type: string}
+                visibility: {type: string, enum: [private, organization]}
+                workspaceURI: {type: string, description: Shared URI without credentials, query, or fragment}
+                clientProjectId: {type: string}
+                spec: {type: object, additionalProperties: true}
+      responses:
+        '201': {description: Shared project created}
+        '409': {description: Invalid shared workspace URI or project conflict}
+  /v1/projects/{id}:
+    get:
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200': {description: Shared project}
+        '404': {description: Project missing or not visible}
+    put:
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [baseRevision]
+              properties:
+                baseRevision: {type: integer, minimum: 1}
+                name: {type: string, minLength: 1, maxLength: 120}
+                description: {type: string}
+                visibility: {type: string, enum: [private, organization]}
+                workspaceURI: {type: string}
+                clientProjectId: {type: string}
+                spec: {type: object, additionalProperties: true}
+      responses:
+        '200': {description: Shared project updated}
+        '403': {description: Editor permission required}
+        '409': {description: Stale baseRevision or validation conflict}
+  /v1/projects/{id}/members/{userId}:
+    put:
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+        - {name: userId, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role, baseRevision]
+              properties:
+                role: {type: string, enum: [viewer, editor, owner]}
+                baseRevision: {type: integer, minimum: 1}
+      responses:
+        '200': {description: Member updated or ownership transferred}
+        '403': {description: Owner or administrator permission required}
+    delete:
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+        - {name: userId, in: path, required: true, schema: {type: string}}
+        - {name: baseRevision, in: query, required: true, schema: {type: integer, minimum: 1}}
+      responses:
+        '200': {description: Member removed}
+        '403': {description: Owner or administrator permission required}
 components:
   schemas:
     LoginRequest:

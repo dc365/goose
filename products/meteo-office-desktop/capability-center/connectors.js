@@ -17,6 +17,11 @@
         .replace(/\s+·/g, ' ·')
         .trim();
     }
+    if (runtime.source === 'bundled-weather-runtime') {
+      return `产品内置气象 MCP ${runtime.serverVersion || ''} · 本地/内网 Provider · 构造案例仅用于回归`
+        .replace(/\s+·/g, ' ·')
+        .trim();
+    }
     if (runtime.driverVersion) {
       const source = {
         'bundled-runtime': '产品内置运行时',
@@ -169,7 +174,7 @@
           </div>
         </section>
         <section class="connector-editor-section connector-secret-section">
-          <div class="connector-section-heading"><div><span>03</span><h3>本机环境变量</h3></div><p>每行填写一个 KEY=VALUE，仅保存在当前用户本机，当前版本未使用钥匙串加密。</p></div>
+          <div class="connector-section-heading"><div><span>03</span><h3>本机环境变量</h3></div><p>每行填写一个 KEY=VALUE；默认保存在当前用户配置目录，不调用系统钥匙串或本机安全验证。</p></div>
           <label class="connector-secret-field"><textarea id="connector-env" rows="3" spellcheck="false" placeholder="API_KEY=..."></textarea></label>
         </section>
         <section class="connector-editor-section">

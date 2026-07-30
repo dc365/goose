@@ -28,7 +28,7 @@ const nmcSkillSource = fs.readFileSync(path.resolve(__dirname, '..', 'bundled-sk
 const nmcSkillSidecar = JSON.parse(fs.readFileSync(path.resolve(__dirname, '..', 'bundled-skills', 'nmc-upper-air-chart-analysis', 'meteomate.json'), 'utf8'));
 const synopticSkillSource = fs.readFileSync(path.resolve(__dirname, '..', 'bundled-skills', 'synoptic-analysis', 'SKILL.md'), 'utf8');
 const synopticSkillSidecar = JSON.parse(fs.readFileSync(path.resolve(__dirname, '..', 'bundled-skills', 'synoptic-analysis', 'meteomate.json'), 'utf8'));
-assert.ok(connectorsSource.includes('未使用钥匙串加密'));
+assert.ok(connectorsSource.includes('不调用系统钥匙串'));
 assert.ok(!connectorsSource.includes('值将加密保存'));
 assert.ok(rendererSource.includes('专家 · 技能 · 工具'));
 assert.ok(rendererSource.includes("catalogTabButton('connectors', '工具')"));
@@ -490,10 +490,10 @@ const connectorResult = service.saveConnector({
 });
 assert.deepEqual(connectorResult.connector.secretKeys.env, ['API_TOKEN']);
 assert.equal(Object.prototype.hasOwnProperty.call(connectorResult.connector, 'secrets'), false);
-assert.equal(connectorResult.connector.secretStorage, 'local-obfuscated');
+assert.equal(connectorResult.connector.secretStorage, 'secret-ref');
 const registryPath = path.join(userData, 'capabilities', 'registry.json');
 const storedRegistry = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
-assert.equal(storedRegistry.connectors[0].secrets.scheme, 'local-obfuscated');
+assert.equal(storedRegistry.connectors[0].secrets.scheme, 'secret-ref');
 assert.equal(fs.statSync(registryPath).mode & 0o777, 0o600);
 const connectorUpdate = service.saveConnector({
   id: 'weather-data-local',
@@ -577,7 +577,12 @@ service.saveConnector({
     result: {
       transport: 'streamable-http',
       tools: [
-        { name: 'get_weather', description: '查询天气' },
+        {
+          name: 'get_weather',
+          description: '查询天气',
+          annotations: { readOnlyHint: true },
+          effects: { readOnly: true, networkRead: true, allowedHosts: ['weather.internal'] },
+        },
         { name: 'make_product', description: '生成产品' },
       ],
     },
@@ -595,8 +600,13 @@ assert.deepEqual(service.permissionContextForRequest({
     explicitToolSelection: true,
     selectedTools: ['get_weather'],
     tools: [
-      { name: 'get_weather', description: '查询天气' },
-      { name: 'make_product', description: '生成产品' },
+      {
+        name: 'get_weather',
+        description: '查询天气',
+        annotations: { readOnlyHint: true },
+        effects: { readOnly: true, networkRead: true, allowedHosts: ['weather.internal'] },
+      },
+      { name: 'make_product', description: '生成产品', annotations: {}, effects: {} },
     ],
   }],
 });

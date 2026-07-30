@@ -200,6 +200,8 @@ type State struct {
 	Collections         map[string]*Collection         `json:"collections"`
 	RecommendationRules map[string]*RecommendationRule `json:"recommendationRules"`
 	Installations       map[string]*Installation       `json:"installations"`
+	Projects            map[string]*SharedProject      `json:"projects"`
+	ProjectRevisions    map[string]*ProjectRevision    `json:"projectRevisions"`
 	UpdatedAt           time.Time                      `json:"updatedAt"`
 }
 
@@ -207,7 +209,7 @@ func EmptyState() State {
 	return State{
 		APIVersion:          "meteomate.ai/v1",
 		Kind:                "SkillHubState",
-		Version:             2,
+		Version:             3,
 		Skills:              map[string]*Skill{},
 		SkillVersions:       map[string]*SkillVersion{},
 		Experts:             map[string]*Expert{},
@@ -215,6 +217,8 @@ func EmptyState() State {
 		Collections:         map[string]*Collection{},
 		RecommendationRules: map[string]*RecommendationRule{},
 		Installations:       map[string]*Installation{},
+		Projects:            map[string]*SharedProject{},
+		ProjectRevisions:    map[string]*ProjectRevision{},
 	}
 }
 

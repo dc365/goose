@@ -25,6 +25,8 @@ const ComputerPip = require('./capabilities/computer-pip-controller.cjs');
 const OfficeArtifactCollector = require('./capabilities/office-artifact-collector.cjs');
 const ArtifactPreview = require('./capabilities/artifact-preview.cjs');
 const WeatherConnector = require('./capabilities/weather-connector.js');
+const WeatherResultCollector = require('./capabilities/weather-result-collector.cjs');
+const SafeWorkspace = require('./capabilities/safe-workspace.cjs');
 const ProjectWorkspace = require('./capabilities/project-workspace.cjs');
 const SessionPlatformExtensions = require('./capabilities/session-platform-extensions.cjs');
 const ContextWindow = require('./harness/context-window');
@@ -303,23 +305,16 @@ function sendRuntimeProgress(taskId, stage, detail = {}) {
 }
 
 async function resolveWorkspaceRoot(workspace) {
-  const requested = String(workspace || '').trim();
-  if (!requested || !path.isAbsolute(requested)) throw new Error('请先选择有效的项目工作区');
-  let resolved;
-  let stat;
-  try {
-    resolved = await fs.promises.realpath(requested);
-    stat = await fs.promises.stat(resolved);
-  } catch {
-    throw new Error('项目工作区不存在或无法访问');
-  }
-  if (!stat.isDirectory()) throw new Error('项目工作区不是目录');
-  return resolved;
+  return SafeWorkspace.canonicalRoot(workspace);
 }
 
 function isInsideWorkspace(root, candidate) {
-  const relative = path.relative(root, candidate);
-  return relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
+  try {
+    const resolved = SafeWorkspace.resolveInside(root, candidate, { allowMissing: true });
+    return !resolved.outsideWorkspace && resolved.relative !== '';
+  } catch {
+    return false;
+  }
 }
 
 function composerFileKind(extension) {
@@ -1935,6 +1930,16 @@ class GooseAcpRuntime {
             extensionName: toolCall.extensionName,
           }
         ));
+        const teamWeatherRecords = WeatherResultCollector.collectWeatherRecords(
+          [update.structuredContent, update.content, update.rawOutput, update.result],
+          {
+            workspace: this.sessionPermissionMap.get(notification.sessionId)?.workspace,
+            sessionId: notification.sessionId,
+            toolCallId: update.toolCallId,
+            extensionName: toolCall.extensionName,
+          }
+        );
+        artifacts.push(...teamWeatherRecords.artifacts);
         sendRuntimeEvent({
           ...common,
           type: 'team_member_activity',
@@ -1958,6 +1963,21 @@ class GooseAcpRuntime {
               ...artifact,
               metadata: {
                 ...(artifact.metadata || {}),
+                teamMemberId: member.nodeId,
+                teamMemberName: member.name,
+              },
+            },
+          });
+        });
+        teamWeatherRecords.evidence.forEach((record) => {
+          sendRuntimeEvent({
+            ...common,
+            type: 'evidence_created',
+            toolCallId: update.toolCallId,
+            evidence: {
+              ...record,
+              metadata: {
+                ...(record.metadata || {}),
                 teamMemberId: member.nodeId,
                 teamMemberName: member.name,
               },
@@ -2061,6 +2081,16 @@ class GooseAcpRuntime {
               extensionName: toolCall.extensionName,
             }
           ));
+          const weatherRecords = WeatherResultCollector.collectWeatherRecords(
+            [update.structuredContent, update.content, update.rawOutput, update.result],
+            {
+              workspace: this.sessionPermissionMap.get(notification.sessionId)?.workspace,
+              sessionId: notification.sessionId,
+              toolCallId: update.toolCallId,
+              extensionName: toolCall.extensionName,
+            }
+          );
+          artifacts.push(...weatherRecords.artifacts);
         sendRuntimeEvent({
           ...common,
           type: 'tool_call_updated',
@@ -2078,6 +2108,14 @@ class GooseAcpRuntime {
             type: 'artifact_created',
             toolCallId: update.toolCallId,
             artifact,
+          });
+        });
+        weatherRecords.evidence.forEach((record) => {
+          sendRuntimeEvent({
+            ...common,
+            type: 'evidence_created',
+            toolCallId: update.toolCallId,
+            evidence: record,
           });
         });
         break;

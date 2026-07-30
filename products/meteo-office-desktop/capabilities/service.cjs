@@ -42,6 +42,7 @@ function createCapabilityService({
   shell,
   productRoot,
   profileContext,
+  secretStore,
   computerRuntime,
   homeDir = os.homedir(),
 }) {
@@ -165,7 +166,7 @@ function createCapabilityService({
       });
       const { record, secrets } = ConnectorClient.normalizeConnector(materialized);
       record.lastTest = ConnectorClient.normalizeLastTest(WeatherConnector.discoveryResult(preset.id));
-      record.secrets = encodeSecrets(secrets);
+      record.secrets = encodeSecrets(secrets, preset.id);
       getRegistry().upsertConnector(record);
     }
   }
@@ -254,20 +255,20 @@ function createCapabilityService({
     }
   }
 
-  function encodeSecrets(secrets) {
-    const payload = JSON.stringify(secrets || {});
-    return { scheme: 'local-obfuscated', data: Buffer.from(payload, 'utf8').toString('base64') };
+  const volatileSecrets = new Map();
+
+  function connectorSecretRef(id) {
+    const connectorId = sanitizePathSegment(id || 'connector');
+    return secretStore?.reference?.('connector', connectorId) || `connector:${connectorId}`;
   }
 
-  function decodeSecrets(secretRecord) {
+  function decodeLegacySecrets(secretRecord) {
     if (!secretRecord?.data) return { env: {}, headers: {} };
     if (!['local-obfuscated', 'local-base64', 'base64-plain'].includes(secretRecord.scheme)) {
       return { env: {}, headers: {} };
     }
     try {
-      const buffer = Buffer.from(secretRecord.data, 'base64');
-      const text = buffer.toString('utf8');
-      const parsed = JSON.parse(text);
+      const parsed = JSON.parse(Buffer.from(secretRecord.data, 'base64').toString('utf8'));
       return {
         env: parsed?.env && typeof parsed.env === 'object' ? parsed.env : {},
         headers: parsed?.headers && typeof parsed.headers === 'object' ? parsed.headers : {},
@@ -275,6 +276,52 @@ function createCapabilityService({
     } catch {
       return { env: {}, headers: {} };
     }
+  }
+
+  function encodeSecrets(secrets, connectorId = 'connector') {
+    const normalized = {
+      env: secrets?.env && typeof secrets.env === 'object' ? secrets.env : {},
+      headers: secrets?.headers && typeof secrets.headers === 'object' ? secrets.headers : {},
+    };
+    const ref = connectorSecretRef(connectorId);
+    if (!Object.keys(normalized.env).length && !Object.keys(normalized.headers).length) {
+      secretStore?.remove?.(ref);
+      volatileSecrets.delete(ref);
+      return null;
+    }
+    if (secretStore) return secretStore.put(ref, normalized, { kind: 'connector', connectorId: String(connectorId) });
+    volatileSecrets.set(ref, normalized);
+    return { scheme: 'secret-ref', ref, volatile: true };
+  }
+
+  function decodeSecrets(secretRecord) {
+    if (!secretRecord) return { env: {}, headers: {} };
+    if (secretRecord.scheme === 'secret-ref' && secretRecord.ref) {
+      return secretStore?.get?.(secretRecord.ref, null)
+        || volatileSecrets.get(secretRecord.ref)
+        || { env: {}, headers: {} };
+    }
+    if (secretStore?.state?.().mode === 'strict') return { env: {}, headers: {} };
+    return decodeLegacySecrets(secretRecord);
+  }
+
+  function migrateConnectorSecrets(record) {
+    if (!record?.id || !record.secrets || record.secrets.scheme === 'secret-ref') return record;
+    try {
+      const migrated = encodeSecrets(decodeLegacySecrets(record.secrets), record.id);
+      record.secrets = migrated;
+      record.updatedAt = Date.now();
+      getRegistry().upsertConnector(record);
+    } catch {
+      // Leave the record untouched so a later run with secure storage can migrate it.
+    }
+    return record;
+  }
+
+  function removeConnectorSecrets(record) {
+    const ref = record?.secrets?.ref || connectorSecretRef(record?.id || 'connector');
+    secretStore?.remove?.(ref);
+    volatileSecrets.delete(ref);
   }
 
   function redactConnector(record) {
@@ -285,7 +332,9 @@ function createCapabilityService({
       env: Object.keys(secrets.env || {}),
       headers: Object.keys(secrets.headers || {}),
     };
+    const state = secretStore?.state?.() || { encryptionAvailable: false, backend: 'volatile-test-only' };
     copy.secretStorage = record.secrets?.scheme || 'none';
+    copy.secretBackend = record.secrets?.scheme === 'secret-ref' ? state.backend : record.secrets?.scheme || 'none';
     return copy;
   }
 
@@ -712,6 +761,9 @@ function createCapabilityService({
 
   function registrySnapshot() {
     ensureDemoWeatherConnectors();
+    if (secretStore) {
+      for (const connector of getRegistry().load().connectors) migrateConnectorSecrets(connector);
+    }
     const snapshot = getRegistry().snapshot();
     return {
       ...snapshot,
@@ -726,7 +778,8 @@ function createCapabilityService({
       })),
       experts: snapshot.experts,
       organizationPolicy: profileContext?.policyContext() || null,
-      encryptionAvailable: false,
+      encryptionAvailable: Boolean(secretStore?.state?.().encryptionAvailable),
+      secretStorage: secretStore?.state?.() || { encryptionAvailable: false, backend: 'volatile-test-only' },
     };
   }
 
@@ -924,7 +977,7 @@ function createCapabilityService({
     record.lastTest = Object.prototype.hasOwnProperty.call(input, 'lastTest')
       ? ConnectorClient.normalizeLastTest(input.lastTest)
       : existing?.lastTest || null;
-    record.secrets = encodeSecrets(mergedSecrets);
+    record.secrets = encodeSecrets(mergedSecrets, record.id);
     getRegistry().upsertConnector(record);
     if (ComputerConnector.isComputerConnector(record) && record.enabled === false) {
       void computerRuntimeManager.stop();
@@ -1002,6 +1055,7 @@ function createCapabilityService({
   function deleteConnector(id) {
     const record = getRegistry().getConnector(id);
     const removed = getRegistry().removeConnector(id);
+    if (removed && record) removeConnectorSecrets(record);
     if (removed && ComputerConnector.isComputerConnector(record)) {
       void computerRuntimeManager.stop();
     }
@@ -1077,6 +1131,12 @@ function createCapabilityService({
             ? connector.lastTest.result.tools.map((tool) => ({
                 name: String(tool.name || ''),
                 description: String(tool.description || ''),
+                annotations: tool.annotations && typeof tool.annotations === 'object'
+                  ? { ...tool.annotations }
+                  : {},
+                effects: tool.effects && typeof tool.effects === 'object'
+                  ? { ...tool.effects }
+                  : {},
               }))
             : [],
         };

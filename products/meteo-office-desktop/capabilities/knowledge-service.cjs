@@ -62,7 +62,7 @@ function difyRetrieveEndpoint(baseUrl, datasetId) {
   return `${versionedBase}/datasets/${encodeURIComponent(datasetId)}/retrieve`;
 }
 
-function createKnowledgeService({ dialog, ipcMain, profileContext }) {
+function createKnowledgeService({ dialog, ipcMain, profileContext, secretStore }) {
   function registryPath() {
     return path.join(profileContext.currentPaths().root, 'knowledge-sources.json');
   }
@@ -92,37 +92,81 @@ function createKnowledgeService({ dialog, ipcMain, profileContext }) {
     return registry;
   }
 
-  function encodeSecret(value) {
+  const volatileCredentials = new Map();
+
+  function credentialRef(id) {
+    const sourceId = String(id || 'knowledge').replace(/[^a-zA-Z0-9._-]+/g, '-');
+    return secretStore?.reference?.('knowledge', sourceId) || `knowledge:${sourceId}`;
+  }
+
+  function decodeLegacyCredential(record) {
+    if (!record?.data) return '';
+    try {
+      if (record.scheme === 'local-obfuscated') return Buffer.from(record.data, 'base64').toString('utf8');
+    } catch {}
+    return '';
+  }
+
+  function encodeSecret(value, id) {
     const text = String(value || '');
+    const ref = credentialRef(id);
     if (!text) return null;
-    return { scheme: 'local-obfuscated', data: Buffer.from(text, 'utf8').toString('base64') };
+    if (secretStore) return secretStore.put(ref, text, { kind: 'knowledge', sourceId: String(id || '') });
+    volatileCredentials.set(ref, text);
+    return { scheme: 'secret-ref', ref, volatile: true };
   }
 
   function decodeSecret(record) {
-    if (!record?.data) return '';
-    try {
-      const buffer = Buffer.from(record.data, 'base64');
-      if (record.scheme === 'local-obfuscated') return buffer.toString('utf8');
-    } catch {
-      return '';
+    if (!record) return '';
+    if (record.scheme === 'secret-ref' && record.ref) {
+      return String(secretStore?.get?.(record.ref, '') || volatileCredentials.get(record.ref) || '');
     }
-    return '';
+    if (secretStore?.state?.().mode === 'strict') return '';
+    return decodeLegacyCredential(record);
+  }
+
+  function migrateCredential(record, id) {
+    if (!record || record.scheme === 'secret-ref') return record || null;
+    const value = decodeLegacyCredential(record);
+    if (!value) return null;
+    try {
+      return encodeSecret(value, id);
+    } catch {
+      return record;
+    }
+  }
+
+  function migrateRegistryCredentials(registry) {
+    let changed = false;
+    for (const source of registry.sources || []) {
+      if (!source?.credential || source.credential.scheme === 'secret-ref') continue;
+      const migrated = migrateCredential(source.credential, source.id);
+      if (migrated?.scheme === 'secret-ref') {
+        source.credential = migrated;
+        changed = true;
+      }
+    }
+    if (changed) saveRegistry(registry);
+    return registry;
   }
 
   function publicSource(source) {
     const copy = { ...source };
     delete copy.credential;
-    copy.credentialSet = source.credential?.scheme === 'local-obfuscated' && Boolean(source.credential?.data);
+    const credential = source.credential;
+    copy.credentialSet = Boolean(credential?.ref && (secretStore?.has?.(credential.ref) || volatileCredentials.has(credential.ref)));
     copy.credentialStorage = copy.credentialSet
-      ? 'local-profile'
-      : source.credential?.data ? 'requires-update' : 'none';
+      ? 'local-secret-ref'
+      : credential?.data ? 'requires-migration' : credential ? 'requires-update' : 'none';
     return copy;
   }
 
   function publicSnapshot(registry = loadRegistry()) {
+    registry = migrateRegistryCredentials(registry);
     return {
       sources: registry.sources.map(publicSource),
-      encryptionAvailable: false,
+      encryptionAvailable: Boolean(secretStore?.state?.().encryptionAvailable),
+      secretStorage: secretStore?.state?.() || { encryptionAvailable: false, backend: 'volatile-test-only' },
     };
   }
 
@@ -191,7 +235,7 @@ function createKnowledgeService({ dialog, ipcMain, profileContext }) {
     if (!common.name) throw new Error('请输入知识库名称');
     if (!datasetId) throw new Error('请输入 Dify Dataset ID');
     const apiKey = typeof input.apiKey === 'string' ? input.apiKey.trim() : '';
-    const credential = apiKey ? encodeSecret(apiKey) : existing?.credential || null;
+    const credential = apiKey ? encodeSecret(apiKey, common.id) : migrateCredential(existing?.credential, common.id);
     if (!credential) throw new Error('请输入知识库 API Key');
     return {
       ...common,
@@ -276,8 +320,13 @@ function createKnowledgeService({ dialog, ipcMain, profileContext }) {
 
   function deleteSource(id) {
     const registry = loadRegistry();
+    const existing = registry.sources.find((source) => source.id === id) || null;
     const before = registry.sources.length;
     registry.sources = registry.sources.filter((source) => source.id !== id);
+    if (existing?.credential?.ref) {
+      secretStore?.remove?.(existing.credential.ref);
+      volatileCredentials.delete(existing.credential.ref);
+    }
     if (registry.sources.length !== before) saveRegistry(registry);
     return { removed: registry.sources.length !== before, ...publicSnapshot(registry) };
   }
