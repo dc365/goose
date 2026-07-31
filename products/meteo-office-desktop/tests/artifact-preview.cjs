@@ -13,6 +13,18 @@ async function main() {
   assert.equal(ArtifactPreviewModel.artifactKind({ path: '/tmp/demo.html' }), 'web');
   assert.equal(ArtifactPreviewModel.artifactKind({ path: '/tmp/report.pdf' }), 'document');
   assert.equal(ArtifactPreviewModel.artifactKind({ path: '/tmp/chart.png' }), 'image');
+  assert.equal(
+    ArtifactPreviewModel.previewErrorDetail(
+      "Error invoking remote method 'artifact-preview:show': Error: 预览文件不存在或已无法访问"
+    ),
+    '成果文件不存在或已无法访问。它可能已被移动、删除，或任务临时目录已清理，请重新运行任务生成。'
+  );
+  assert.equal(
+    ArtifactPreviewModel.previewErrorDetail(
+      "Error invoking remote method 'artifact-preview:show': Error: 当前成果物不是可预览文件"
+    ),
+    '当前成果物不是可预览文件'
+  );
 
   const officeTab = ArtifactPreviewModel.createPreviewTab({
     id: 'artifact-report',

@@ -112,6 +112,22 @@
     };
   }
 
+  function isUnverifiedLegacyArtifact(artifact) {
+    return Boolean(
+      artifact?.path
+      && !artifact.uri
+      && !artifact.contentHash
+      && !artifact.metadata?.source
+      && !artifact.lineage?.toolCallId
+      && (!artifact.status || artifact.status === 'draft')
+    );
+  }
+
+  function artifactFileName(artifact) {
+    const target = String(artifact?.uri || artifact?.path || '').split(/[?#]/)[0];
+    return target.replaceAll('\\', '/').split('/').at(-1)?.toLowerCase() || '';
+  }
+
   function normalizeStoredTask(task, env = {}) {
     const planFactory = env.createDefaultPlan;
     const sourceMessages = Array.isArray(task?.messages) ? task.messages : [];
@@ -154,26 +170,77 @@
             : activity.status,
       };
     });
-    const artifacts = (Array.isArray(task?.artifacts) ? task.artifacts : []).map((artifact) => {
-      try {
-        const lineage = artifact?.lineage && typeof artifact.lineage === 'object'
-          ? artifact.lineage
-          : {};
-        return Artifact.createArtifact(artifact, {
-          taskId: lineage.taskId || task.id,
-          runId: lineage.runId || null,
-          contextSnapshotId: Object.hasOwn(lineage, 'contextSnapshotId')
-            ? lineage.contextSnapshotId
-            : task.contextSnapshotId,
-          expertId: lineage.expertId || null,
-          templateId: lineage.templateId || null,
-          evidenceIds: lineage.evidenceIds || [],
-          toolCallId: lineage.toolCallId || null,
-        });
-      } catch {
-        return { ...artifact };
-      }
-    });
+    const sourceArtifacts = Array.isArray(task?.artifacts) ? task.artifacts : [];
+    const verifiedArtifactNames = new Set(
+      sourceArtifacts
+        .filter((artifact) => !isUnverifiedLegacyArtifact(artifact))
+        .map(artifactFileName)
+        .filter(Boolean)
+    );
+    const legacyArtifactPaths = new Map(
+      sourceArtifacts
+        .filter((artifact) => isUnverifiedLegacyArtifact(artifact) && !/\.html$/i.test(String(artifact.path)))
+        .map((artifact) => [artifactFileName(artifact), artifact.path])
+        .filter(([name]) => Boolean(name))
+    );
+    let artifactReconciled = false;
+    const artifacts = sourceArtifacts
+      .filter((artifact) =>
+        !isUnverifiedLegacyArtifact(artifact)
+        || (
+          !/\.html$/i.test(String(artifact.path))
+          && !verifiedArtifactNames.has(artifactFileName(artifact))
+        )
+      )
+      .map((artifact) => {
+        let normalizedArtifact = artifact;
+        const legacyPath = legacyArtifactPaths.get(artifactFileName(artifact));
+        const target = String(artifact?.uri || '');
+        if (
+          legacyPath
+          && target
+          && !/^(?:https?:|file:|[A-Za-z]:[\\/]|\/)/i.test(target)
+        ) {
+          normalizedArtifact = {
+            ...artifact,
+            path: legacyPath,
+            uri: legacyPath,
+            metadata: {
+              ...(artifact.metadata || {}),
+              source: 'legacy-artifact-reconciliation',
+              originalUri: target,
+            },
+          };
+          artifactReconciled = true;
+        }
+        try {
+          const lineage = normalizedArtifact?.lineage && typeof normalizedArtifact.lineage === 'object'
+            ? normalizedArtifact.lineage
+            : {};
+          return Artifact.createArtifact(normalizedArtifact, {
+            taskId: lineage.taskId || task.id,
+            runId: lineage.runId || null,
+            contextSnapshotId: Object.hasOwn(lineage, 'contextSnapshotId')
+              ? lineage.contextSnapshotId
+              : task.contextSnapshotId,
+            expertId: lineage.expertId || null,
+            templateId: lineage.templateId || null,
+            evidenceIds: lineage.evidenceIds || [],
+            toolCallId: lineage.toolCallId || null,
+          });
+        } catch {
+          return { ...normalizedArtifact };
+        }
+      });
+    const retainedArtifactIds = new Set(artifacts.map((artifact) => artifact.id).filter(Boolean));
+    const messagesWithArtifacts = normalizedMessages.map((message) =>
+      Array.isArray(message.artifactIds)
+        ? {
+            ...message,
+            artifactIds: message.artifactIds.filter((id) => retainedArtifactIds.has(id)),
+          }
+        : message
+    );
     const evidence = (Array.isArray(task?.evidence) ? task.evidence : []).map((record) => {
       try {
         const lineage = record?.lineage && typeof record.lineage === 'object'
@@ -210,11 +277,22 @@
     return Task.normalizeTask({
       ...task,
       status: task?.status === 'running' ? 'interrupted' : task?.status || 'draft',
-      messages: normalizedMessages,
+      messages: messagesWithArtifacts,
       activities,
       artifacts,
+      artifactIds: [...retainedArtifactIds],
       evidence,
       teamRun,
+      publication:
+        (artifacts.length < sourceArtifacts.length || artifactReconciled) && task?.publication
+          ? {
+              ...task.publication,
+              gate: null,
+              checkedAt: null,
+              error: null,
+              dirty: true,
+            }
+          : task?.publication,
       plan: Array.isArray(task?.plan) && task.plan.length ? task.plan : clonePlan(planFactory),
       pendingPermissions: [],
     });

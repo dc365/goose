@@ -6,6 +6,7 @@ const vm = require('node:vm');
 const ArtifactRegistry = require('../harness/artifact-registry');
 const PublicationState = require('../harness/publication-state');
 const RuntimeRecords = require('../harness/runtime-records');
+const StateStore = require('../harness/state-store');
 const ValidationEngine = require('../harness/validation-engine');
 
 function extractNamedFunction(source, name) {
@@ -175,9 +176,16 @@ const rendererContext = vm.createContext({
 });
 vm.runInContext([
   extractNamedFunction(rendererSource, 'extractArtifactCandidates'),
+  extractNamedFunction(rendererSource, 'artifactCandidatePath'),
   extractNamedFunction(rendererSource, 'registerArtifacts'),
+  extractNamedFunction(rendererSource, 'completionArtifactUri'),
   extractNamedFunction(rendererSource, 'registerCompletionArtifacts'),
 ].join('\n'), rendererContext);
+rendererContext.registerArtifacts(
+  legacyTask,
+  '中央气象台页面包含 /publish/observations/beijing.html 和 https://example.com/forecast.html'
+);
+assert.equal(legacyTask.artifacts.length, 0);
 rendererContext.registerArtifacts(legacyTask, '已生成 artifacts/report.pdf');
 assert.equal(legacyTask.artifacts.length, 1);
 assert.equal(legacyTask.artifactIds.length, 1);
@@ -195,6 +203,80 @@ assert.equal(legacyTask.artifacts.length, 2);
 assert.equal(legacyTask.artifactIds.length, 2);
 assert.equal(legacyTask.publication.dirty, true);
 assert.ok(legacyTask.artifacts[1].recordHash);
+
+const noWorkspaceTask = {
+  ...legacyTask,
+  id: 'no-workspace-task',
+  workspace: '',
+  artifacts: [],
+  artifactIds: [],
+  messages: [{ id: 'no-workspace-response', role: 'assistant', status: 'streaming' }],
+};
+rendererContext.registerCompletionArtifacts(noWorkspaceTask, [{
+  uri: 'Library/Application Support/MeteoMate/browser/page.png',
+  name: '全页截图',
+  mediaType: 'image/png',
+}]);
+assert.equal(noWorkspaceTask.artifacts.length, 0);
+
+const restoredArtifactTask = StateStore.normalizeStoredTask({
+  id: 'stored-artifact-task',
+  workspace: '/',
+  status: 'completed',
+  artifactIds: ['legacy-link', 'legacy-screenshot', 'structured-screenshot', 'browser-image'],
+  messages: [{
+    id: 'stored-response',
+    role: 'assistant',
+    status: 'completed',
+    artifactIds: ['legacy-link', 'legacy-screenshot', 'structured-screenshot', 'browser-image'],
+  }],
+  artifacts: [
+    {
+      id: 'legacy-link',
+      name: 'beijing.html',
+      path: '/publish/observations/beijing.html',
+      status: 'draft',
+    },
+    {
+      id: 'legacy-screenshot',
+      name: 'page-2026-07-30.png',
+      path: '/page-2026-07-30.png',
+      status: 'draft',
+    },
+    {
+      id: 'structured-screenshot',
+      name: '500hPa高空实况图截图',
+      path: 'Library/Application Support/MeteoMate/browser/page-2026-07-30.png',
+      uri: 'Library/Application Support/MeteoMate/browser/page-2026-07-30.png',
+      status: 'draft',
+    },
+    {
+      id: 'browser-image',
+      name: 'browser-image.png',
+      path: '/workspace/browser-image.png',
+      mediaType: 'image/png',
+      status: 'draft',
+      metadata: { source: 'acp-image' },
+    },
+  ],
+});
+assert.deepEqual(
+  restoredArtifactTask.artifacts.map((item) => item.id),
+  ['structured-screenshot', 'browser-image']
+);
+assert.equal(restoredArtifactTask.artifacts[0].path, '/page-2026-07-30.png');
+assert.equal(restoredArtifactTask.artifacts[0].uri, '/page-2026-07-30.png');
+assert.equal(
+  restoredArtifactTask.artifacts[0].metadata.source,
+  'legacy-artifact-reconciliation'
+);
+assert.deepEqual(restoredArtifactTask.artifactIds, ['structured-screenshot', 'browser-image']);
+assert.deepEqual(
+  restoredArtifactTask.messages[0].artifactIds,
+  ['structured-screenshot', 'browser-image']
+);
+assert.ok(!rendererSource.includes('registerArtifacts(task, event.rawOutput)'));
+assert.ok(!rendererSource.includes('registerArtifacts(task, event.content)'));
 
 const publishableEvidence = {
   id: 'publishable-evidence',

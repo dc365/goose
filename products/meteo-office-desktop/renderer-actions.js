@@ -1157,35 +1157,41 @@ function activePreviewEntry() {
 
 function applyArtifactPreviewState(payload = {}) {
   if (!payload.id) return;
-  previewUI.surfaceStates[payload.id] = {
-    ...(previewUI.surfaceStates[payload.id] || {}),
-    ...payload,
+  const nextPayload = payload.error
+    ? {
+        ...payload,
+        error: window.MeteoMateHarness.ArtifactPreview.previewErrorDetail(payload.error),
+      }
+    : payload;
+  previewUI.surfaceStates[nextPayload.id] = {
+    ...(previewUI.surfaceStates[nextPayload.id] || {}),
+    ...nextPayload,
   };
-  if (payload.id !== previewUI.activeId) return;
+  if (nextPayload.id !== previewUI.activeId) return;
 
   const addressInput = document.getElementById('artifact-preview-address-input');
-  if (addressInput && payload.address && document.activeElement !== addressInput) {
-    addressInput.value = payload.address;
+  if (addressInput && nextPayload.address && document.activeElement !== addressInput) {
+    addressInput.value = nextPayload.address;
   }
   const back = document.querySelector('[data-preview-navigate="back"]');
   const forward = document.querySelector('[data-preview-navigate="forward"]');
-  if (back) back.disabled = !payload.canGoBack;
-  if (forward) forward.disabled = !payload.canGoForward;
+  if (back) back.disabled = !nextPayload.canGoBack;
+  if (forward) forward.disabled = !nextPayload.canGoForward;
 
   const loadingButton = document.querySelector(
     '[data-preview-navigate="reload"], [data-preview-navigate="stop"]'
   );
-  if (loadingButton && typeof payload.loading === 'boolean') {
-    loadingButton.dataset.previewNavigate = payload.loading ? 'stop' : 'reload';
-    loadingButton.classList.toggle('loading', payload.loading);
-    loadingButton.innerHTML = icon(payload.loading ? 'close' : 'refresh');
-    loadingButton.setAttribute('aria-label', payload.loading ? '停止加载' : '刷新');
-    loadingButton.title = payload.loading ? '停止加载' : '刷新';
+  if (loadingButton && typeof nextPayload.loading === 'boolean') {
+    loadingButton.dataset.previewNavigate = nextPayload.loading ? 'stop' : 'reload';
+    loadingButton.classList.toggle('loading', nextPayload.loading);
+    loadingButton.innerHTML = icon(nextPayload.loading ? 'close' : 'refresh');
+    loadingButton.setAttribute('aria-label', nextPayload.loading ? '停止加载' : '刷新');
+    loadingButton.title = nextPayload.loading ? '停止加载' : '刷新';
   }
 
   const status = document.getElementById('artifact-preview-surface-status');
   if (!status) return;
-  const error = String(payload.error || '');
+  const error = String(nextPayload.error || '');
   status.hidden = !error;
   status.classList.toggle('error', Boolean(error));
   const title = status.querySelector('strong');
@@ -4107,24 +4113,45 @@ function extractArtifactCandidates(value) {
   } catch {
     return [];
   }
-  const pattern = /(?:[A-Za-z]:[\\/]|\.{0,2}[\\/])?[\w\u4e00-\u9fff ._()\-\\/]+\.(?:docx|xlsx|pptx|pdf|html|md|png|jpg|jpeg|webp|csv|geojson|tif|tiff)\b/gi;
-  return [...new Set(text.match(pattern) || [])].slice(0, 8);
+  const pattern = /(?:https?:\/\/|file:\/\/\/|[A-Za-z]:[\\/]|\.{0,2}[\\/])?[^\s"'`()<>()[\]{},;|]+\.(?:docx|xlsx|pptx|pdf|html|md|png|jpg|jpeg|webp|csv|geojson|tif|tiff)\b/gi;
+  return [...new Set(text.match(pattern) || [])]
+    .filter((candidate) => !/^(?:https?:|file:)/i.test(candidate))
+    .slice(0, 8);
+}
+
+function artifactCandidatePath(task, candidate) {
+  const value = String(candidate || '').trim().replaceAll('\\', '/');
+  const workspace = String(task?.workspace || '').trim().replaceAll('\\', '/').replace(/\/+$/, '');
+  if (!value || !workspace || /^(?:https?:|file:|\/\/)/i.test(value)) return '';
+
+  const absolute = value.startsWith('/') || /^[A-Za-z]:\//.test(value);
+  if (absolute) {
+    const comparableValue = /^[A-Za-z]:\//.test(value) ? value.toLowerCase() : value;
+    const comparableWorkspace = /^[A-Za-z]:\//.test(workspace) ? workspace.toLowerCase() : workspace;
+    if (
+      comparableValue !== comparableWorkspace
+      && !comparableValue.startsWith(`${comparableWorkspace}/`)
+    ) {
+      return '';
+    }
+    return value;
+  }
+  if (value === '..' || value.startsWith('../')) return '';
+  return `${workspace}/${value.replace(/^(?:\.\/)+/, '')}`;
 }
 
 function registerArtifacts(task, source) {
   for (const candidate of extractArtifactCandidates(source)) {
-    const name = pathBaseName(candidate);
-    if (task.artifacts.some((artifact) => artifact.path === candidate || artifact.name === name)) continue;
-    const isAbsolute = /^(?:[A-Za-z]:[\\/]|\/)/.test(candidate);
-    const pathValue =
-      !isAbsolute && task.workspace
-        ? `${task.workspace.replace(/[\\/]$/, '')}/${candidate.replace(/^[.\\/]+/, '')}`
-        : candidate;
+    const pathValue = artifactCandidatePath(task, candidate);
+    if (!pathValue) continue;
+    const name = pathBaseName(pathValue);
+    if (task.artifacts.some((artifact) => artifact.path === pathValue || artifact.name === name)) continue;
     const record = window.MeteoMateHarness.ArtifactRegistry.registerArtifact(task, {
       id: cryptoRandomId(),
       name,
       path: pathValue,
       type: name.split('.').pop()?.toUpperCase() || 'FILE',
+      metadata: { source: 'legacy-assistant-text' },
       createdAt: Date.now(),
     });
     const assistant = currentStreamingAssistant(task) || latestAssistantMessage(task);
@@ -4141,9 +4168,16 @@ function registerArtifacts(task, source) {
   }
 }
 
+function completionArtifactUri(task, value) {
+  const uri = String(value || '').trim();
+  if (!uri) return '';
+  if (/^(?:https?:|file:|[A-Za-z]:[\\/]|\/)/i.test(uri)) return uri;
+  return task?.workspace ? uri : '';
+}
+
 function registerCompletionArtifacts(task, artifacts) {
   for (const artifact of Array.isArray(artifacts) ? artifacts : []) {
-    const uri = String(artifact?.uri || '').trim();
+    const uri = completionArtifactUri(task, artifact?.uri);
     if (!uri) continue;
     const name = String(artifact.name || pathBaseName(uri) || '成果');
     if (task.artifacts.some((item) => item.path === uri || item.uri === uri || item.name === name)) continue;
@@ -4612,8 +4646,6 @@ function handleRuntimeEvent(event) {
           status,
         });
       }
-      registerArtifacts(task, event.rawOutput);
-      registerArtifacts(task, event.content);
       break;
 
     case 'artifact_created':

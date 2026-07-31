@@ -39,6 +39,19 @@
     return 'code';
   }
 
+  function previewErrorDetail(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    const message = raw
+      .replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/i, '')
+      .replace(/^Error:\s*/i, '')
+      .trim();
+    if (message.includes('预览文件不存在或已无法访问')) {
+      return '成果文件不存在或已无法访问。它可能已被移动、删除，或任务临时目录已清理，请重新运行任务生成。';
+    }
+    return message || '预览加载失败';
+  }
+
   function createPreviewTab(artifact = {}, context = {}) {
     const target = artifactTarget(artifact);
     const surfaceTarget = artifactSurfaceTarget(artifact);
@@ -73,5 +86,6 @@
     createPreviewTab,
     normalizePanelWidth,
     pathExtension,
+    previewErrorDetail,
   };
 });
