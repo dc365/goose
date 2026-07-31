@@ -9,6 +9,11 @@ const context = vm.createContext({ window: {} });
 function extractNamedFunction(source, name) {
   const start = source.indexOf(`function ${name}(`);
   assert.ok(start >= 0, `missing function: ${name}`);
+  return extractBlock(source, start);
+}
+
+function extractBlock(source, start) {
+  assert.ok(start >= 0, 'missing block start');
   const bodyStart = source.indexOf('{', start);
   let depth = 0;
   for (let index = bodyStart; index < source.length; index += 1) {
@@ -148,6 +153,7 @@ for (const team of context.window.METEOMATE_TEAMS) {
 }
 
 const mainSource = fs.readFileSync(path.join(root, 'main.cjs'), 'utf8');
+const whenReadyBlock = extractBlock(mainSource, mainSource.indexOf('app.whenReady().then(() =>'));
 const mainWrapperSource = fs.readFileSync(path.join(root, 'capabilities/main-wrapper.cjs'), 'utf8');
 const publicationAttestorSource = fs.readFileSync(
   path.join(root, 'capabilities/publication-attestor.cjs'),
@@ -197,6 +203,11 @@ assert.ok(publicationAttestorSource.includes('timingSafeEqual'));
 assert.ok(publicationContractsSource.includes('publication-signoff.schema.json'));
 assert.ok(publicationContractsSource.includes('evidence-qc-waiver.schema.json'));
 assert.ok(mainWrapperSource.includes('requestSingleInstanceLock'));
+assert.equal((mainSource.match(/app\.on\('activate'/g) || []).length, 1);
+assert.ok(
+  whenReadyBlock.includes("app.on('activate'"),
+  'macOS activation must not register before Electron app readiness',
+);
 assert.ok(mainWrapperSource.includes('dialog: electron.dialog'));
 assert.ok(mainWrapperSource.includes('safeStorage: electron.safeStorage'));
 assert.ok(mainSource.includes('WeatherConnector.createFixtureWeatherRun'));

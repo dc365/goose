@@ -3155,6 +3155,9 @@ app.whenReady().then(() => {
     stopTask: (request) => acpRuntime.cancel(request),
   });
   if (runtimeServices().profileContext?.hasActiveProfile()) void acpRuntime.initialize();
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  });
 });
 
 runtimeServices().profileContext?.onChange(() => {
@@ -3171,10 +3174,6 @@ app.on('window-all-closed', () => {
     void acpRuntime.shutdown();
     app.quit();
   }
-});
-
-app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) createWindow();
 });
 
 app.on('before-quit', () => {
