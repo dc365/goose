@@ -3,6 +3,7 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
+const SecurityMode = require('./security-mode.cjs');
 
 const DEFAULT_BASE_URL = 'http://127.0.0.1:8088';
 const PROFILE_VERSION = 2;
@@ -137,13 +138,26 @@ function createProfileContext({
   fetchImpl = globalThis.fetch,
   notifyRenderer = () => {},
   allowOffline = process.env.METEOMATE_ALLOW_OFFLINE_LOGIN === '1',
+  securityMode = process.env.METEOMATE_SECURITY_MODE,
 }) {
+  const mode = SecurityMode.normalizeSecurityMode(securityMode);
   let active = null;
   let restorePending = false;
   let restorePromise = null;
   let refreshPromise = null;
+  let authGeneration = 0;
   let notice = '';
   const listeners = new Set();
+
+  function normalizeAuthBaseURL(value) {
+    const normalized = normalizeBaseURL(value);
+    const parsed = new URL(normalized);
+    const loopback = ['localhost', '127.0.0.1', '::1', '[::1]'].includes(parsed.hostname);
+    if (mode === SecurityMode.MODES.STRICT && parsed.protocol !== 'https:' && !loopback) {
+      throw new Error('严格安全模式要求使用 HTTPS 服务地址（本机回环地址除外）');
+    }
+    return normalized;
+  }
 
   function globalPaths() {
     const userData = app.getPath('userData');
@@ -275,6 +289,7 @@ function createProfileContext({
   }
 
   function invalidateSession(message) {
+    authGeneration += 1;
     active = null;
     notice = message;
     notify();
@@ -354,8 +369,25 @@ function createProfileContext({
     return true;
   }
 
+  function authOperationCancelled() {
+    const error = new Error('登录状态已发生变化');
+    error.code = 'AUTH_OPERATION_CANCELLED';
+    return error;
+  }
+
+  async function rejectSupersededSession(generation, baseUrl, payload) {
+    if (generation === authGeneration) return;
+    try {
+      const current = credentialStore?.load?.();
+      if (current?.refreshToken === payload?.refreshToken) credentialStore.clear();
+    } catch {}
+    await revokeRemote(baseUrl, payload?.sessionToken || '', payload?.refreshToken || '');
+    throw authOperationCancelled();
+  }
+
   async function login(input = {}) {
-    const baseUrl = normalizeBaseURL(input.baseUrl || loadConfig().baseUrl);
+    const generation = ++authGeneration;
+    const baseUrl = normalizeAuthBaseURL(input.baseUrl || loadConfig().baseUrl);
     const username = String(input.username || '').trim();
     const password = String(input.password || '');
     if (!username || !password) throw new Error('请输入用户名和密码');
@@ -374,6 +406,7 @@ function createProfileContext({
     const payload = await responsePayload(response);
     if (!response.ok) throw new Error(payload?.error?.message || `登录失败（${response.status}）`);
     if (!payload?.sessionToken || !payload?.user?.id) throw new Error('登录响应缺少用户或会话信息');
+    await rejectSupersededSession(generation, baseUrl, payload);
     let policyContext = null;
     try {
       policyContext = await fetchPolicy(baseUrl, payload.sessionToken);
@@ -381,6 +414,7 @@ function createProfileContext({
       await revokeRemote(baseUrl, payload.sessionToken, payload.refreshToken);
       throw new Error(`无法读取当前用户的组织策略：${error.message}`);
     }
+    await rejectSupersededSession(generation, baseUrl, payload);
     notice = '';
     if (payload.user.mustChangePassword) {
       try { credentialStore?.clear?.(); } catch {}
@@ -403,10 +437,11 @@ function createProfileContext({
 
   async function refreshAuthenticatedSession() {
     if (refreshPromise) return refreshPromise;
+    const generation = authGeneration;
     refreshPromise = (async () => {
       const credential = credentialStore?.load?.();
       if (!credential?.refreshToken) throw new Error('没有可用于恢复登录的安全凭据');
-      const baseUrl = normalizeBaseURL(credential.baseUrl || loadConfig().baseUrl);
+      const baseUrl = normalizeAuthBaseURL(credential.baseUrl || loadConfig().baseUrl);
       let response;
       try {
         response = await fetchImpl(`${baseUrl}/v1/auth/refresh`, {
@@ -429,6 +464,7 @@ function createProfileContext({
       if (!payload?.sessionToken || !payload?.refreshToken || !payload?.user?.id) {
         throw new Error('自动登录响应缺少用户或会话信息');
       }
+      await rejectSupersededSession(generation, baseUrl, payload);
       notice = '';
       try {
         saveRefreshCredential(baseUrl, payload);
@@ -437,6 +473,7 @@ function createProfileContext({
         notice = `${error.message}，本次关闭后需要重新登录`;
       }
       const policyContext = await fetchPolicy(baseUrl, payload.sessionToken);
+      await rejectSupersededSession(generation, baseUrl, payload);
       return activate({
         baseUrl,
         user: payload.user,
@@ -452,42 +489,66 @@ function createProfileContext({
   }
 
   function beginRestore() {
+    if (active) return Promise.resolve(publicState());
     if (restorePromise) return restorePromise;
     if (!credentialStore?.hasCredential?.()) {
-      restorePromise = Promise.resolve(publicState());
-      return restorePromise;
+      return Promise.resolve(publicState());
     }
     restorePending = true;
     const ready = typeof app.whenReady === 'function' ? app.whenReady() : Promise.resolve();
-    restorePromise = Promise.resolve(ready)
+    let attempt;
+    attempt = Promise.resolve(ready)
       .then(() => refreshAuthenticatedSession())
       .catch((error) => {
-        if (!notice) notice = error.message;
+        if (error?.code !== 'AUTH_OPERATION_CANCELLED' && !notice) notice = error.message;
         return null;
       })
       .finally(() => {
+        if (restorePromise === attempt) restorePromise = null;
         restorePending = false;
         notify();
       })
       .then(() => publicState());
-    return restorePromise;
+    restorePromise = attempt;
+    return attempt;
   }
 
   async function fetchAuthenticated(target, options = {}) {
     if (active?.status !== 'authenticated') throw new Error('请先登录 MeteoMate 内网服务');
+    const generation = authGeneration;
+    const profileKeyAtStart = active.profileKey;
+    const baseUrlAtStart = active.baseUrl;
+    const targetUrl = new URL(target);
+    if (targetUrl.origin !== new URL(baseUrlAtStart).origin) {
+      throw new Error('认证请求目标必须与当前 MeteoMate 服务同源');
+    }
+    const ensureCurrentProfile = () => {
+      if (
+        generation !== authGeneration
+        || active?.status !== 'authenticated'
+        || active.profileKey !== profileKeyAtStart
+        || active.baseUrl !== baseUrlAtStart
+      ) {
+        throw authOperationCancelled();
+      }
+    };
     const expiresAt = Date.parse(active.expiresAt || '');
     if (Number.isFinite(expiresAt) && expiresAt <= Date.now() + 30_000 && credentialStore?.hasCredential?.()) {
       await refreshAuthenticatedSession();
+      ensureCurrentProfile();
     }
     const send = () => {
+      ensureCurrentProfile();
       const headers = new Headers(options.headers || {});
       headers.set('Authorization', `Bearer ${active.token}`);
       return fetchImpl(target, { ...options, headers });
     };
     const requestToken = active.token;
     let response = await send();
+    if (response.status === 401) ensureCurrentProfile();
     if (response.status === 401 && credentialStore?.hasCredential?.()) {
       if (active?.token === requestToken) await refreshAuthenticatedSession();
+      ensureCurrentProfile();
       response = await send();
     }
     if (response.status === 401 && !credentialStore?.hasCredential?.()) {
@@ -500,19 +561,23 @@ function createProfileContext({
     if (!allowOffline) throw new Error('离线登录未启用，请联系管理员');
     const cached = cachedState();
     if (!cached) throw new Error('这台电脑上还没有可离线使用的用户资料');
+    authGeneration += 1;
     return activate({ baseUrl: cached.baseUrl, user: cached.user, status: 'offline', policyContext: cached.policyContext });
   }
 
   async function logout() {
+    authGeneration += 1;
+    restorePromise = null;
+    restorePending = false;
     const session = active;
     const credential = credentialStore?.load?.();
-    if (session?.status === 'authenticated' || credential?.refreshToken) {
-      await revokeRemote(session?.baseUrl || credential.baseUrl, session?.token || '', credential?.refreshToken || '');
-    }
     try { credentialStore?.clear?.(); } catch {}
     active = null;
     notice = '';
     notify();
+    if (session?.status === 'authenticated' || credential?.refreshToken) {
+      await revokeRemote(session?.baseUrl || credential.baseUrl, session?.token || '', credential?.refreshToken || '');
+    }
     return publicState();
   }
 
@@ -540,6 +605,7 @@ function createProfileContext({
       throw new Error(`内网服务返回了无效响应（${response.status}）`);
     }
     if (!response.ok) throw new Error(payload?.error?.message || `密码修改失败（${response.status}）`);
+    authGeneration += 1;
     saveConfig({ baseUrl: active.baseUrl, lastProfileKey: '' });
     try { credentialStore?.clear?.(); } catch {}
     active = null;

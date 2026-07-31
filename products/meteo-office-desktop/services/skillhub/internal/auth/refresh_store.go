@@ -23,6 +23,13 @@ var (
 	ErrRefreshTokenReuse   = errors.New("refresh token reuse detected")
 )
 
+type RefreshTokenReuseError struct {
+	FamilyID string
+}
+
+func (e *RefreshTokenReuseError) Error() string { return ErrRefreshTokenReuse.Error() }
+func (e *RefreshTokenReuseError) Unwrap() error { return ErrRefreshTokenReuse }
+
 type refreshFamily struct {
 	ID               string     `json:"id"`
 	UserID           string     `json:"userId"`
@@ -129,7 +136,7 @@ func (s *RefreshStore) Rotate(token string, now time.Time) (string, SessionView,
 				return "", SessionView{}, err
 			}
 		}
-		return "", SessionView{}, ErrRefreshTokenReuse
+		return "", SessionView{}, &RefreshTokenReuseError{FamilyID: retired.FamilyID}
 	}
 	for id, family := range next.Families {
 		if family.CurrentTokenHash != hash {
@@ -151,10 +158,10 @@ func (s *RefreshStore) Rotate(token string, now time.Time) (string, SessionView,
 	return "", SessionView{}, ErrInvalidRefreshToken
 }
 
-func (s *RefreshStore) RevokeToken(token string, now time.Time) (bool, error) {
+func (s *RefreshStore) RevokeToken(token string, now time.Time) (string, bool, error) {
 	hash := hashRefreshToken(token)
 	if hash == "" {
-		return false, nil
+		return "", false, nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -165,17 +172,18 @@ func (s *RefreshStore) RevokeToken(token string, now time.Time) (bool, error) {
 			continue
 		}
 		if family.RevokedAt != nil {
-			return false, nil
+			return family.ID, false, nil
 		}
 		revokedAt := now
 		family.RevokedAt = &revokedAt
 		next.Families[id] = family
-		return true, s.commitLocked(next)
+		return family.ID, true, s.commitLocked(next)
 	}
 	if retired, ok := next.Retired[hash]; ok {
-		return s.revokeIDLocked(&next, retired.FamilyID, now)
+		revoked, err := s.revokeIDLocked(&next, retired.FamilyID, now)
+		return retired.FamilyID, revoked, err
 	}
-	return false, nil
+	return "", false, nil
 }
 
 func (s *RefreshStore) RevokeID(id string, now time.Time) (bool, error) {
@@ -222,6 +230,13 @@ func (s *RefreshStore) List(userID string, now time.Time) []SessionView {
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].CreatedAt.After(items[j].CreatedAt) })
 	return items
+}
+
+func (s *RefreshStore) Active(id string, now time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	family, ok := s.state.Families[id]
+	return ok && family.RevokedAt == nil && family.ExpiresAt.After(now)
 }
 
 func (s *RefreshStore) revokeIDLocked(next *refreshState, id string, now time.Time) (bool, error) {

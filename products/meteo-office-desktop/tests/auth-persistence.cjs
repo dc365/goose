@@ -57,6 +57,24 @@ async function readJSON(request) {
   return chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {};
 }
 
+function jsonResponse(status, payload) {
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
+function createMemoryCredentialStore(initial) {
+  let credential = initial;
+  return {
+    state: () => ({ available: true }),
+    hasCredential: () => Boolean(credential?.refreshToken),
+    load: () => credential ? { ...credential } : null,
+    save: (next) => { credential = { ...next }; },
+    clear: () => { credential = null; },
+  };
+}
+
 const server = http.createServer(async (request, response) => {
   const send = (status, payload) => {
     response.writeHead(status, { 'content-type': 'application/json' });
@@ -155,6 +173,193 @@ server.listen(0, '127.0.0.1', async () => {
     assert.equal(credentialStore.hasCredential(), false);
     assert.equal(safeStorageCalls, 0, 'login, refresh, logout, and revocation must stay keychain-free in internal mode');
 
+    const raceBaseUrl = 'http://127.0.0.1:18088';
+    const raceStore = createMemoryCredentialStore({ baseUrl: raceBaseUrl, refreshToken: 'race-refresh-old' });
+    let releaseRaceRefresh;
+    let markRaceRefreshStarted;
+    const raceRefreshStarted = new Promise((resolve) => { markRaceRefreshStarted = resolve; });
+    const raceRefreshGate = new Promise((resolve) => { releaseRaceRefresh = resolve; });
+    const raceFetch = async (url) => {
+      if (url.endsWith('/v1/auth/refresh')) {
+        markRaceRefreshStarted();
+        await raceRefreshGate;
+        return jsonResponse(200, {
+          sessionToken: 'race-access-new',
+          refreshToken: 'race-refresh-new',
+          expiresAt: '2027-01-01T00:00:00Z',
+          refreshExpiresAt: '2027-02-01T00:00:00Z',
+          user: { id: 'usr-race', username: 'race', role: 'viewer', status: 'active' },
+        });
+      }
+      if (url.endsWith('/v1/auth/logout')) return jsonResponse(200, { loggedOut: true });
+      if (url.endsWith('/v1/me/policy')) return jsonResponse(200, { userId: 'usr-race', policy: {} });
+      return jsonResponse(404, { error: { message: 'not found' } });
+    };
+    const raceUserData = path.join(temp, 'race-user-data');
+    const raceContext = createProfileContext({
+      app: { getPath: (name) => name === 'documents' ? documents : raceUserData, whenReady: () => Promise.resolve() },
+      ipcMain: { handle() {} },
+      credentialStore: raceStore,
+      fetchImpl: raceFetch,
+    });
+    const pendingRestore = raceContext.beginRestore();
+    await raceRefreshStarted;
+    await raceContext.logout();
+    releaseRaceRefresh();
+    const stateAfterLogoutRace = await pendingRestore;
+    assert.equal(stateAfterLogoutRace.status, 'signed_out');
+    assert.equal(raceStore.hasCredential(), false);
+
+    const retryBaseUrl = 'http://127.0.0.1:18089';
+    const retryStore = createMemoryCredentialStore({ baseUrl: retryBaseUrl, refreshToken: 'retry-refresh-1' });
+    let retryRefreshNumber = 1;
+    let retryPolicyNumber = 0;
+    const retryFetch = async (url) => {
+      if (url.endsWith('/v1/auth/refresh')) {
+        retryRefreshNumber += 1;
+        return jsonResponse(200, {
+          sessionToken: `retry-access-${retryRefreshNumber}`,
+          refreshToken: `retry-refresh-${retryRefreshNumber}`,
+          expiresAt: '2027-01-01T00:00:00Z',
+          refreshExpiresAt: '2027-02-01T00:00:00Z',
+          user: { id: 'usr-retry', username: 'retry', role: 'viewer', status: 'active' },
+        });
+      }
+      if (url.endsWith('/v1/me/policy')) {
+        retryPolicyNumber += 1;
+        if (retryPolicyNumber === 1) return jsonResponse(503, { error: { message: 'temporary policy failure' } });
+        return jsonResponse(200, { userId: 'usr-retry', policy: { revision: 2 } });
+      }
+      return jsonResponse(404, { error: { message: 'not found' } });
+    };
+    const retryUserData = path.join(temp, 'retry-user-data');
+    const retryContext = createProfileContext({
+      app: { getPath: (name) => name === 'documents' ? documents : retryUserData, whenReady: () => Promise.resolve() },
+      ipcMain: { handle() {} },
+      credentialStore: retryStore,
+      fetchImpl: retryFetch,
+    });
+    assert.equal((await retryContext.beginRestore()).status, 'signed_out');
+    assert.equal(retryStore.load().refreshToken, 'retry-refresh-2');
+    assert.equal((await retryContext.beginRestore()).status, 'authenticated');
+    assert.equal(retryStore.load().refreshToken, 'retry-refresh-3');
+
+    let strictHTTPFetchCalls = 0;
+    const strictHTTPContext = createProfileContext({
+      app: { getPath: (name) => name === 'documents' ? documents : path.join(temp, 'strict-http-user-data') },
+      ipcMain: { handle() {} },
+      credentialStore: createMemoryCredentialStore(null),
+      fetchImpl: async () => { strictHTTPFetchCalls += 1; return jsonResponse(500, {}); },
+      securityMode: 'strict',
+    });
+    await assert.rejects(
+      () => strictHTTPContext.login({ baseUrl: 'http://intranet.example', username: 'user', password: 'password' }),
+      /严格安全模式要求使用 HTTPS/,
+    );
+    assert.equal(strictHTTPFetchCalls, 0);
+
+    const firstAccountBaseUrl = 'http://127.0.0.1:18090';
+    const secondAccountBaseUrl = 'http://127.0.0.1:18091';
+    const accountSwitchStore = createMemoryCredentialStore(null);
+    let releaseOldRequest;
+    let markOldRequestStarted;
+    const oldRequestStarted = new Promise((resolve) => { markOldRequestStarted = resolve; });
+    const oldRequestGate = new Promise((resolve) => { releaseOldRequest = resolve; });
+    const protectedTokens = [];
+    const accountSwitchFetch = async (url, options = {}) => {
+      if (url.endsWith('/v1/auth/login')) {
+        const secondAccount = url.startsWith(secondAccountBaseUrl);
+        return jsonResponse(200, {
+          sessionToken: secondAccount ? 'account-2-access' : 'account-1-access',
+          refreshToken: secondAccount ? 'account-2-refresh' : 'account-1-refresh',
+          expiresAt: '2027-01-01T00:00:00Z',
+          refreshExpiresAt: '2027-02-01T00:00:00Z',
+          user: {
+            id: secondAccount ? 'account-2' : 'account-1',
+            username: secondAccount ? 'account-2' : 'account-1',
+            role: 'viewer',
+            status: 'active',
+          },
+        });
+      }
+      if (url.endsWith('/v1/me/policy')) {
+        const secondAccount = url.startsWith(secondAccountBaseUrl);
+        return jsonResponse(200, { userId: secondAccount ? 'account-2' : 'account-1', policy: {} });
+      }
+      if (url.endsWith('/v1/auth/logout')) return jsonResponse(200, { loggedOut: true });
+      if (url.endsWith('/v1/protected')) {
+        protectedTokens.push(new Headers(options.headers).get('Authorization'));
+        markOldRequestStarted();
+        await oldRequestGate;
+        return jsonResponse(401, { error: { message: 'expired' } });
+      }
+      return jsonResponse(404, { error: { message: 'not found' } });
+    };
+    const accountSwitchUserData = path.join(temp, 'account-switch-user-data');
+    const accountSwitchContext = createProfileContext({
+      app: { getPath: (name) => name === 'documents' ? documents : accountSwitchUserData },
+      ipcMain: { handle() {} },
+      credentialStore: accountSwitchStore,
+      fetchImpl: accountSwitchFetch,
+    });
+    await accountSwitchContext.login({ baseUrl: firstAccountBaseUrl, username: 'account-1', password: 'password' });
+    const oldAccountRequest = accountSwitchContext.fetchAuthenticated(`${firstAccountBaseUrl}/v1/protected`);
+    await oldRequestStarted;
+    await accountSwitchContext.logout();
+    await accountSwitchContext.login({ baseUrl: secondAccountBaseUrl, username: 'account-2', password: 'password' });
+    releaseOldRequest();
+    await assert.rejects(() => oldAccountRequest, /登录状态已发生变化/);
+    assert.deepEqual(protectedTokens, ['Bearer account-1-access']);
+
+    const logoutWindowBaseUrl = 'http://127.0.0.1:18092';
+    const logoutWindowStore = createMemoryCredentialStore(null);
+    let releaseLogoutRequest;
+    let markLogoutRequestStarted;
+    let logoutWindowRefreshCalls = 0;
+    const logoutRequestStarted = new Promise((resolve) => { markLogoutRequestStarted = resolve; });
+    const logoutRequestGate = new Promise((resolve) => { releaseLogoutRequest = resolve; });
+    const logoutWindowFetch = async (url) => {
+      if (url.endsWith('/v1/auth/login')) {
+        return jsonResponse(200, {
+          sessionToken: 'logout-window-access',
+          refreshToken: 'logout-window-refresh',
+          expiresAt: '2027-01-01T00:00:00Z',
+          refreshExpiresAt: '2027-02-01T00:00:00Z',
+          user: { id: 'logout-window-user', username: 'logout-window-user', role: 'viewer', status: 'active' },
+        });
+      }
+      if (url.endsWith('/v1/me/policy')) return jsonResponse(200, { userId: 'logout-window-user', policy: {} });
+      if (url.endsWith('/v1/auth/logout')) {
+        markLogoutRequestStarted();
+        await logoutRequestGate;
+        return jsonResponse(200, { loggedOut: true });
+      }
+      if (url.endsWith('/v1/auth/refresh')) {
+        logoutWindowRefreshCalls += 1;
+        return jsonResponse(500, {});
+      }
+      return jsonResponse(404, { error: { message: 'not found' } });
+    };
+    const logoutWindowContext = createProfileContext({
+      app: { getPath: (name) => name === 'documents' ? documents : path.join(temp, 'logout-window-user-data') },
+      ipcMain: { handle() {} },
+      credentialStore: logoutWindowStore,
+      fetchImpl: logoutWindowFetch,
+    });
+    await logoutWindowContext.login({ baseUrl: logoutWindowBaseUrl, username: 'user', password: 'password' });
+    const pendingLogout = logoutWindowContext.logout();
+    await logoutRequestStarted;
+    assert.equal(logoutWindowContext.publicState().status, 'signed_out');
+    assert.equal(logoutWindowStore.hasCredential(), false);
+    assert.equal((await logoutWindowContext.beginRestore()).status, 'signed_out');
+    await assert.rejects(
+      () => logoutWindowContext.fetchAuthenticated(`${logoutWindowBaseUrl}/v1/protected`),
+      /请先登录/,
+    );
+    assert.equal(logoutWindowRefreshCalls, 0);
+    releaseLogoutRequest();
+    await pendingLogout;
+
     const strictUserData = path.join(temp, 'strict-user-data');
     const strictStore = createAuthCredentialStore({
       app: { getPath: () => strictUserData },
@@ -186,6 +391,24 @@ server.listen(0, '127.0.0.1', async () => {
     assert.equal(legacyStore.load(), null);
     assert.equal(legacySafeStorageCalls, 0);
     assert.equal(fs.existsSync(legacyPath), false);
+
+    const unavailableUserData = path.join(temp, 'strict-unavailable-user-data');
+    const unavailableInternalStore = createAuthCredentialStore({
+      app: { getPath: () => unavailableUserData },
+      securityMode: 'internal',
+    });
+    unavailableInternalStore.save({ baseUrl, refreshToken: 'plaintext-before-strict' });
+    const unavailableStrictStore = createAuthCredentialStore({
+      app: { getPath: () => unavailableUserData },
+      safeStorage: {
+        isEncryptionAvailable: () => true,
+        getSelectedStorageBackend: () => 'basic_text',
+      },
+      platform: 'linux',
+      securityMode: 'strict',
+    });
+    assert.equal(unavailableStrictStore.load(), null);
+    assert.equal(fs.existsSync(unavailableStrictStore.path()), false);
 
     const linuxStore = createAuthCredentialStore({
       app,

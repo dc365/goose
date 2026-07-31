@@ -30,6 +30,7 @@ type Authenticator struct {
 	accounts   *AccountStore
 	sessionTTL time.Duration
 	refreshes  *RefreshStore
+	lifecycle  sync.Mutex
 	mu         sync.Mutex
 	sessions   map[[32]byte]session
 }
@@ -41,6 +42,7 @@ type session struct {
 	CreatedAt  time.Time
 	LastSeenAt time.Time
 	ExpiresAt  time.Time
+	Persistent bool
 }
 
 type SessionView struct {
@@ -127,11 +129,7 @@ func (a *Authenticator) Login(username, password, clientID string, remember bool
 	if a.accounts == nil {
 		return LoginResult{}, errors.New("account login is not configured")
 	}
-	user, err := a.accounts.Verify(username, password)
-	if err != nil {
-		return LoginResult{}, err
-	}
-	user, err = a.accounts.RecordLogin(user.ID)
+	verifiedUser, err := a.accounts.Verify(username, password)
 	if err != nil {
 		return LoginResult{}, err
 	}
@@ -142,6 +140,12 @@ func (a *Authenticator) Login(username, password, clientID string, remember bool
 	now := time.Now().UTC()
 	expiresAt := now.Add(a.sessionTTL)
 	sessionID, err := newSessionID()
+	if err != nil {
+		return LoginResult{}, err
+	}
+	a.lifecycle.Lock()
+	defer a.lifecycle.Unlock()
+	user, err := a.accounts.RecordVerifiedLogin(verifiedUser.ID, verifiedUser.PasswordHash)
 	if err != nil {
 		return LoginResult{}, err
 	}
@@ -161,12 +165,15 @@ func (a *Authenticator) Login(username, password, clientID string, remember bool
 	a.sessions[sha256.Sum256([]byte(token))] = session{
 		ID: sessionID, UserID: user.ID,
 		ClientID: strings.TrimSpace(clientID), CreatedAt: now, LastSeenAt: now, ExpiresAt: expiresAt,
+		Persistent: remember,
 	}
 	a.mu.Unlock()
 	return result, nil
 }
 
 func (a *Authenticator) Refresh(refreshToken string) (LoginResult, error) {
+	a.lifecycle.Lock()
+	defer a.lifecycle.Unlock()
 	if a.accounts == nil {
 		return LoginResult{}, errors.New("account login is not configured")
 	}
@@ -177,6 +184,10 @@ func (a *Authenticator) Refresh(refreshToken string) (LoginResult, error) {
 	now := time.Now().UTC()
 	rotatedToken, refreshSession, err := a.refreshes.Rotate(refreshToken, now)
 	if err != nil {
+		var reuse *RefreshTokenReuseError
+		if errors.As(err, &reuse) {
+			a.revokeAccessFamily(reuse.FamilyID)
+		}
 		return LoginResult{}, err
 	}
 	user, ok := a.accounts.Get(refreshSession.UserID)
@@ -195,6 +206,7 @@ func (a *Authenticator) Refresh(refreshToken string) (LoginResult, error) {
 	a.sessions[sha256.Sum256([]byte(accessToken))] = session{
 		ID: refreshSession.ID, UserID: user.ID, ClientID: refreshSession.ClientID,
 		CreatedAt: now, LastSeenAt: now, ExpiresAt: expiresAt,
+		Persistent: true,
 	}
 	a.mu.Unlock()
 	refreshExpiresAt := refreshSession.ExpiresAt
@@ -205,6 +217,8 @@ func (a *Authenticator) Refresh(refreshToken string) (LoginResult, error) {
 }
 
 func (a *Authenticator) Logout(accessToken, refreshToken string) (bool, error) {
+	a.lifecycle.Lock()
+	defer a.lifecycle.Unlock()
 	removed := false
 	familyID := ""
 	a.mu.Lock()
@@ -219,20 +233,29 @@ func (a *Authenticator) Logout(accessToken, refreshToken string) (bool, error) {
 	a.mu.Unlock()
 	now := time.Now().UTC()
 	if refreshToken != "" {
-		revoked, err := a.refreshes.RevokeToken(refreshToken, now)
+		refreshFamilyID, revoked, err := a.refreshes.RevokeToken(refreshToken, now)
 		if err != nil {
 			return removed, err
+		}
+		if refreshFamilyID != "" {
+			familyID = refreshFamilyID
 		}
 		removed = removed || revoked
 	}
 	if familyID != "" {
 		revoked, err := a.refreshes.RevokeID(familyID, now)
-		return removed || revoked, err
+		if err != nil {
+			return removed, err
+		}
+		a.revokeAccessFamily(familyID)
+		return removed || revoked, nil
 	}
 	return removed, nil
 }
 
 func (a *Authenticator) LogoutUser(userID string) (int, error) {
+	a.lifecycle.Lock()
+	defer a.lifecycle.Unlock()
 	now := time.Now().UTC()
 	ids := map[string]struct{}{}
 	for _, current := range a.refreshes.List(userID, now) {
@@ -253,6 +276,8 @@ func (a *Authenticator) LogoutUser(userID string) (int, error) {
 }
 
 func (a *Authenticator) ListSessions(userID string) []SessionView {
+	a.lifecycle.Lock()
+	defer a.lifecycle.Unlock()
 	now := time.Now().UTC()
 	byID := map[string]SessionView{}
 	for _, current := range a.refreshes.List(userID, now) {
@@ -265,7 +290,11 @@ func (a *Authenticator) ListSessions(userID string) []SessionView {
 		if userID != "" && current.UserID != userID {
 			continue
 		}
-		if _, persistent := byID[current.ID]; persistent {
+		if persistent, ok := byID[current.ID]; ok {
+			if current.LastSeenAt.After(persistent.LastSeenAt) {
+				persistent.LastSeenAt = current.LastSeenAt
+			}
+			byID[current.ID] = persistent
 			continue
 		}
 		byID[current.ID] = SessionView{
@@ -282,6 +311,8 @@ func (a *Authenticator) ListSessions(userID string) []SessionView {
 }
 
 func (a *Authenticator) RevokeSession(id string) (bool, error) {
+	a.lifecycle.Lock()
+	defer a.lifecycle.Unlock()
 	revoked, err := a.refreshes.RevokeID(id, time.Now().UTC())
 	if err != nil {
 		return false, err
@@ -317,6 +348,10 @@ func (a *Authenticator) resolve(token string) Actor {
 	if !ok || !current.ExpiresAt.After(now) {
 		return Actor{Role: "anonymous"}
 	}
+	if current.Persistent && !a.refreshes.Active(current.ID, now) {
+		a.revokeAccessFamily(current.ID)
+		return Actor{Role: "anonymous"}
+	}
 	user, ok := a.accounts.Get(current.UserID)
 	if !ok || user.Status != "active" {
 		return Actor{Role: "anonymous"}
@@ -327,6 +362,19 @@ func (a *Authenticator) resolve(token string) Actor {
 func (a *Authenticator) cleanupLocked(now time.Time) {
 	for key, current := range a.sessions {
 		if !current.ExpiresAt.After(now) {
+			delete(a.sessions, key)
+		}
+	}
+}
+
+func (a *Authenticator) revokeAccessFamily(id string) {
+	if id == "" {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for key, current := range a.sessions {
+		if current.ID == id {
 			delete(a.sessions, key)
 		}
 	}

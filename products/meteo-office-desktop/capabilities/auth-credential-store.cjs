@@ -66,13 +66,23 @@ function createAuthCredentialStore({
         }
         return normalizeCredential(record.credential);
       }
-      const storage = state();
-      if (!storage.available) return null;
       if (record.scheme === 'local-user-file') {
         const credential = normalizeCredential(record.credential);
-        if (credential) save(credential);
-        return credential;
+        const storage = state();
+        if (!credential || !storage.available) {
+          clear();
+          return null;
+        }
+        try {
+          save(credential);
+          return credential;
+        } catch {
+          clear();
+          return null;
+        }
       }
+      const storage = state();
+      if (!storage.available) return null;
       if (record.scheme !== 'electron-safe-storage' || !record.data) return null;
       const decrypted = safeStorage.decryptString(Buffer.from(record.data, 'base64'));
       const credential = normalizeCredential(JSON.parse(decrypted));

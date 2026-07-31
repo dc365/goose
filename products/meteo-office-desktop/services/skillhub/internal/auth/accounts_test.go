@@ -72,3 +72,38 @@ func TestAccountStoreProtectsLastActiveAdministrator(t *testing.T) {
 		t.Fatalf("administrator was not disabled after adding a replacement: %v", err)
 	}
 }
+
+func TestRecordVerifiedLoginRejectsStaleAccountSnapshot(t *testing.T) {
+	store, err := OpenAccountStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.Create(CreateUserInput{
+		Username: "stale.user", DisplayName: "Stale User", Password: "weather-2026", Role: "viewer",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	verified, err := store.Verify(created.Username, "weather-2026")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ResetPassword(created.ID, "weather-2027", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RecordVerifiedLogin(created.ID, verified.PasswordHash); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("expected stale password verification to fail, got %v", err)
+	}
+
+	verified, err = store.Verify(created.Username, "weather-2027")
+	if err != nil {
+		t.Fatal(err)
+	}
+	disabled := "disabled"
+	if _, err := store.Update(created.ID, UpdateUserInput{Status: &disabled}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RecordVerifiedLogin(created.ID, verified.PasswordHash); !errors.Is(err, ErrAccountDisabled) {
+		t.Fatalf("expected disabled account verification to fail, got %v", err)
+	}
+}

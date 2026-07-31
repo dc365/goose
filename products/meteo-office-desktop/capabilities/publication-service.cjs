@@ -241,7 +241,9 @@ function createPublicationService({
       throw new Error(`发布撤销日志锚点无法读取：${error?.message || String(error)}`);
     }
     if (envelope?.scheme === 'electron-safe-storage') {
-      if (mode !== SecurityMode.MODES.STRICT) return { migrateFromSecureStorage: true };
+      if (mode !== SecurityMode.MODES.STRICT) {
+        throw new Error('发布撤销日志锚点由严格安全存储保护，当前模式无法验证');
+      }
       if (!secureAnchorAvailable()) throw new Error('发布撤销日志安全锚点当前不可解密');
       try {
         return normalizedAnchor(JSON.parse(
@@ -364,13 +366,8 @@ function createPublicationService({
     }
 
     const storedAnchor = readInvalidationAnchor();
-    const migrateFromSecureStorage = storedAnchor?.migrateFromSecureStorage === true;
     const migrateToSecureStorage = storedAnchor?.migrateToSecureStorage === true;
-    let anchor = migrateFromSecureStorage
-      ? null
-      : migrateToSecureStorage
-        ? storedAnchor.value
-        : storedAnchor;
+    let anchor = migrateToSecureStorage ? storedAnchor.value : storedAnchor;
     if (uncommittedTailBytes != null) {
       const prefixMatchesAnchor = anchor
         ? anchor.generation === generation && anchor.head === head
@@ -389,7 +386,7 @@ function createPublicationService({
         if (descriptor != null) fs.closeSync(descriptor);
       }
     }
-    if (!anchor && generation > 0 && (allowAnchorInitialization || migrateFromSecureStorage)) {
+    if (!anchor && generation > 0 && allowAnchorInitialization) {
       anchor = { generation, head };
       writeInvalidationAnchor(anchor);
     }

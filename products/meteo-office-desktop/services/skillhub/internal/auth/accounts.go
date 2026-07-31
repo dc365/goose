@@ -289,12 +289,18 @@ func (s *AccountStore) Update(id string, input UpdateUserInput) (PublicUser, err
 	return user.Public(), nil
 }
 
-func (s *AccountStore) RecordLogin(id string) (User, error) {
+func (s *AccountStore) RecordVerifiedLogin(id, verifiedPasswordHash string) (User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	user := s.state.Users[id]
 	if user == nil {
 		return User{}, errors.New("user not found")
+	}
+	if user.Status != "active" {
+		return User{}, ErrAccountDisabled
+	}
+	if subtle.ConstantTimeCompare([]byte(user.PasswordHash), []byte(verifiedPasswordHash)) != 1 {
+		return User{}, ErrInvalidCredentials
 	}
 	previous := user.LastLoginAt
 	now := time.Now().UTC()

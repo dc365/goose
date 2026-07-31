@@ -711,15 +711,17 @@ assert.ok(missingInvalidationAnchor.gate.blockers.some((item) => item.includes('
 fs.renameSync(hiddenInvalidationAnchorPath, invalidationAnchorPath);
 
 const secureStorageCallsBeforeAnchorMigration = safeStorageCalls;
+const internalAnchorBeforeSecureEnvelope = fs.readFileSync(invalidationAnchorPath, 'utf8');
 fs.writeFileSync(invalidationAnchorPath, JSON.stringify({
   version: 1,
   scheme: 'electron-safe-storage',
   data: 'must-not-be-decrypted-in-internal-mode',
 }));
-const migratedLegacyAnchor = service.check(signoffReplayInput);
-assert.equal(migratedLegacyAnchor.gate.blockers.some((item) => item.includes('锚点')), false);
+const rejectedSecureAnchor = service.check(signoffReplayInput);
+assert.equal(rejectedSecureAnchor.gate.blockers.some((item) => item.includes('锚点')), true);
 assert.equal(safeStorageCalls, secureStorageCallsBeforeAnchorMigration);
-assert.equal(JSON.parse(fs.readFileSync(invalidationAnchorPath, 'utf8')).scheme, 'profile-fallback');
+assert.equal(JSON.parse(fs.readFileSync(invalidationAnchorPath, 'utf8')).scheme, 'electron-safe-storage');
+fs.writeFileSync(invalidationAnchorPath, internalAnchorBeforeSecureEnvelope);
 
 const internalModeInput = publicationInput('task-security-mode-transition');
 const internalModeSignoff = service.sign(internalModeInput);
@@ -748,11 +750,11 @@ assert.throws(
     taskId: internalModeInput.taskId,
     reason: '内网模式不得撤销严格模式创建的签发记录',
   }),
-  /只能由已认证发布人员在严格模式下变更/,
+  /严格安全存储保护/,
 );
 assert.throws(
   () => service.sign(internalModeInput),
-  /只能由已认证发布人员在严格模式下变更/,
+  /严格安全存储保护/,
 );
 const loggedOutStrictService = createPublicationService({
   ipcMain: { handle() {} },
