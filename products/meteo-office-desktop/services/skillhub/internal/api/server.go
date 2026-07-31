@@ -63,6 +63,7 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /favicon.ico", adminui.Handler())
 	s.mux.HandleFunc("GET /healthz", s.health)
 	s.mux.HandleFunc("POST /v1/auth/login", s.login)
+	s.mux.HandleFunc("POST /v1/auth/refresh", s.refresh)
 	s.mux.HandleFunc("POST /v1/auth/logout", s.logout)
 	s.mux.HandleFunc("GET /v1/me", s.me)
 	s.mux.HandleFunc("PATCH /v1/me", s.updateMe)

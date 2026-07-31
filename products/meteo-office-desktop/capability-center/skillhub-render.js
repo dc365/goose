@@ -39,7 +39,7 @@
       <div class="capability-copy"><h3>${escapeHtml(skill.name || skill.id)}</h3><span>${escapeHtml(
         skill.publisher?.name || 'SkillHub'
       )}</span></div>
-      <span class="capability-status ${skill.featured || installed === latest ? 'ready' : ''}">${
+      <span class="capability-status ${updateAvailable ? 'ready' : skill.featured ? 'featured' : installed === latest ? 'ready' : ''}">${
         updateAvailable ? '可更新' : skill.featured ? '精选' : escapeHtml(latest || '已发布')
       }</span>
       <p>${escapeHtml(skill.summary || skill.description || '')}</p>

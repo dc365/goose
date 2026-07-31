@@ -13,12 +13,16 @@ function createSharedProjectService({ ipcMain, profileContext, fetchImpl = globa
 
   async function request(method, pathname, body = undefined) {
     ensureOnline();
-    const response = await fetchImpl(`${profileContext.baseUrl()}${pathname}`, {
+    const target = `${profileContext.baseUrl()}${pathname}`;
+    const init = {
       method,
       headers: profileContext.authHeaders(body === undefined ? {} : { 'Content-Type': 'application/json' }),
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: AbortSignal.timeout(15_000),
-    });
+    };
+    const response = typeof profileContext.fetchAuthenticated === 'function'
+      ? await profileContext.fetchAuthenticated(target, init)
+      : await fetchImpl(target, init);
     const text = await response.text();
     let payload = null;
     try {

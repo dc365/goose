@@ -9,6 +9,7 @@ const { createSkillCreatorService } = require('./skill-creator-service.cjs');
 const { createSkillHubClient } = require('./skillhub-client.cjs');
 const { createKnowledgeService } = require('./knowledge-service.cjs');
 const { createSecretStore } = require('./secret-store.cjs');
+const { createAuthCredentialStore } = require('./auth-credential-store.cjs');
 const { createSharedProjectService } = require('./shared-project-service.cjs');
 const { createPublicationService } = require('./publication-service.cjs');
 const { createPublicationAttestor } = require('./publication-attestor.cjs');
@@ -22,9 +23,19 @@ if (!ownsSingleInstanceLock) {
 } else {
 const productRoot = path.resolve(__dirname, '..');
 const securityMode = SecurityMode.normalizeSecurityMode(process.env.METEOMATE_SECURITY_MODE);
+const authCredentialStore = createAuthCredentialStore({
+  app: electron.app,
+  safeStorage: electron.safeStorage,
+});
 const profileContext = createProfileContext({
   app: electron.app,
   ipcMain: electron.ipcMain,
+  credentialStore: authCredentialStore,
+  notifyRenderer(snapshot) {
+    for (const window of electron.BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) window.webContents.send('auth:changed', snapshot);
+    }
+  },
 });
 const secretStore = createSecretStore({
   safeStorage: electron.safeStorage,
@@ -88,6 +99,7 @@ registerRuntimeServices({
   securityMode: SecurityMode.securityModeState(securityMode),
 });
 profileContext.registerIpc();
+profileContext.beginRestore();
 service.registerIpc();
 skillCreatorService.registerIpc();
 skillHubClient.registerIpc();

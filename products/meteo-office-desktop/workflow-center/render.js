@@ -791,6 +791,7 @@
       return {
         title: workflow.metadata.name,
         icon: 'workflow',
+        immersive: true,
         backButton: `<button class="titlebar-button titlebar-back" data-workflow-back-editor aria-label="返回工作流编辑器" title="返回工作流编辑器">${icon('back')}</button>`,
         actions: `<span class="workflow-titlebar-run-state ${escapeHtml(run?.status || 'running')}">${statusLabel(run?.status || 'running')}</span><button class="titlebar-action" data-workflow-run>${icon('refresh')} 再次试跑</button>`,
       };
@@ -798,8 +799,9 @@
     return {
       title: workflow.metadata.name,
       icon: 'workflow',
+      immersive: true,
       backButton: `<button class="titlebar-button titlebar-back" data-workflow-close aria-label="返回工作流列表" title="返回工作流列表">${icon('back')}</button>`,
-      actions: `<span class="workflow-titlebar-version">v${escapeHtml(workflow.metadata.version)} · ${statusLabel(workflow.metadata.status)}</span><button class="titlebar-action" data-workflow-undo ${api.ui.undoStack.length ? '' : 'disabled'}>撤销</button><button class="titlebar-action" data-workflow-redo ${api.ui.redoStack.length ? '' : 'disabled'}>重做</button><button class="titlebar-action" data-workflow-settings>设置</button><button class="titlebar-action" data-workflow-export>${icon('external')} 导出 YAML</button><button class="titlebar-action" data-workflow-run>${icon('play')} 测试运行 <kbd>⌥R</kbd></button><button class="titlebar-action primary" data-workflow-publish>${workflow.metadata.status === 'published' ? '重新发布' : '发布'}</button>`,
+      actions: `<span class="workflow-titlebar-version">v${escapeHtml(workflow.metadata.version)} · ${statusLabel(workflow.metadata.status)}</span><button class="titlebar-action" data-workflow-undo ${api.ui.undoStack.length ? '' : 'disabled'}>撤销</button><button class="titlebar-action" data-workflow-redo ${api.ui.redoStack.length ? '' : 'disabled'}>重做</button><button class="titlebar-action" data-workflow-settings>设置</button><button class="titlebar-action" data-workflow-export>${icon('external')} 导出 YAML</button><button class="titlebar-action primary" data-workflow-publish>${workflow.metadata.status === 'published' ? '重新发布' : '发布'}</button>`,
     };
   }
 

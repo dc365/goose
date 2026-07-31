@@ -1060,7 +1060,7 @@ textarea:focus-visible {
 
 .publication-review-columns {
   display: grid;
-  grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.72fr);
+  grid-template-columns: minmax(0, 1.45fr) minmax(300px, 0.72fr);
   gap: 0;
 }
 
@@ -1727,6 +1727,237 @@ textarea:focus-visible {
   .scene-card:hover,
   .primary-button:hover,
   .card-launch:hover {
+    transform: none;
+  }
+}
+
+/* ============================================================
+   第二轮：新界面统一 + 语义色 + 标题栏响应式
+   - 语义色令牌收敛：精选→品牌蓝，状态绿/琥珀/红统一
+   - 标题栏响应式降级：1200px 窗口不溢出、不换行
+   - 工作流编辑器纳入精修层（卡片/端口/连线/提示/运行坞）
+   - 对话阅读宽度、设置列宽、协作条/预览页签细节
+   ============================================================ */
+
+:root {
+  --polish-success: var(--success);
+  --polish-success-soft: var(--success-soft);
+  --polish-success-text: var(--success-text);
+  --polish-warning: var(--warning);
+  --polish-warning-soft: var(--warning-soft);
+  --polish-warning-text: var(--warning-text);
+  --polish-danger: var(--danger);
+  --polish-danger-soft: var(--danger-soft);
+  --polish-danger-text: var(--danger-text);
+  --polish-featured: var(--accent);
+  --polish-featured-soft: var(--featured-soft);
+}
+
+/* ---------- 语义色：能力中心状态徽章 ---------- */
+/* “精选”是推荐/品牌强调语义，归品牌蓝；安装态统一成功绿 */
+.capability-status.ready {
+  background: var(--polish-success-soft);
+  color: var(--polish-success-text);
+}
+
+.capability-status.featured {
+  background: var(--polish-featured-soft);
+  color: var(--polish-featured);
+  font-weight: 650;
+}
+
+/* ---------- 标题栏响应式：先防换行，再分级降级 ---------- */
+.window-titlebar .titlebar-action,
+.window-titlebar .titlebar-catalog-tab,
+.window-titlebar .my-experts,
+.window-titlebar .runtime-chip {
+  white-space: nowrap;
+}
+
+.titlebar-catalog-tabs {
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.titlebar-catalog-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.window-titlebar .search-box {
+  width: clamp(150px, 22vw, 300px);
+}
+
+/* 中等宽度：我的专家收成星标图标按钮 */
+@media (max-width: 1280px) {
+  .window-titlebar #toggle-favorites,
+  .window-titlebar [data-expert-mine] {
+    width: 32px;
+    padding: 0;
+    font-size: 0;
+  }
+}
+
+/* 窄窗口：目录搜索让位于页签与操作 */
+@media (max-width: 1120px) {
+  .window-titlebar .titlebar-catalog-search {
+    display: none;
+  }
+}
+
+/* ---------- 对话：正文阅读宽度 + 表格层次 ---------- */
+.message-row.assistant .markdown-body > p,
+.message-row.assistant .markdown-body > ul,
+.message-row.assistant .markdown-body > ol,
+.message-row.assistant .markdown-body > blockquote,
+.message-row.assistant .markdown-body > h1,
+.message-row.assistant .markdown-body > h2,
+.message-row.assistant .markdown-body > h3,
+.message-row.assistant .markdown-body > h4 {
+  max-width: 780px;
+}
+
+.message-row.assistant .markdown-body > pre,
+.message-row.assistant .markdown-body > table {
+  max-width: 1000px;
+}
+
+.message-row.assistant .markdown-body th {
+  background: #f2f5fa;
+}
+
+.message-row.assistant .markdown-body tbody tr:hover td {
+  background: #f4f7fd;
+}
+
+/* ---------- 设置：宽屏内容列 ---------- */
+.settings-page-body .general-settings-stack {
+  width: min(980px, 100%);
+}
+
+.settings-editor-fields {
+  max-width: 900px;
+}
+
+/* ---------- 工作流编辑器：纳入精修语言 ---------- */
+.workflow-canvas-node {
+  border-color: var(--polish-line);
+  border-radius: 14px;
+  box-shadow: var(--polish-shadow-sm);
+  transition:
+    transform 160ms var(--polish-ease),
+    border-color 160ms var(--polish-ease),
+    box-shadow 160ms var(--polish-ease);
+}
+
+.workflow-canvas-node:hover {
+  border-color: #a8bdf3;
+  box-shadow: var(--polish-shadow-md);
+}
+
+.workflow-canvas-node.selected {
+  border-color: var(--polish-accent);
+  box-shadow: 0 0 0 3px var(--polish-accent-ring), var(--polish-shadow-md);
+}
+
+.workflow-canvas-node.run-completed {
+  border-color: var(--polish-success);
+}
+
+.workflow-canvas-node.run-waiting_approval {
+  border-color: var(--polish-warning);
+  box-shadow: 0 0 0 3px rgba(231, 163, 40, 0.14), var(--polish-shadow-sm);
+}
+
+.workflow-canvas-node-heading > i {
+  background: var(--polish-accent-soft);
+  color: var(--polish-accent);
+}
+
+.workflow-canvas-edges path {
+  stroke: #b9c6e0;
+  stroke-width: 1.8;
+}
+
+.workflow-canvas-edges path.run-completed {
+  stroke: var(--polish-success);
+}
+
+.workflow-canvas-edges path.run-waiting_approval {
+  stroke: var(--polish-warning);
+}
+
+.workflow-port {
+  background: #9fb4dd;
+  box-shadow: 0 0 0 1px #b7c7e8;
+}
+
+.workflow-port:hover {
+  background: var(--polish-accent);
+  box-shadow: 0 0 0 3px var(--polish-accent-ring);
+}
+
+/* 画布操作提示：从灰字升级为提示胶囊 */
+.workflow-editor-zoom span {
+  border-radius: 999px;
+  background: var(--polish-accent-soft);
+  padding: 4px 10px;
+  color: var(--polish-accent);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.workflow-titlebar-version {
+  background: #eef1f6;
+  color: var(--polish-muted);
+  font-size: 10px;
+  padding: 0 10px;
+}
+
+.workflow-run-dock {
+  border-top: 1px solid var(--polish-line);
+  box-shadow: 0 -8px 24px rgba(23, 32, 44, 0.06);
+}
+
+/* ---------- 成果预览：激活页签与内容面融为一体 ---------- */
+.artifact-preview-tab.active {
+  background: #ffffff;
+  font-weight: 650;
+}
+
+/* ---------- 专家团协作条：悬停微浮起 ---------- */
+.team-chip {
+  transition:
+    transform 150ms var(--polish-ease),
+    border-color 150ms var(--polish-ease),
+    background-color 150ms var(--polish-ease),
+    box-shadow 150ms var(--polish-ease);
+}
+
+.team-chip:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--polish-shadow-sm);
+}
+
+/* ---------- 侧边栏：分区折叠箭头换 SVG ---------- */
+.sidebar-section-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.sidebar-section-chevron .icon {
+  width: 13px;
+  height: 13px;
+}
+
+/* 减少动态偏好时，本轮新增的动效同样降级 */
+@media (prefers-reduced-motion: reduce) {
+  .workflow-canvas-node,
+  .team-chip {
+    transition: none;
+  }
+
+  .team-chip:hover {
     transform: none;
   }
 }

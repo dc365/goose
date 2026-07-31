@@ -39,6 +39,8 @@ func main() {
 	fatalIf(err, "open store")
 	accounts, err := auth.OpenAccountStore(filepath.Join(root, "auth"))
 	fatalIf(err, "open account store")
+	refreshSessions, err := auth.OpenRefreshStore(filepath.Join(root, "auth"), 30*24*time.Hour)
+	fatalIf(err, "open refresh session store")
 	policies, err := policy.Open(filepath.Join(root, "policy"))
 	fatalIf(err, "open organization policy store")
 	bootstrapUsername := strings.TrimSpace(os.Getenv("METEOMATE_SKILLHUB_BOOTSTRAP_USERNAME"))
@@ -57,7 +59,7 @@ func main() {
 	signer, err := trust.OpenOrCreate(filepath.Join(root, "trust"))
 	fatalIf(err, "open signing key")
 	server, err := api.New(api.Config{
-		Store: dataStore, Signer: signer, Authenticator: auth.NewWithAccounts(tokens, accounts, 12*time.Hour), Policies: policies, Logger: logger,
+		Store: dataStore, Signer: signer, Authenticator: auth.NewWithRefreshStore(tokens, accounts, 30*time.Minute, refreshSessions), Policies: policies, Logger: logger,
 	})
 	fatalIf(err, "create API server")
 	if *seedDir != "" {

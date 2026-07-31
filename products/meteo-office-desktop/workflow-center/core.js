@@ -5,6 +5,7 @@
   const ui = {
     screen: 'library',
     mode: 'canvas',
+    fitOnNextRender: false,
     query: '',
     filter: 'all',
     selectedWorkflowId: null,
@@ -216,6 +217,7 @@
     ui.undoStack = [];
     ui.redoStack = [];
     ui.viewport = { x: 40, y: 40, zoom: 1 };
+    ui.fitOnNextRender = true;
     ui.message = '';
     ui.error = '';
     ui.editingMetadata = false;

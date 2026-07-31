@@ -427,10 +427,10 @@
       return `<div class="top-actions expert-top-actions"><button class="my-experts" data-expert-editor-cancel>取消</button>${ui.editingId ? `<button class="my-experts" data-expert-save="current">保存更改</button>` : '<button class="my-experts" data-expert-save="draft">保存草稿</button>'}<button class="my-experts primary" data-expert-save="enabled">保存并启用</button></div>`;
     }
     return `<div class="top-actions expert-top-actions">
-      <label class="search-box"><span>${icon('search')}</span><input id="catalog-search" value="${escapeHtml(state.search)}" placeholder="${ui.mode === 'mine' ? '搜索我的专家' : '搜索专家名称或描述'}" /></label>
-      <button class="my-experts" data-expert-sync ${ui.syncing ? 'disabled' : ''}>${icon('refresh')} ${ui.syncing ? '同步中' : '同步'}</button>
-      <button class="my-experts ${ui.mode === 'mine' ? 'active' : ''}" data-expert-mine>${icon('star')} 我的专家</button>
-      <button class="my-experts primary" data-expert-create>${icon('plus')} 创建专家</button>
+      <label class="search-box titlebar-catalog-search"><span>${icon('search')}</span><input id="catalog-search" value="${escapeHtml(state.search)}" placeholder="${ui.mode === 'mine' ? '搜索我的专家' : '搜索专家名称或描述'}" /></label>
+      <button class="my-experts" data-expert-sync aria-label="${ui.syncing ? '同步中' : '同步'}" title="${ui.syncing ? '同步中' : '同步'}" ${ui.syncing ? 'disabled' : ''}>${icon('refresh')} ${ui.syncing ? '同步中' : '同步'}</button>
+      <button class="my-experts ${ui.mode === 'mine' ? 'active' : ''}" data-expert-mine aria-label="我的专家" title="我的专家">${icon('star')} 我的专家</button>
+      <button class="my-experts primary" data-expert-create aria-label="创建专家" title="创建专家">${icon('plus')} 创建专家</button>
     </div>`;
   }
 

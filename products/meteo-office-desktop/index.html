@@ -8,6 +8,7 @@
       content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; script-src 'self'; connect-src 'self';"
     />
     <title>气象智伴 MeteoMate</title>
+    <link rel="stylesheet" href="styles-tokens.css" />
     <link rel="stylesheet" href="styles-base.css" />
     <link rel="stylesheet" href="styles-app.css" />
     <link rel="stylesheet" href="styles-account.css" />
@@ -21,9 +22,10 @@
     <link rel="stylesheet" href="styles-skillhub.css" />
     <link rel="stylesheet" href="styles-skillhub-management.css" />
     <link rel="stylesheet" href="styles-experts.css" />
-    <link rel="stylesheet" href="styles-polish.css" />
     <link rel="stylesheet" href="styles-team.css" />
     <link rel="stylesheet" href="styles-preview.css" />
+    <!-- styles-polish.css 是增量覆盖层，必须最后加载；新增样式表请插到它前面 -->
+    <link rel="stylesheet" href="styles-polish.css" />
   </head>
   <body>
     <div id="app"></div>

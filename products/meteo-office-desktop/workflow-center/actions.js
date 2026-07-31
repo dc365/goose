@@ -879,6 +879,10 @@
       });
     }
     root.requestAnimationFrame(() => {
+      if (api.ui.fitOnNextRender && api.ui.screen === 'editor' && api.ui.mode === 'canvas') {
+        api.ui.fitOnNextRender = false;
+        fitCanvas();
+      }
       const autofocus = document.getElementById('workflow-settings-name')
         || document.querySelector('.workflow-canvas-context [data-workflow-node-search]');
       autofocus?.focus();

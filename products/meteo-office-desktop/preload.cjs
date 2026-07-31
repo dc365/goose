@@ -2,6 +2,11 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('meteoDesktop', {
   getAccountState: () => ipcRenderer.invoke('auth:state'),
+  onAccountStateChange: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('auth:changed', listener);
+    return () => ipcRenderer.removeListener('auth:changed', listener);
+  },
   loginAccount: (request) => ipcRenderer.invoke('auth:login', request),
   openOfflineAccount: () => ipcRenderer.invoke('auth:offline'),
   logoutAccount: () => ipcRenderer.invoke('auth:logout'),

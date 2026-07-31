@@ -4871,6 +4871,11 @@ function handleRuntimeEvent(event) {
 
 async function initialize(accountStatePromise) {
   accountSession = await accountStatePromise;
+  unsubscribeAccountState = window.meteoDesktop.onAccountStateChange?.((session) => {
+    accountSession = session;
+    void window.meteoDesktop.setWindowMode('account');
+    render();
+  }) || null;
   const workspaceReady = ['authenticated', 'offline'].includes(accountSession.status) && !accountSession.user?.mustChangePassword;
   await window.meteoDesktop.setWindowMode(workspaceReady ? 'workspace' : 'account');
   if (!['authenticated', 'offline'].includes(accountSession.status)) {

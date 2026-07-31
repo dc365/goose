@@ -388,7 +388,7 @@ func TestAdminConsoleSessionsAuditAndLoginRateLimit(t *testing.T) {
 	}
 	page, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK || !bytes.Contains(page, []byte("MeteoMate 管理后台")) || !bytes.Contains(page, []byte("能力资产")) || !bytes.Contains(page, []byte("组织治理")) || !bytes.Contains(page, []byte("Skill 管理")) || !bytes.Contains(page, []byte("专家管理")) || !bytes.Contains(page, []byte("上传 Skill")) || !bytes.Contains(page, []byte("内容运营")) || !bytes.Contains(page, []byte("推荐结果模拟器")) || bytes.Contains(page, []byte("SkillHub 管理控制台")) {
+	if resp.StatusCode != http.StatusOK || !bytes.Contains(page, []byte("MeteoMate 管理后台")) || !bytes.Contains(page, []byte("能力资产")) || !bytes.Contains(page, []byte("组织治理")) || !bytes.Contains(page, []byte("Skill 管理")) || !bytes.Contains(page, []byte("专家管理")) || !bytes.Contains(page, []byte("上传 Skill")) || !bytes.Contains(page, []byte("内容运营")) || !bytes.Contains(page, []byte("推荐结果模拟器")) || !bytes.Contains(page, []byte("/admin/assets/favicon.svg")) || bytes.Contains(page, []byte("SkillHub 管理控制台")) {
 		t.Fatalf("admin console unavailable: %d %s", resp.StatusCode, page)
 	}
 	if !strings.Contains(resp.Header.Get("Content-Security-Policy"), "frame-ancestors 'none'") {
@@ -416,6 +416,15 @@ func TestAdminConsoleSessionsAuditAndLoginRateLimit(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "image/svg+xml" {
 		t.Fatalf("admin favicon unavailable: %d %s", resp.StatusCode, resp.Header.Get("Content-Type"))
+	}
+	resp, err = http.Get(server.URL + "/admin/missing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	notFoundPage, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound || !bytes.Contains(notFoundPage, []byte("/admin/assets/favicon.svg")) || bytes.Contains(notFoundPage, []byte(">MM<")) {
+		t.Fatalf("admin not-found branding unavailable: %d %s", resp.StatusCode, notFoundPage)
 	}
 
 	createAdmin := `{"username":"managed.admin","displayName":"主管理员","password":"managed-admin-2026","role":"admin","orgId":"meteomate"}`

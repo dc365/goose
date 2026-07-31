@@ -64,6 +64,7 @@ const harnessAssets = [
 const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
 for (const asset of [
   'styles-base.css',
+  'styles-tokens.css',
   'styles-app.css',
   'styles-account.css',
   'styles-connectors.css',
@@ -86,11 +87,15 @@ for (const asset of [
 }
 
 assert.ok(html.indexOf('harness/state-bootstrap.js') < html.indexOf('renderer-core.js'));
+assert.ok(html.indexOf('styles-tokens.css') < html.indexOf('styles-base.css'));
 assert.ok(html.indexOf('harness/shared.js') < html.indexOf('harness/qc-policy.js'));
 assert.ok(html.indexOf('harness/qc-policy.js') < html.indexOf('harness/evidence-ledger.js'));
 assert.ok(html.indexOf('harness/qc-policy.js') < html.indexOf('harness/validation-engine.js'));
 assert.ok(html.indexOf('renderer-core.js') < html.indexOf('harness/state-restore.js'));
 assert.ok(html.indexOf('harness/state-restore.js') < html.indexOf('renderer-actions.js'));
+const stylesheetHrefs = [...html.matchAll(/<link rel="stylesheet" href="([^"]+)"/g)]
+  .map((match) => match[1]);
+assert.equal(stylesheetHrefs.at(-1), 'styles-polish.css');
 
 assert.equal(context.window.METEOMATE_BRAND.name, 'MeteoMate');
 assert.equal(context.window.METEOMATE_BRAND.chineseName, '气象智伴');
@@ -166,8 +171,10 @@ const publicationContractsSource = fs.readFileSync(
 const preloadSource = fs.readFileSync(path.join(root, 'preload.cjs'), 'utf8');
 const rendererSource = fs.readFileSync(path.join(root, 'renderer-core.js'), 'utf8');
 const rendererActionsSource = fs.readFileSync(path.join(root, 'renderer-actions.js'), 'utf8');
+const expertCenterSource = fs.readFileSync(path.join(root, 'capability-center/experts.js'), 'utf8');
 const responseStylesSource = fs.readFileSync(path.join(root, 'styles/app-4.css'), 'utf8');
 const polishStylesSource = fs.readFileSync(path.join(root, 'styles-polish.css'), 'utf8');
+const computerPipHtmlSource = fs.readFileSync(path.join(root, 'computer-pip.html'), 'utf8');
 const computerPipSource = fs.readFileSync(
   path.join(root, 'capabilities/computer-pip-controller.cjs'),
   'utf8'
@@ -181,6 +188,8 @@ assert.match(
   polishStylesSource,
   /\.message-row\.assistant \.message-bubble\s*\{[^}]*width:\s*100%;[^}]*max-width:\s*none;[^}]*\}/s,
 );
+assert.ok(computerPipHtmlSource.indexOf('styles-tokens.css') < computerPipHtmlSource.indexOf('computer-pip.css'));
+assert.match(polishStylesSource, /@media \(max-width: 920px\)\s*\{\s*\.publication-review-columns\s*\{\s*grid-template-columns: 1fr;/s);
 
 const acpImageContext = vm.createContext({});
 vm.runInContext(
@@ -336,7 +345,10 @@ assert.ok(rendererSource.includes("'sidebar-collapsed'"));
 assert.ok(rendererSource.includes('class="window-titlebar'));
 assert.ok(rendererSource.includes("title = '项目'"));
 assert.ok(rendererSource.includes(": '资料库';"));
-assert.ok(rendererSource.includes("navigation = `<nav class=\"titlebar-catalog-tabs\""));
+assert.ok(rendererSource.includes('workflowTitlebar.immersive'));
+assert.ok(rendererSource.includes('aria-label="我的专家" title="我的专家"'));
+assert.ok(expertCenterSource.includes('class="search-box titlebar-catalog-search"'));
+assert.ok(expertCenterSource.includes('data-expert-mine aria-label="我的专家" title="我的专家"'));
 assert.ok(rendererSource.includes('class="titlebar-catalog-tabs"'));
 assert.ok(rendererSource.includes('class="content-scroll window-content-full catalog-home"'));
 assert.ok(!rendererSource.includes('<header class="topbar">'));

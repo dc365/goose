@@ -10,10 +10,10 @@
   --ink-primary: #202633;
   --ink-secondary: #687486;
   --ink-on-dark: #ffffff;
-  --live-mint: #35c879;
-  --snapshot-blue: #6c8fd3;
-  --waiting-amber: #e9a43a;
-  --error-coral: #d95f61;
+  --live-mint: var(--success);
+  --snapshot-blue: var(--accent);
+  --waiting-amber: var(--warning);
+  --error-coral: var(--danger);
   --control-dark: rgba(25, 31, 42, 0.78);
   background: var(--cloud-clear);
   color: var(--ink-primary);
@@ -229,7 +229,7 @@ svg {
   flex: 0 0 6px;
   border-radius: 50%;
   background: var(--live-mint);
-  box-shadow: 0 0 0 3px rgba(53, 200, 121, 0.16);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--live-mint) 16%, transparent);
 }
 
 .pip-state span {
@@ -242,17 +242,17 @@ svg {
 .pip-state.connecting i,
 .pip-state.stopping i {
   background: var(--waiting-amber);
-  box-shadow: 0 0 0 3px rgba(233, 164, 58, 0.16);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--waiting-amber) 16%, transparent);
 }
 
 .pip-state.snapshot i {
   background: var(--snapshot-blue);
-  box-shadow: 0 0 0 3px rgba(108, 143, 211, 0.16);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--snapshot-blue) 16%, transparent);
 }
 
 .pip-state.error i {
   background: var(--error-coral);
-  box-shadow: 0 0 0 3px rgba(217, 95, 97, 0.16);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--error-coral) 16%, transparent);
 }
 
 .pip-stop {

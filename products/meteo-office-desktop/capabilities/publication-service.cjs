@@ -223,6 +223,7 @@ function createPublicationService({
   }
 
   function secureAnchorAvailable() {
+    if (mode !== SecurityMode.MODES.STRICT) return false;
     try {
       return safeStorage?.isEncryptionAvailable?.() === true
         && String(safeStorage?.getSelectedStorageBackend?.() || '') !== 'basic_text';
@@ -240,6 +241,7 @@ function createPublicationService({
       throw new Error(`发布撤销日志锚点无法读取：${error?.message || String(error)}`);
     }
     if (envelope?.scheme === 'electron-safe-storage') {
+      if (mode !== SecurityMode.MODES.STRICT) return { migrateFromSecureStorage: true };
       if (!secureAnchorAvailable()) throw new Error('发布撤销日志安全锚点当前不可解密');
       try {
         return normalizedAnchor(JSON.parse(
@@ -251,7 +253,7 @@ function createPublicationService({
     }
     if (envelope?.scheme === 'profile-fallback') {
       if (mode === SecurityMode.MODES.STRICT) {
-        throw new Error('严格安全模式不接受未加密的发布撤销锚点');
+        return { migrateToSecureStorage: true, value: normalizedAnchor(envelope.value) };
       }
       return normalizedAnchor(envelope.value);
     }
@@ -361,7 +363,14 @@ function createPublicationService({
       entries.push({ generation, head, record });
     }
 
-    let anchor = readInvalidationAnchor();
+    const storedAnchor = readInvalidationAnchor();
+    const migrateFromSecureStorage = storedAnchor?.migrateFromSecureStorage === true;
+    const migrateToSecureStorage = storedAnchor?.migrateToSecureStorage === true;
+    let anchor = migrateFromSecureStorage
+      ? null
+      : migrateToSecureStorage
+        ? storedAnchor.value
+        : storedAnchor;
     if (uncommittedTailBytes != null) {
       const prefixMatchesAnchor = anchor
         ? anchor.generation === generation && anchor.head === head
@@ -380,7 +389,7 @@ function createPublicationService({
         if (descriptor != null) fs.closeSync(descriptor);
       }
     }
-    if (!anchor && generation > 0 && allowAnchorInitialization) {
+    if (!anchor && generation > 0 && (allowAnchorInitialization || migrateFromSecureStorage)) {
       anchor = { generation, head };
       writeInvalidationAnchor(anchor);
     }
@@ -403,6 +412,7 @@ function createPublicationService({
     if (anchor && generation === 0 && anchor.generation > 0) {
       throw new Error('发布撤销日志已被删除或回滚');
     }
+    if (anchor && migrateToSecureStorage) writeInvalidationAnchor(anchor);
     return { entries, generation, head };
   }
 

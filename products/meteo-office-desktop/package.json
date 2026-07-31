@@ -28,6 +28,7 @@
     "test:skill-creator": "node tests/skill-creator.cjs",
     "test:skillhub-client": "node tests/skillhub-client.cjs",
     "test:profile-context": "node tests/profile-context.cjs",
+    "test:auth-persistence": "node tests/auth-persistence.cjs",
     "test:model-routing": "node tests/model-routing.cjs",
     "test:session-platform-extensions": "node tests/session-platform-extensions.cjs",
     "test:permission-policy": "node tests/permission-policy.cjs",
@@ -49,7 +50,7 @@
     "record:weather-golden": "node scripts/record-weather-golden.cjs",
     "test:weather-beta3": "npm run test:weather-beta4",
     "test:weather-beta4": "npm run test:weather-contracts && npm run test:weather-provider && npm run test:weather-golden",
-    "test:phase1-hardening": "node tests/weather-credentials.cjs && node tests/weather-production.cjs && npm run test:weather-beta4 && node tests/weather-result-collector.cjs && npm run test:weather-runtime && npm run test:fixture-weather && node tests/safe-workspace.cjs && node tests/secret-store.cjs && node tests/shared-project-client.cjs && node tests/project-sharing.cjs && node tests/permission-policy-intranet.cjs && node tests/validation-production.cjs && node tests/publication-attestor.cjs && node tests/publication-service.cjs && node tests/publication-user-presence.cjs",
+    "test:phase1-hardening": "node tests/auth-persistence.cjs && node tests/weather-credentials.cjs && node tests/weather-production.cjs && npm run test:weather-beta4 && node tests/weather-result-collector.cjs && npm run test:weather-runtime && npm run test:fixture-weather && node tests/safe-workspace.cjs && node tests/secret-store.cjs && node tests/shared-project-client.cjs && node tests/project-sharing.cjs && node tests/permission-policy-intranet.cjs && node tests/validation-production.cjs && node tests/publication-attestor.cjs && node tests/publication-service.cjs && node tests/publication-user-presence.cjs",
     "check:schemas": "node tests/schema-contracts.cjs",
     "check": "npm run check:syntax && npm run test:browser-runtime && npm run test:computer-runtime && npm run test:office && npm run test:smoke && npm run test:ux-fixes && node tests/harness.cjs && node tests/expert-team.cjs && node tests/workflow.cjs && node tests/artifact-preview.cjs && node tests/completion-compat.cjs && node tests/state-bootstrap.cjs && node tests/capability-center.cjs && node tests/capability-wrapper.cjs && node tests/skill-creator.cjs && node tests/skillhub-client.cjs && node tests/profile-context.cjs && node tests/model-routing.cjs && node tests/session-platform-extensions.cjs && node tests/goose-runtime-environment.cjs && node tests/permission-policy.cjs && node tests/project-workspace.cjs && node tests/schema-contracts.cjs && npm run test:phase1-hardening"
   },

@@ -133,9 +133,16 @@ function profileKey(baseUrl, userId) {
 function createProfileContext({
   app,
   ipcMain,
+  credentialStore = null,
+  fetchImpl = globalThis.fetch,
+  notifyRenderer = () => {},
   allowOffline = process.env.METEOMATE_ALLOW_OFFLINE_LOGIN === '1',
 }) {
   let active = null;
+  let restorePending = false;
+  let restorePromise = null;
+  let refreshPromise = null;
+  let notice = '';
   const listeners = new Set();
 
   function globalPaths() {
@@ -197,7 +204,8 @@ function createProfileContext({
     if (active?.status !== 'authenticated') return false;
     if (!active.expiresAt) return true;
     const expiresAt = Date.parse(active.expiresAt);
-    return Number.isFinite(expiresAt) && expiresAt > Date.now();
+    return Number.isFinite(expiresAt)
+      && (expiresAt > Date.now() || Boolean(credentialStore?.hasCredential?.()));
   }
 
   function cachedProfile(key) {
@@ -233,7 +241,7 @@ function createProfileContext({
     if (!active) {
       const config = loadConfig();
       return {
-        status: 'signed_out',
+        status: restorePending ? 'loading' : 'signed_out',
         baseUrl: config.baseUrl,
         profileKey: null,
         user: null,
@@ -242,6 +250,8 @@ function createProfileContext({
         cachedUser: cached?.user || null,
         legacyDataAvailable: legacyDataAvailable(),
         policyContext: null,
+        notice,
+        persistentLoginAvailable: Boolean(credentialStore?.state?.().available),
       };
     }
     return {
@@ -254,12 +264,21 @@ function createProfileContext({
       cachedUser: active.user,
       legacyDataAvailable: legacyDataAvailable(),
       policyContext: active.policyContext,
+      notice,
+      persistentLoginAvailable: Boolean(credentialStore?.state?.().available),
     };
   }
 
   function notify() {
     const snapshot = publicState();
     for (const listener of listeners) listener(snapshot);
+  }
+
+  function invalidateSession(message) {
+    active = null;
+    notice = message;
+    notify();
+    notifyRenderer(publicState());
   }
 
   function activate({ baseUrl, user, token = '', expiresAt = null, status, policyContext = null }) {
@@ -292,44 +311,85 @@ function createProfileContext({
     return publicState();
   }
 
+  async function responsePayload(response) {
+    const text = await response.text();
+    try {
+      return text ? JSON.parse(text) : null;
+    } catch {
+      throw new Error(`内网服务返回了无效响应（${response.status}）`);
+    }
+  }
+
+  async function fetchPolicy(baseUrl, token) {
+    const policyResponse = await fetchImpl(`${baseUrl}/v1/me/policy`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (policyResponse.ok) return policyResponse.json();
+    if (policyResponse.status === 404) return null;
+    throw new Error(`策略读取失败（${policyResponse.status}）`);
+  }
+
+  async function revokeRemote(baseUrl, sessionToken, refreshToken = '') {
+    try {
+      await fetchImpl(`${baseUrl}/v1/auth/logout`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
+        },
+        body: JSON.stringify({ refreshToken }),
+        signal: AbortSignal.timeout(3_000),
+      });
+    } catch {}
+  }
+
+  function saveRefreshCredential(baseUrl, payload) {
+    if (!payload?.refreshToken || payload.user?.mustChangePassword || !credentialStore) return false;
+    credentialStore.save({
+      baseUrl,
+      refreshToken: payload.refreshToken,
+      refreshExpiresAt: payload.refreshExpiresAt || null,
+    });
+    return true;
+  }
+
   async function login(input = {}) {
     const baseUrl = normalizeBaseURL(input.baseUrl || loadConfig().baseUrl);
     const username = String(input.username || '').trim();
     const password = String(input.password || '');
     if (!username || !password) throw new Error('请输入用户名和密码');
+    const remember = Boolean(credentialStore?.state?.().available);
     let response;
     try {
-      response = await fetch(`${baseUrl}/v1/auth/login`, {
+      response = await fetchImpl(`${baseUrl}/v1/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password, clientId: `meteomate-desktop-${process.platform}` }),
+        body: JSON.stringify({ username, password, clientId: `meteomate-desktop-${process.platform}`, remember }),
         signal: AbortSignal.timeout(12_000),
       });
     } catch (error) {
       throw new Error(`无法连接 MeteoMate 内网服务：${error.message}`);
     }
-    const text = await response.text();
-    let payload = null;
-    try {
-      payload = text ? JSON.parse(text) : null;
-    } catch {
-      throw new Error(`内网服务返回了无效响应（${response.status}）`);
-    }
+    const payload = await responsePayload(response);
     if (!response.ok) throw new Error(payload?.error?.message || `登录失败（${response.status}）`);
     if (!payload?.sessionToken || !payload?.user?.id) throw new Error('登录响应缺少用户或会话信息');
     let policyContext = null;
     try {
-      const policyResponse = await fetch(`${baseUrl}/v1/me/policy`, {
-        headers: { Authorization: `Bearer ${payload.sessionToken}` },
-        signal: AbortSignal.timeout(8_000),
-      });
-      if (policyResponse.ok) policyContext = await policyResponse.json();
-      else if (policyResponse.status !== 404) throw new Error(`策略读取失败（${policyResponse.status}）`);
+      policyContext = await fetchPolicy(baseUrl, payload.sessionToken);
     } catch (error) {
-      try {
-        await fetch(`${baseUrl}/v1/auth/logout`, { method: 'POST', headers: { Authorization: `Bearer ${payload.sessionToken}` }, signal: AbortSignal.timeout(3_000) });
-      } catch {}
+      await revokeRemote(baseUrl, payload.sessionToken, payload.refreshToken);
       throw new Error(`无法读取当前用户的组织策略：${error.message}`);
+    }
+    notice = '';
+    if (payload.user.mustChangePassword) {
+      try { credentialStore?.clear?.(); } catch {}
+    } else if (payload.refreshToken) {
+      try {
+        saveRefreshCredential(baseUrl, payload);
+      } catch (error) {
+        notice = `${error.message}，本次关闭后需要重新登录`;
+      }
     }
     return activate({
       baseUrl,
@@ -341,6 +401,101 @@ function createProfileContext({
     });
   }
 
+  async function refreshAuthenticatedSession() {
+    if (refreshPromise) return refreshPromise;
+    refreshPromise = (async () => {
+      const credential = credentialStore?.load?.();
+      if (!credential?.refreshToken) throw new Error('没有可用于恢复登录的安全凭据');
+      const baseUrl = normalizeBaseURL(credential.baseUrl || loadConfig().baseUrl);
+      let response;
+      try {
+        response = await fetchImpl(`${baseUrl}/v1/auth/refresh`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refreshToken: credential.refreshToken }),
+          signal: AbortSignal.timeout(12_000),
+        });
+      } catch (error) {
+        throw new Error(`无法连接 MeteoMate 内网服务：${error.message}`);
+      }
+      const payload = await responsePayload(response);
+      if (!response.ok) {
+        if (response.status === 401) {
+          try { credentialStore.clear(); } catch {}
+          invalidateSession('登录状态已失效，请重新登录');
+        }
+        throw new Error(payload?.error?.message || `自动登录失败（${response.status}）`);
+      }
+      if (!payload?.sessionToken || !payload?.refreshToken || !payload?.user?.id) {
+        throw new Error('自动登录响应缺少用户或会话信息');
+      }
+      notice = '';
+      try {
+        saveRefreshCredential(baseUrl, payload);
+      } catch (error) {
+        try { credentialStore.clear(); } catch {}
+        notice = `${error.message}，本次关闭后需要重新登录`;
+      }
+      const policyContext = await fetchPolicy(baseUrl, payload.sessionToken);
+      return activate({
+        baseUrl,
+        user: payload.user,
+        token: payload.sessionToken,
+        expiresAt: payload.expiresAt || null,
+        status: 'authenticated',
+        policyContext,
+      });
+    })().finally(() => {
+      refreshPromise = null;
+    });
+    return refreshPromise;
+  }
+
+  function beginRestore() {
+    if (restorePromise) return restorePromise;
+    if (!credentialStore?.hasCredential?.()) {
+      restorePromise = Promise.resolve(publicState());
+      return restorePromise;
+    }
+    restorePending = true;
+    const ready = typeof app.whenReady === 'function' ? app.whenReady() : Promise.resolve();
+    restorePromise = Promise.resolve(ready)
+      .then(() => refreshAuthenticatedSession())
+      .catch((error) => {
+        if (!notice) notice = error.message;
+        return null;
+      })
+      .finally(() => {
+        restorePending = false;
+        notify();
+      })
+      .then(() => publicState());
+    return restorePromise;
+  }
+
+  async function fetchAuthenticated(target, options = {}) {
+    if (active?.status !== 'authenticated') throw new Error('请先登录 MeteoMate 内网服务');
+    const expiresAt = Date.parse(active.expiresAt || '');
+    if (Number.isFinite(expiresAt) && expiresAt <= Date.now() + 30_000 && credentialStore?.hasCredential?.()) {
+      await refreshAuthenticatedSession();
+    }
+    const send = () => {
+      const headers = new Headers(options.headers || {});
+      headers.set('Authorization', `Bearer ${active.token}`);
+      return fetchImpl(target, { ...options, headers });
+    };
+    const requestToken = active.token;
+    let response = await send();
+    if (response.status === 401 && credentialStore?.hasCredential?.()) {
+      if (active?.token === requestToken) await refreshAuthenticatedSession();
+      response = await send();
+    }
+    if (response.status === 401 && !credentialStore?.hasCredential?.()) {
+      invalidateSession('登录状态已失效，请重新登录');
+    }
+    return response;
+  }
+
   function openOffline() {
     if (!allowOffline) throw new Error('离线登录未启用，请联系管理员');
     const cached = cachedState();
@@ -350,16 +505,13 @@ function createProfileContext({
 
   async function logout() {
     const session = active;
-    if (session?.status === 'authenticated' && session.token) {
-      try {
-        await fetch(`${session.baseUrl}/v1/auth/logout`, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${session.token}` },
-          signal: AbortSignal.timeout(5_000),
-        });
-      } catch {}
+    const credential = credentialStore?.load?.();
+    if (session?.status === 'authenticated' || credential?.refreshToken) {
+      await revokeRemote(session?.baseUrl || credential.baseUrl, session?.token || '', credential?.refreshToken || '');
     }
+    try { credentialStore?.clear?.(); } catch {}
     active = null;
+    notice = '';
     notify();
     return publicState();
   }
@@ -371,7 +523,7 @@ function createProfileContext({
     if (!currentPassword || !newPassword) throw new Error('请输入当前密码和新密码');
     let response;
     try {
-      response = await fetch(`${active.baseUrl}/v1/me/password`, {
+      response = await fetchAuthenticated(`${active.baseUrl}/v1/me/password`, {
         method: 'POST',
         headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ currentPassword, newPassword }),
@@ -389,6 +541,7 @@ function createProfileContext({
     }
     if (!response.ok) throw new Error(payload?.error?.message || `密码修改失败（${response.status}）`);
     saveConfig({ baseUrl: active.baseUrl, lastProfileKey: '' });
+    try { credentialStore?.clear?.(); } catch {}
     active = null;
     notify();
     return publicState();
@@ -628,7 +781,10 @@ function createProfileContext({
   }
 
   function registerIpc() {
-    ipcMain.handle('auth:state', async () => publicState());
+    ipcMain.handle('auth:state', async () => {
+      await beginRestore();
+      return publicState();
+    });
     ipcMain.handle('auth:login', async (_event, request) => login(request || {}));
     ipcMain.handle('auth:offline', async () => openOffline());
     ipcMain.handle('auth:logout', async () => logout());
@@ -648,6 +804,8 @@ function createProfileContext({
     claimLegacyData,
     currentPaths,
     authHeaders,
+    fetchAuthenticated,
+    beginRestore,
     policyContext: currentPolicyContext,
     filterModelSettings,
     desktopPreferences,

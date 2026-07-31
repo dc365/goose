@@ -91,11 +91,11 @@ function createSkillHubClient({ app, ipcMain, capabilityService, skillCreatorSer
   async function request(relative, options = {}) {
     const baseUrl = profileContext?.baseUrl() || DEFAULT_BASE_URL;
     const target = `${baseUrl}${relative.startsWith('/') ? relative : `/${relative}`}`;
-    const response = await fetch(target, {
-      ...options,
-      headers: authHeaders(options.headers || {}),
-      signal: AbortSignal.timeout(options.timeoutMs || 20_000),
-    });
+    const { timeoutMs = 20_000, authenticated = true, ...requestOptions } = options;
+    const init = { ...requestOptions, signal: AbortSignal.timeout(timeoutMs) };
+    const response = authenticated && typeof profileContext?.fetchAuthenticated === 'function'
+      ? await profileContext.fetchAuthenticated(target, init)
+      : await fetch(target, { ...init, headers: authHeaders(requestOptions.headers || {}) });
     return { response, target };
   }
 
@@ -125,7 +125,7 @@ function createSkillHubClient({ app, ipcMain, capabilityService, skillCreatorSer
 
   async function testConnection() {
     const startedAt = Date.now();
-    const health = await jsonRequest('/healthz', { timeoutMs: 8_000 });
+    const health = await jsonRequest('/healthz', { timeoutMs: 8_000, authenticated: false });
     let identity = null;
     try {
       const me = await jsonRequest('/v1/me', { timeoutMs: 8_000 });

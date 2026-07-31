@@ -13,16 +13,19 @@ assert.equal(stableDigest(QcPolicy.POLICY_DEFINITION), QcPolicy.POLICY_DIGEST);
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'meteomate-publication-'));
 const safeStorageKey = crypto.randomBytes(32);
+let safeStorageCalls = 0;
 const safeStorage = {
-  isEncryptionAvailable: () => true,
-  getSelectedStorageBackend: () => 'test-aes-gcm',
+  isEncryptionAvailable() { safeStorageCalls += 1; return true; },
+  getSelectedStorageBackend() { safeStorageCalls += 1; return 'test-aes-gcm'; },
   encryptString(value) {
+    safeStorageCalls += 1;
     const iv = crypto.randomBytes(12);
     const cipher = crypto.createCipheriv('aes-256-gcm', safeStorageKey, iv);
     const encrypted = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()]);
     return Buffer.concat([iv, cipher.getAuthTag(), encrypted]);
   },
   decryptString(value) {
+    safeStorageCalls += 1;
     const iv = value.subarray(0, 12);
     const tag = value.subarray(12, 28);
     const decipher = crypto.createDecipheriv('aes-256-gcm', safeStorageKey, iv);
@@ -616,6 +619,7 @@ const cachedProfileService = createPublicationService({
 const cachedProfileSignoff = cachedProfileService.sign(publicationInput('task-cached-profile')).signoff;
 assert.notEqual(cachedProfileSignoff.reviewerId, 'forged-cached-admin');
 assert.equal(cachedProfileSignoff.verification, 'local-profile');
+assert.equal(safeStorageCalls, 0, 'internal publication mode must not access Keychain/safeStorage');
 
 const strictService = createPublicationService({
   ipcMain: { handle() {} },
@@ -705,6 +709,17 @@ const missingInvalidationAnchor = service.check(signoffReplayInput);
 assert.equal(missingInvalidationAnchor.gate.ready, false);
 assert.ok(missingInvalidationAnchor.gate.blockers.some((item) => item.includes('锚点')));
 fs.renameSync(hiddenInvalidationAnchorPath, invalidationAnchorPath);
+
+const secureStorageCallsBeforeAnchorMigration = safeStorageCalls;
+fs.writeFileSync(invalidationAnchorPath, JSON.stringify({
+  version: 1,
+  scheme: 'electron-safe-storage',
+  data: 'must-not-be-decrypted-in-internal-mode',
+}));
+const migratedLegacyAnchor = service.check(signoffReplayInput);
+assert.equal(migratedLegacyAnchor.gate.blockers.some((item) => item.includes('锚点')), false);
+assert.equal(safeStorageCalls, secureStorageCallsBeforeAnchorMigration);
+assert.equal(JSON.parse(fs.readFileSync(invalidationAnchorPath, 'utf8')).scheme, 'profile-fallback');
 
 const internalModeInput = publicationInput('task-security-mode-transition');
 const internalModeSignoff = service.sign(internalModeInput);

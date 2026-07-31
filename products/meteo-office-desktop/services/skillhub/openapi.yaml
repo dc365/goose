@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: MeteoMate SkillHub API
-  version: 1.6.0
+  version: 1.7.0
   description: Self-hosted registry for MeteoMate Experts and Agent Skills packages.
 servers:
   - url: http://127.0.0.1:8088
@@ -18,12 +18,35 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/LoginRequest'}
       responses:
-        '200': {description: Authenticated desktop session}
+        '200':
+          description: Authenticated session, optionally including a rotating refresh token
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AuthResult'}
         '401': {description: Invalid credentials or disabled account}
         '429': {description: Too many failed login attempts}
+  /v1/auth/refresh:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RefreshRequest'}
+      responses:
+        '200':
+          description: Access and refresh tokens rotated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AuthResult'}
+        '401': {description: Refresh token invalid, expired, revoked, or replayed}
   /v1/auth/logout:
     post:
-      security: [{bearerAuth: []}]
+      security: [{bearerAuth: []}, {}]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RefreshRequest'}
       responses:
         '200': {description: Session revoked}
   /v1/me:
@@ -585,6 +608,21 @@ components:
         username: {type: string}
         password: {type: string, format: password}
         clientId: {type: string}
+        remember: {type: boolean, default: false}
+    RefreshRequest:
+      type: object
+      required: [refreshToken]
+      properties:
+        refreshToken: {type: string, writeOnly: true}
+    AuthResult:
+      type: object
+      required: [sessionToken, expiresAt, user]
+      properties:
+        sessionToken: {type: string, writeOnly: true}
+        expiresAt: {type: string, format: date-time}
+        refreshToken: {type: string, writeOnly: true}
+        refreshExpiresAt: {type: string, format: date-time}
+        user: {type: object, additionalProperties: true}
     CreateUserRequest:
       type: object
       required: [username, password, role]

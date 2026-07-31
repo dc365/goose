@@ -295,6 +295,7 @@ let accountSession = {
   legacyDataAvailable: false,
   policyContext: null,
 };
+let unsubscribeAccountState = null;
 let state = structuredClone(initialState);
 let unsubscribeRuntimeEvents = null;
 let responseElapsedTimer = null;
@@ -1178,7 +1179,7 @@ function renderCatalogTitlebarActions() {
     return window.MeteoMateWorkflowCenter?.titlebar?.().actions || '';
   }
   if (state.catalogTab !== 'experts') return '';
-  return `<label class="search-box titlebar-catalog-search">${icon('search')}<input id="catalog-search" value="${escapeHtml(state.search)}" placeholder="搜索专家名称或描述" /></label><button class="my-experts ${state.favoritesOnly ? 'active' : ''}" id="toggle-favorites">${icon('star')} 我的专家</button>`;
+  return `<label class="search-box titlebar-catalog-search">${icon('search')}<input id="catalog-search" value="${escapeHtml(state.search)}" placeholder="搜索专家名称或描述" /></label><button class="my-experts ${state.favoritesOnly ? 'active' : ''}" id="toggle-favorites" aria-label="我的专家" title="我的专家">${icon('star')} 我的专家</button>`;
 }
 
 function renderWindowTitlebar() {
@@ -1209,10 +1210,12 @@ function renderWindowTitlebar() {
     const workflowTitlebar = state.catalogTab === 'workflows'
       ? window.MeteoMateWorkflowCenter?.titlebar?.() || {}
       : {};
-    title = '';
-    titleIcon = null;
+    title = workflowTitlebar.immersive ? workflowTitlebar.title || '' : '';
+    titleIcon = workflowTitlebar.immersive ? workflowTitlebar.icon || null : null;
     backButton = workflowTitlebar.backButton || '';
-    navigation = `<nav class="titlebar-catalog-tabs" aria-label="能力中心">${catalogTabButton('experts', '专家')}${catalogTabButton('skills', '技能')}${catalogTabButton('connectors', '工具')}${catalogTabButton('workflows', '工作流')}</nav>`;
+    navigation = workflowTitlebar.immersive
+      ? ''
+      : `<nav class="titlebar-catalog-tabs" aria-label="能力中心">${catalogTabButton('experts', '专家')}${catalogTabButton('skills', '技能')}${catalogTabButton('connectors', '工具')}${catalogTabButton('workflows', '工作流')}</nav>`;
     actions = renderCatalogTitlebarActions();
   } else if (state.view === 'automation') {
     const draft = automationUI.editor;
@@ -1356,7 +1359,7 @@ function renderSidebar() {
         ${navItem('automation', 'automation', '自动化', state.view === 'automation')}
       </nav>
       <section class="sidebar-section">
-        <div class="sidebar-section-title"><span>任务 (${taskHistory.length})</span><span>⌄</span></div>
+        <div class="sidebar-section-title"><span>任务 (${taskHistory.length})</span><span class="sidebar-section-chevron">${icon('down')}</span></div>
         <div class="sidebar-list">
           ${
             recentTasks.length
@@ -1366,7 +1369,7 @@ function renderSidebar() {
         </div>
       </section>
       <section class="sidebar-section workspace-section">
-        <div class="sidebar-section-title"><span>空间 (${state.projects.length})</span><span>⌄</span></div>
+        <div class="sidebar-section-title"><span>空间 (${state.projects.length})</span><span class="sidebar-section-chevron">${icon('down')}</span></div>
         <div class="sidebar-list">
           ${
             recentProjects.length

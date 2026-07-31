@@ -94,7 +94,15 @@ Desktop login:
 ```bash
 curl -X POST http://127.0.0.1:8088/v1/auth/login \
   -H 'Content-Type: application/json' \
-  -d '{"username":"forecaster","password":"temporary-password","clientId":"meteomate-desktop"}'
+  -d '{"username":"forecaster","password":"temporary-password","clientId":"meteomate-desktop","remember":true}'
+```
+
+Remembered desktop logins use a 30-minute access token and a rotating refresh token that expires after 30 days of inactivity. In the default intranet mode, the desktop stores the refresh token in an owner-only `0600` file without accessing macOS Keychain. Strict security mode uses the operating system's secure storage instead. SkillHub stores only the refresh token's SHA-256 hash in `data/auth/refresh-sessions.json`. Password changes, account disabling, explicit logout, administrator revocation, and refresh-token replay revoke the remembered device session.
+
+```bash
+curl -X POST http://127.0.0.1:8088/v1/auth/refresh \
+  -H 'Content-Type: application/json' \
+  -d '{"refreshToken":"<refreshToken returned by login>"}'
 ```
 
 Public search:
@@ -205,6 +213,7 @@ The private signing key is generated with file mode `0600`. Back up the `trust` 
 ```text
 GET    /healthz
 POST   /v1/auth/login
+POST   /v1/auth/refresh
 POST   /v1/auth/logout
 GET    /v1/me
 PATCH  /v1/me

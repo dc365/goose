@@ -14,6 +14,11 @@ type loginInput struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
 	ClientID string `json:"clientId"`
+	Remember bool   `json:"remember"`
+}
+
+type refreshInput struct {
+	RefreshToken string `json:"refreshToken"`
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
@@ -37,9 +42,14 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusTooManyRequests, "login_rate_limited", "登录失败次数过多，请稍后再试")
 		return
 	}
-	result, err := s.auth.Login(input.Username, input.Password, input.ClientID)
+	result, err := s.auth.Login(input.Username, input.Password, input.ClientID, input.Remember)
 	if err != nil {
 		s.logins.failed(attemptKey, now)
+		if !errors.Is(err, auth.ErrInvalidCredentials) && !errors.Is(err, auth.ErrAccountDisabled) {
+			s.auditAs(r, auth.Actor{Role: "anonymous"}, "auth.login.failed", strings.ToLower(input.Username), map[string]any{"clientId": input.ClientID, "reason": "internal_error"})
+			writeError(w, http.StatusInternalServerError, "login_failed", "登录服务暂时不可用")
+			return
+		}
 		status := http.StatusUnauthorized
 		code := "invalid_credentials"
 		message := "用户名或密码错误"
@@ -56,9 +66,43 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+func (s *Server) refresh(w http.ResponseWriter, r *http.Request) {
+	var input refreshInput
+	if err := decodeJSON(w, r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+	result, err := s.auth.Refresh(strings.TrimSpace(input.RefreshToken))
+	if err != nil {
+		if errors.Is(err, auth.ErrInvalidRefreshToken) || errors.Is(err, auth.ErrRefreshTokenReuse) {
+			code := "refresh_token_invalid"
+			if errors.Is(err, auth.ErrRefreshTokenReuse) {
+				code = "refresh_token_reused"
+			}
+			writeError(w, http.StatusUnauthorized, code, "登录状态已失效，请重新登录")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "refresh_failed", "无法恢复登录状态")
+		return
+	}
+	s.auditAs(r, result.User.Actor(), "auth.refresh", result.User.ID, nil)
+	writeJSON(w, http.StatusOK, result)
+}
+
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	actor := auth.FromContext(r.Context())
-	removed := s.auth.Logout(auth.BearerToken(r))
+	var input refreshInput
+	if r.ContentLength != 0 {
+		if err := decodeJSON(w, r, &input); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+			return
+		}
+	}
+	removed, err := s.auth.Logout(auth.BearerToken(r), strings.TrimSpace(input.RefreshToken))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "logout_failed", "无法撤销登录状态")
+		return
+	}
 	if actor.Authenticated() {
 		s.audit(r, "auth.logout", actor.Subject, nil)
 	}
@@ -117,7 +161,10 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.audit(r, "user.password.change", actor.Subject, nil)
-	s.auth.LogoutUser(actor.Subject)
+	if _, err := s.auth.LogoutUser(actor.Subject); err != nil {
+		writeError(w, http.StatusInternalServerError, "session_revoke_failed", "密码已修改，但旧会话撤销失败")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"changed": true, "loginRequired": true})
 }
 
@@ -166,7 +213,11 @@ func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	revoked := 0
 	if user.Status == "disabled" {
-		revoked = s.auth.LogoutUser(user.ID)
+		revoked, err = s.auth.LogoutUser(user.ID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "session_revoke_failed", "账户已停用，但旧会话撤销失败")
+			return
+		}
 	}
 	s.audit(r, "user.update", user.ID, map[string]any{"role": user.Role, "status": user.Status, "sessionsRevoked": revoked})
 	writeJSON(w, http.StatusOK, user)
@@ -188,7 +239,11 @@ func (s *Server) resetUserPassword(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "password_reset_failed", err.Error())
 		return
 	}
-	revoked := s.auth.LogoutUser(userID)
+	revoked, err := s.auth.LogoutUser(userID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "session_revoke_failed", "密码已重置，但旧会话撤销失败")
+		return
+	}
 	s.audit(r, "user.password.reset", userID, map[string]any{"sessionsRevoked": revoked})
 	writeJSON(w, http.StatusOK, map[string]any{"reset": true, "sessionsRevoked": revoked})
 }
@@ -206,7 +261,12 @@ func (s *Server) revokeSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sessionID := r.PathValue("id")
-	if !s.auth.RevokeSession(sessionID) {
+	revoked, err := s.auth.RevokeSession(sessionID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "session_revoke_failed", "无法撤销会话")
+		return
+	}
+	if !revoked {
 		writeError(w, http.StatusNotFound, "session_not_found", "会话不存在或已经失效")
 		return
 	}
@@ -223,7 +283,11 @@ func (s *Server) revokeUserSessions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "user_not_found", "用户不存在")
 		return
 	}
-	revoked := s.auth.LogoutUser(userID)
+	revoked, err := s.auth.LogoutUser(userID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "session_revoke_failed", "无法撤销用户会话")
+		return
+	}
 	s.audit(r, "user.sessions.revoke", userID, map[string]any{"sessionsRevoked": revoked})
 	writeJSON(w, http.StatusOK, map[string]any{"revoked": revoked})
 }
