@@ -10,6 +10,7 @@ import (
 
 	"github.com/dc365/goose/products/meteo-office-desktop/services/skillhub/internal/adminui"
 	"github.com/dc365/goose/products/meteo-office-desktop/services/skillhub/internal/auth"
+	"github.com/dc365/goose/products/meteo-office-desktop/services/skillhub/internal/modelcatalog"
 	"github.com/dc365/goose/products/meteo-office-desktop/services/skillhub/internal/policy"
 	"github.com/dc365/goose/products/meteo-office-desktop/services/skillhub/internal/store"
 	"github.com/dc365/goose/products/meteo-office-desktop/services/skillhub/internal/trust"
@@ -25,6 +26,7 @@ type Server struct {
 	mux      *http.ServeMux
 	logins   *loginLimiter
 	policies *policy.Store
+	models   *modelcatalog.Store
 }
 
 type Config struct {
@@ -32,6 +34,7 @@ type Config struct {
 	Signer        *trust.Signer
 	Authenticator *auth.Authenticator
 	Policies      *policy.Store
+	ModelCatalog  *modelcatalog.Store
 	Logger        *slog.Logger
 }
 
@@ -47,9 +50,13 @@ func New(config Config) (*Server, error) {
 	if policies == nil {
 		policies = policy.NewMemory()
 	}
+	models := config.ModelCatalog
+	if models == nil {
+		models = modelcatalog.NewMemory()
+	}
 	s := &Server{
 		store: config.Store, signer: config.Signer, auth: config.Authenticator,
-		logger: logger, mux: http.NewServeMux(), logins: newLoginLimiter(), policies: policies,
+		logger: logger, mux: http.NewServeMux(), logins: newLoginLimiter(), policies: policies, models: models,
 	}
 	s.routes()
 	return s, nil
@@ -69,6 +76,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PATCH /v1/me", s.updateMe)
 	s.mux.HandleFunc("POST /v1/me/password", s.changePassword)
 	s.mux.HandleFunc("GET /v1/me/policy", s.myPolicy)
+	s.mux.HandleFunc("GET /v1/me/model-catalog", s.myModelCatalog)
 	s.mux.HandleFunc("GET /v1/admin/users", s.listUsers)
 	s.mux.HandleFunc("POST /v1/admin/users", s.createUser)
 	s.mux.HandleFunc("PATCH /v1/admin/users/{id}", s.updateUser)
@@ -84,6 +92,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /v1/admin/policies/users/{id}", s.updateUserPolicy)
 	s.mux.HandleFunc("DELETE /v1/admin/policies/users/{id}", s.deleteUserPolicy)
 	s.mux.HandleFunc("GET /v1/admin/policies/effective/users/{id}", s.previewUserPolicy)
+	s.mux.HandleFunc("GET /v1/admin/model-providers", s.listModelProviders)
+	s.mux.HandleFunc("PUT /v1/admin/model-providers/{id}", s.putModelProvider)
+	s.mux.HandleFunc("DELETE /v1/admin/model-providers/{id}", s.deleteModelProvider)
+	s.mux.HandleFunc("POST /v1/admin/model-providers/{id}/verification", s.recordModelProviderVerification)
 	s.mux.HandleFunc("GET /v1/trust/keys", s.trustKeys)
 	s.mux.HandleFunc("GET /v1/skills", s.listSkills)
 	s.mux.HandleFunc("GET /v1/skills/{id}", s.getSkill)

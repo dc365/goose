@@ -5,8 +5,8 @@ const vm = require('node:vm');
 
 const root = path.resolve(__dirname, '..');
 const source = fs.readFileSync(path.join(root, 'renderer-actions.js'), 'utf8');
+const mainSource = fs.readFileSync(path.join(root, 'main.cjs'), 'utf8');
 const rendererSource = fs.readFileSync(path.join(root, 'renderer-core.js'), 'utf8');
-const QcPolicy = require(path.join(root, 'harness/qc-policy'));
 
 function extractNamedFunction(name, input = source) {
   const start = input.indexOf(`function ${name}(`);
@@ -129,151 +129,159 @@ assert.deepEqual(plain(sent.shift()), {
 assert.equal(vm.runInContext(`runtimeEventCommitMode('evidence_created')`, context), 'progress');
 assert.equal(vm.runInContext(`runtimeEventCommitMode('artifact_created')`, context), 'progress');
 assert.equal(vm.runInContext(`runtimeEventCommitMode('assistant_message_delta')`, context), 'stream');
+assert.equal(vm.runInContext(`runtimeEventCommitMode('team_member_progress')`, context), 'stream');
 for (let index = 0; index < 100; index += 1) {
   vm.runInContext('scheduleRuntimeProgressCommit(activeTask)', context);
 }
 assert.equal(context.progressTimerCalls, 1);
 assert.equal(context.runtimeProgressCommitTimers.size, 1);
 
-const publicationTask = {
-  id: 'publication-task',
-  publicationAnalysis: {
-    conclusions: [],
-  },
-  evidence: [],
-  artifacts: [
-    {
-      id: 'forecast-v1',
-      name: 'forecast-old.html',
-      path: '/workspace/forecast.html',
-    },
-    {
-      id: 'forecast-v2',
-      name: 'forecast-current.html',
-      path: '/workspace/forecast.html',
-    },
-  ],
-  publication: {
-    dirty: false,
-    gate: { ready: true, blockers: [], warnings: [], checkedAt: 1234 },
-    signoff: { approved: true, reviewerName: '旧签发人' },
-  },
-};
-let appliedServiceArguments = [];
-const publicationContext = vm.createContext({
-  Date,
-  publicationUI: {
-    open: true,
-    taskId: publicationTask.id,
-    busy: '',
-    busyTargetId: null,
-    error: '',
-    qcWaiverReasons: {},
-  },
-  window: {
-    MeteoMateHarness: {
-      QcPolicy,
-      PublicationState: {
-        analysisForTask(currentTask) {
-          return currentTask.publicationAnalysis;
-        },
-        cachedRequestMatchesTask(currentTask) {
-          return currentTask.publication?.requestFingerprint === 'current';
-        },
-        currentArtifacts(artifacts) {
-          return artifacts.slice(-1);
-        },
-        applyServiceResult(...args) {
-          appliedServiceArguments = args;
-        },
-        requestMatchesTask() {
-          return true;
-        },
-        evaluate() {
-          return {
-            ready: false,
-            blockers: ['本地预检阻塞项'],
-            warnings: [],
-            checkedAt: null,
-          };
-        },
-        signable() {
-          return false;
-        },
-      },
-    },
-  },
-  escapeHtml(value) {
-    return String(value ?? '');
-  },
-  formatDateTime(value) {
-    return String(value);
-  },
-  icon(name) {
-    return `[${name}]`;
-  },
-  pathBaseName(value) {
-    return String(value).split('/').at(-1);
-  },
-  publicationEvidenceLabel(record = {}) {
-    return record.variable || record.evidenceType || record.id || '';
-  },
-});
+const streamPreviewContext = vm.createContext({});
+vm.runInContext(extractNamedFunction('streamingTextPreview', mainSource), streamPreviewContext);
+assert.equal(streamPreviewContext.streamingTextPreview('逐字输出', 8), '逐字输出');
+assert.equal(
+  streamPreviewContext.streamingTextPreview('1234567890', 6),
+  '> 较早内容已收起，以下为最新阶段输出。\n\n567890',
+);
+
+const teamVisibilityContext = vm.createContext({});
 vm.runInContext(
   [
-    extractNamedFunction('publicationGateForTask', rendererSource),
-    extractNamedFunction('publicationQcReasonKey', rendererSource),
-    extractNamedFunction('renderPublicationQcReview', rendererSource),
-    extractNamedFunction('renderPublicationEvidence', rendererSource),
-    extractNamedFunction('renderTaskPublicationPanel', rendererSource),
-    extractNamedFunction('applyPublicationResult'),
+    extractNamedFunction('teamMemberHasEnteredRun', rendererSource),
+    extractNamedFunction('teamProcessFeedEntries', rendererSource),
   ].join('\n'),
-  publicationContext,
+  teamVisibilityContext,
 );
-publicationContext.publicationTask = publicationTask;
-const stalePublicationHtml = vm.runInContext(
-  'renderTaskPublicationPanel(publicationTask)',
-  publicationContext,
+assert.equal(teamVisibilityContext.teamMemberHasEnteredRun({ status: 'pending' }), false);
+assert.equal(teamVisibilityContext.teamMemberHasEnteredRun({ status: 'interrupted' }), false);
+assert.equal(teamVisibilityContext.teamMemberHasEnteredRun({ status: 'running' }), true);
+assert.equal(teamVisibilityContext.teamMemberHasEnteredRun({ status: 'pending', startedAt: 100 }), true);
+assert.equal(teamVisibilityContext.teamMemberHasEnteredRun({ status: 'completed' }), true);
+assert.deepEqual(
+  plain(teamVisibilityContext.teamProcessFeedEntries({
+    status: 'completed',
+    updates: [
+      { id: 'message:0', source: 'message', text: 'Now let me inspect the data', status: 'streaming' },
+      { id: 'tool:1', source: 'activity', text: 'weather_get_case', status: 'completed' },
+      { id: 'message:1', source: 'message', text: '# 完整报告正文', status: 'completed' },
+    ],
+  })),
+  [
+    { id: 'drafting-handoff', source: 'status', text: '已完成阶段分析并提交交接结果。', status: 'completed' },
+    { id: 'tool:1', source: 'activity', text: 'weather_get_case', status: 'completed' },
+  ],
 );
-assert.match(stalePublicationHtml, /本地预检查，签发前需正式检查/);
-assert.match(stalePublicationHtml, /请重新运行发布检查/);
-assert.match(stalePublicationHtml, /forecast-current\.html/);
-assert.doesNotMatch(stalePublicationHtml, /forecast-old\.html/);
-assert.doesNotMatch(stalePublicationHtml, /已签发/);
-assert.doesNotMatch(stalePublicationHtml, /旧签发人/);
+assert.deepEqual(
+  plain(teamVisibilityContext.teamProcessFeedEntries({
+    status: 'running',
+    updates: [
+      { id: 'message:0', source: 'message', text: '**阶段一**\n\n正在建立分析基线。', status: 'streaming' },
+      { id: 'tool:1', source: 'activity', text: 'weather_get_case', status: 'completed' },
+    ],
+  })),
+  [
+    { id: 'message:0', source: 'message', text: '**阶段一**\n\n正在建立分析基线。', status: 'streaming' },
+    { id: 'tool:1', source: 'activity', text: 'weather_get_case', status: 'completed' },
+  ],
+);
 
-publicationTask.publication.requestFingerprint = 'current';
-const currentPublicationHtml = vm.runInContext(
-  'renderTaskPublicationPanel(publicationTask)',
-  publicationContext,
+const teamTerminalContext = vm.createContext({ Date });
+vm.runInContext(
+  [
+    extractNamedFunction('appendTeamMemberUpdate'),
+    extractNamedFunction('teamMemberProgressDisplay'),
+    extractNamedFunction('finalizeTeamMemberUpdates'),
+    extractNamedFunction('teamMemberAcceptsLiveUpdate'),
+    extractNamedFunction('settleTeamRunMembers'),
+  ].join('\n'),
+  teamTerminalContext,
 );
-assert.match(currentPublicationHtml, /已签发/);
-assert.match(currentPublicationHtml, /旧签发人/);
-publicationTask.publication.gate = {
-  ready: false,
-  blockers: ['签发后的输入已经变化'],
-  warnings: [],
-  checkedAt: 2345,
+assert.equal(teamTerminalContext.teamMemberAcceptsLiveUpdate({ status: 'failed' }), false);
+assert.equal(teamTerminalContext.teamMemberAcceptsLiveUpdate({ status: 'completed' }), false);
+assert.equal(teamTerminalContext.teamMemberAcceptsLiveUpdate({ status: 'running' }), true);
+assert.deepEqual(plain(teamTerminalContext.teamMemberProgressDisplay({
+  progressId: 'message:9',
+  source: 'message',
+  detail: 'Now let me gather the source data',
+})), {
+  id: 'message:9',
+  source: 'message',
+  text: 'Now let me gather the source data',
+});
+const updateMember = { updates: [] };
+teamTerminalContext.appendTeamMemberUpdate(updateMember, {
+  id: 'message:0', source: 'message', text: '第一段', status: 'streaming', at: 100,
+});
+teamTerminalContext.appendTeamMemberUpdate(updateMember, {
+  id: 'message:0', source: 'message', text: '第一段继续增长', status: 'streaming', at: 110,
+});
+teamTerminalContext.appendTeamMemberUpdate(updateMember, {
+  id: 'activity:tool-1', source: 'activity', text: 'weather_get_case', status: 'running', at: 120,
+});
+teamTerminalContext.appendTeamMemberUpdate(updateMember, {
+  id: 'message:1', source: 'message', text: '第二段', status: 'streaming', at: 130,
+});
+teamTerminalContext.appendTeamMemberUpdate(updateMember, {
+  id: 'activity:tool-1', source: 'activity', text: 'weather_get_case', status: 'completed', at: 140,
+});
+assert.deepEqual(plain(updateMember.updates.map((entry) => [entry.id, entry.text, entry.status])), [
+  ['message:0', '第一段继续增长', 'completed'],
+  ['activity:tool-1', 'weather_get_case', 'completed'],
+  ['message:1', '第二段', 'streaming'],
+]);
+updateMember.activities = [
+  { id: 'tool-1', status: 'running', updatedAt: 140 },
+  { id: 'tool-2', status: 'completed', updatedAt: 145 },
+];
+teamTerminalContext.finalizeTeamMemberUpdates(updateMember, 'completed', 150);
+assert.equal(updateMember.updates.at(-1).status, 'completed');
+assert.deepEqual(plain(updateMember.activities.map((activity) => activity.status)), ['completed', 'completed']);
+const failedMember = {
+  updates: [{ id: 'message:0', source: 'status', text: '正在分析', status: 'streaming' }],
+  activities: [{ id: 'tool-1', status: 'running' }],
 };
-const changedSignedPublicationHtml = vm.runInContext(
-  'renderTaskPublicationPanel(publicationTask)',
-  publicationContext,
+teamTerminalContext.finalizeTeamMemberUpdates(failedMember, 'failed', 180);
+assert.equal(failedMember.updates[0].status, 'failed');
+assert.equal(failedMember.activities[0].status, 'failed');
+const terminalRun = {
+  members: [
+    { status: 'running', summary: '已交接', detail: '迟到片段' },
+    { status: 'running', error: '工具失败', detail: '迟到片段' },
+    { status: 'running', detail: '无终态' },
+  ],
+};
+teamTerminalContext.settleTeamRunMembers(terminalRun, 500);
+assert.deepEqual(plain(terminalRun.members.map((member) => member.status)), [
+  'completed',
+  'failed',
+  'interrupted',
+]);
+
+const titleContext = vm.createContext({});
+vm.runInContext(
+  [
+    extractNamedFunction('compactTaskTitle'),
+    extractNamedFunction('automaticTaskTitle'),
+    extractNamedFunction('normalizeAutomaticSessionTitle'),
+    extractNamedFunction('applyAutomaticSessionTitle'),
+  ].join('\n'),
+  titleContext,
 );
-assert.match(changedSignedPublicationHtml, /data-publication-revoke/);
-const publicationRequest = { taskId: publicationTask.id };
-const publicationResult = { gate: publicationTask.publication.gate };
-publicationContext.publicationRequest = publicationRequest;
-publicationContext.publicationResult = publicationResult;
-assert.equal(
-  vm.runInContext(
-    'applyPublicationResult(publicationTask, publicationRequest, publicationResult)',
-    publicationContext,
-  ),
-  true,
-);
-assert.equal(appliedServiceArguments[0], publicationTask);
-assert.equal(appliedServiceArguments[1], publicationRequest);
-assert.equal(appliedServiceArguments[2], publicationResult);
+assert.equal(titleContext.automaticTaskTitle('Analyze the latest NMC 500hPa chart'), '新任务');
+assert.equal(titleContext.automaticTaskTitle('分析中央气象台最新 500hPa 图'), '分析中央气象台最新 500hPa 图');
+assert.equal(titleContext.normalizeAutomaticSessionTitle('NMC 500hPa Chart Analysis'), '');
+assert.equal(titleContext.normalizeAutomaticSessionTitle('中央气象台 500hPa 分析'), '中央气象台 500hPa 分析');
+const automaticTitleTask = { title: '新任务', titleMode: 'automatic', messages: [{}, {}] };
+assert.equal(titleContext.applyAutomaticSessionTitle(automaticTitleTask, 'NMC Chart Analysis'), false);
+assert.equal(automaticTitleTask.title, '新任务');
+assert.equal(titleContext.applyAutomaticSessionTitle(automaticTitleTask, '中央气象台形势分析'), true);
+assert.equal(automaticTitleTask.title, '中央气象台形势分析');
+const manualTitleTask = { title: 'My custom title', titleMode: 'manual', messages: [{}, {}] };
+assert.equal(titleContext.applyAutomaticSessionTitle(manualTitleTask, '中央气象台形势分析'), false);
+assert.equal(manualTitleTask.title, 'My custom title');
+assert.match(mainSource, /自动生成本会话标题时，必须使用简体中文/);
+assert.match(source, /task\.titleMode = 'manual'/);
+
 assert.match(
   source,
   /typeof result\.workspace === 'string' && result\.workspace\.trim\(\)\)\s*\{\s*task\.workspace = result\.workspace\.trim\(\)/,

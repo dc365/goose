@@ -4,10 +4,10 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const ArtifactRegistry = require('../harness/artifact-registry');
-const PublicationState = require('../harness/publication-state');
+const CompletionCompat = require('../harness/completion-compat.cjs');
+const ContextCompiler = require('../harness/context-compiler');
 const RuntimeRecords = require('../harness/runtime-records');
 const StateStore = require('../harness/state-store');
-const ValidationEngine = require('../harness/validation-engine');
 
 function extractNamedFunction(source, name) {
   const start = source.indexOf(`function ${name}(`);
@@ -31,11 +31,6 @@ const task = {
     { id: 'response-1', role: 'assistant', status: 'completed' },
     { id: 'response-2', role: 'assistant', status: 'streaming' },
   ],
-  publication: {
-    signoff: { approved: true },
-    gate: { ready: true },
-    dirty: false,
-  },
 };
 const evidence = {
   id: 'stable-evidence',
@@ -46,12 +41,7 @@ const evidence = {
   unit: 'mm',
   value: 86,
   createdAt: 100,
-  metadata: {
-    publicationAttestation: {
-      issuedAt: '2026-07-30T08:00:00.000Z',
-      value: 'first-evidence-attestation',
-    },
-  },
+  metadata: {},
 };
 const artifact = {
   id: 'stable-artifact',
@@ -60,12 +50,7 @@ const artifact = {
   contentHash: 'a'.repeat(64),
   status: 'ready',
   createdAt: 100,
-  metadata: {
-    publicationAttestation: {
-      issuedAt: '2026-07-30T08:00:00.000Z',
-      value: 'first-artifact-attestation',
-    },
-  },
+  metadata: {},
 };
 
 const firstEvidence = RuntimeRecords.recordRuntimeEvent(task, {
@@ -87,7 +72,6 @@ assert.equal(firstArtifact.artifact.lineage.runId, 'run-1');
 assert.equal(Object.hasOwn(firstEvidence.evidence.metadata, 'responseId'), false);
 assert.equal(Object.hasOwn(firstArtifact.artifact.metadata, 'responseId'), false);
 
-task.publication.dirty = false;
 const retriedEvidence = RuntimeRecords.recordRuntimeEvent(task, {
   type: 'evidence_created',
   responseId: 'response-2',
@@ -95,12 +79,7 @@ const retriedEvidence = RuntimeRecords.recordRuntimeEvent(task, {
   evidence: {
     ...evidence,
     createdAt: 200,
-    metadata: {
-      publicationAttestation: {
-        issuedAt: '2026-07-30T08:01:00.000Z',
-        value: 'second-evidence-attestation',
-      },
-    },
+    metadata: {},
   },
 }, { runId: 'run-2' });
 const retriedArtifact = RuntimeRecords.recordRuntimeEvent(task, {
@@ -110,31 +89,17 @@ const retriedArtifact = RuntimeRecords.recordRuntimeEvent(task, {
   artifact: {
     ...artifact,
     createdAt: 200,
-    metadata: {
-      publicationAttestation: {
-        issuedAt: '2026-07-30T08:01:00.000Z',
-        value: 'second-artifact-attestation',
-      },
-    },
+    metadata: {},
   },
 }, { runId: 'run-2' });
 assert.equal(retriedEvidence.evidence, firstEvidence.evidence);
 assert.equal(retriedArtifact.artifact, firstArtifact.artifact);
 assert.equal(retriedEvidence.evidence.lineage.runId, 'run-1');
 assert.equal(retriedArtifact.artifact.lineage.runId, 'run-1');
-assert.equal(
-  retriedEvidence.evidence.metadata.publicationAttestation.value,
-  'first-evidence-attestation',
-);
-assert.equal(
-  retriedArtifact.artifact.metadata.publicationAttestation.value,
-  'first-artifact-attestation',
-);
 assert.equal(retriedEvidence.responseId, 'response-2');
 assert.equal(retriedArtifact.responseId, 'response-2');
 assert.equal(retriedEvidence.evidenceChanged, false);
 assert.equal(retriedArtifact.artifactChanged, false);
-assert.equal(task.publication.dirty, false);
 
 assert.throws(
   () => RuntimeRecords.recordRuntimeEvent(task, {
@@ -153,71 +118,115 @@ assert.throws(
   /Artifact ID conflict: stable-artifact/,
 );
 
-const rendererSource = fs.readFileSync(path.resolve(__dirname, '..', 'renderer-actions.js'), 'utf8');
-let generatedId = 0;
-const legacyTask = {
-  id: 'legacy-artifact-task',
-  workspace: '/workspace',
-  artifacts: [],
-  artifactIds: [],
-  messages: [{ id: 'legacy-response', role: 'assistant', status: 'streaming' }],
-  publication: {
-    signoff: { approved: true },
-    gate: { ready: true },
-    dirty: false,
+const lifecycleTask = { id: 'artifact-lifecycle', artifacts: [], artifactIds: [] };
+const lifecycleDraft = ArtifactRegistry.registerArtifact(lifecycleTask, {
+  id: 'office-document',
+  name: 'forecast.docx',
+  path: '/workspace/artifacts/forecast.docx',
+  mediaType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  status: 'draft',
+  sizeBytes: 4096,
+  contentHash: 'c'.repeat(64),
+  metadata: { source: 'office-artifacts', relativePath: 'artifacts/forecast.docx' },
+});
+const lifecycleDraftRecordHash = lifecycleDraft.recordHash;
+const lifecycleValidated = ArtifactRegistry.registerArtifact(lifecycleTask, {
+  ...lifecycleDraft,
+  status: 'validated',
+  metadata: {
+    ...lifecycleDraft.metadata,
+    render: { pageCount: 3, previewPath: '.meteomate/previews/forecast.pdf' },
   },
+});
+assert.equal(lifecycleValidated, lifecycleDraft);
+assert.equal(lifecycleDraft.status, 'validated');
+assert.equal(lifecycleDraft.metadata.render.pageCount, 3);
+assert.notEqual(lifecycleDraft.recordHash, lifecycleDraftRecordHash);
+assert.equal(lifecycleTask.artifacts.length, 1);
+
+const rendererSource = fs.readFileSync(path.resolve(__dirname, '..', 'renderer-actions.js'), 'utf8');
+const completionTask = {
+  id: 'completion-artifact-task',
+  workspace: '/workspace',
+  artifacts: [{
+    id: 'verified-document',
+    name: 'summary.docx',
+    path: '/workspace/artifacts/summary.docx',
+    status: 'validated',
+    contentHash: 'd'.repeat(64),
+    metadata: { source: 'office-artifacts', relativePath: 'artifacts/summary.docx' },
+  }],
+  artifactIds: ['verified-document'],
+  messages: [{
+    id: 'completion-response',
+    role: 'assistant',
+    status: 'streaming',
+    artifactIds: ['verified-document'],
+  }],
 };
 const rendererContext = vm.createContext({
-  window: { MeteoMateHarness: { ArtifactRegistry } },
-  cryptoRandomId: () => `legacy-artifact-${++generatedId}`,
-  currentStreamingAssistant: () => legacyTask.messages[0],
-  latestAssistantMessage: () => legacyTask.messages[0],
-  pathBaseName: (value) => String(value).replaceAll('\\', '/').split('/').at(-1),
+  Set,
 });
 vm.runInContext([
-  extractNamedFunction(rendererSource, 'extractArtifactCandidates'),
-  extractNamedFunction(rendererSource, 'artifactCandidatePath'),
-  extractNamedFunction(rendererSource, 'registerArtifacts'),
-  extractNamedFunction(rendererSource, 'completionArtifactUri'),
-  extractNamedFunction(rendererSource, 'registerCompletionArtifacts'),
+  extractNamedFunction(rendererSource, 'normalizedArtifactTarget'),
+  extractNamedFunction(rendererSource, 'trustedArtifactRecord'),
+  extractNamedFunction(rendererSource, 'deliverableArtifactRecord'),
+  extractNamedFunction(rendererSource, 'completionArtifactMatches'),
+  extractNamedFunction(rendererSource, 'verifiedCompletionArtifacts'),
+  extractNamedFunction(rendererSource, 'pruneUnverifiedArtifactRecords'),
 ].join('\n'), rendererContext);
-rendererContext.registerArtifacts(
-  legacyTask,
-  '中央气象台页面包含 /publish/observations/beijing.html 和 https://example.com/forecast.html'
-);
-assert.equal(legacyTask.artifacts.length, 0);
-rendererContext.registerArtifacts(legacyTask, '已生成 artifacts/report.pdf');
-assert.equal(legacyTask.artifacts.length, 1);
-assert.equal(legacyTask.artifactIds.length, 1);
-assert.deepEqual(Array.from(legacyTask.messages[0].artifactIds), [legacyTask.artifacts[0].id]);
-assert.equal(legacyTask.publication.dirty, true);
-assert.ok(legacyTask.artifacts[0].recordHash);
-
-legacyTask.publication.dirty = false;
-rendererContext.registerCompletionArtifacts(legacyTask, [{
-  uri: '/workspace/artifacts/summary.docx',
+const verifiedArtifacts = rendererContext.verifiedCompletionArtifacts(completionTask, [{
+  uri: 'artifacts/summary.docx',
   name: 'summary.docx',
   mediaType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-}]);
-assert.equal(legacyTask.artifacts.length, 2);
-assert.equal(legacyTask.artifactIds.length, 2);
-assert.equal(legacyTask.publication.dirty, true);
-assert.ok(legacyTask.artifacts[1].recordHash);
+}], completionTask.messages[0]);
+assert.equal(verifiedArtifacts.length, 1);
+assert.equal(verifiedArtifacts[0].id, 'verified-document');
 
 const noWorkspaceTask = {
-  ...legacyTask,
+  ...completionTask,
   id: 'no-workspace-task',
   workspace: '',
   artifacts: [],
   artifactIds: [],
   messages: [{ id: 'no-workspace-response', role: 'assistant', status: 'streaming' }],
 };
-rendererContext.registerCompletionArtifacts(noWorkspaceTask, [{
-  uri: 'Library/Application Support/MeteoMate/browser/page.png',
-  name: '全页截图',
-  mediaType: 'image/png',
-}]);
+assert.equal(rendererContext.verifiedCompletionArtifacts(noWorkspaceTask, [{
+  uri: '/Users/dc/artifacts/forecast/并不存在.docx',
+  name: '并不存在.docx',
+}], noWorkspaceTask.messages[0])[0], null);
 assert.equal(noWorkspaceTask.artifacts.length, 0);
+
+const ghostTask = {
+  id: 'ghost-task',
+  artifacts: [{
+    id: 'ghost-document',
+    name: '并不存在.docx',
+    path: '/Users/dc/artifacts/forecast/并不存在.docx',
+    status: 'draft',
+    contentHash: null,
+    metadata: { source: 'legacy-assistant-text' },
+  }],
+  artifactIds: ['ghost-document'],
+  messages: [{ artifactIds: ['ghost-document'] }],
+};
+assert.equal(rendererContext.pruneUnverifiedArtifactRecords(ghostTask), true);
+assert.equal(ghostTask.artifacts.length, 0);
+assert.deepEqual(Array.from(ghostTask.messages[0].artifactIds), []);
+assert.ok(!rendererSource.includes("metadata: { source: 'legacy-assistant-text' }"));
+assert.ok(!rendererSource.includes('registerArtifacts(task, event.text'));
+assert.ok(rendererSource.includes("workspace: project?.workspace || state.assistantWorkspace || ''"));
+assert.ok(rendererSource.includes("task.workspace = getConversationProject(task)?.workspace || task.workspace || state.assistantWorkspace || ''"));
+
+const documentContract = ContextCompiler.compileCompletionContract({
+  task: { workMode: 'execute', prompt: '生成未来三天天气预报稿', expectedOutputs: [] },
+  capabilities: { connectors: [{ id: 'office-artifacts' }], skills: [], toolSelections: {} },
+});
+assert.equal(documentContract.requiresArtifact, true);
+assert.equal(ContextCompiler.promptRequiresArtifact('介绍预报稿的常见结构'), false);
+const completionInstruction = CompletionCompat.fallbackInstruction(documentContract);
+assert.match(completionInstruction, /必须在本轮完成实际创建和校验并直接交付/);
+assert.match(completionInstruction, /禁止拼接、补全或猜测路径/);
 
 const restoredArtifactTask = StateStore.normalizeStoredTask({
   id: 'stored-artifact-task',
@@ -278,150 +287,5 @@ assert.deepEqual(
 assert.ok(!rendererSource.includes('registerArtifacts(task, event.rawOutput)'));
 assert.ok(!rendererSource.includes('registerArtifacts(task, event.content)'));
 
-const publishableEvidence = {
-  id: 'publishable-evidence',
-  source: 'weather-provider',
-  sourceVersion: 'dataset-v1',
-  evidenceType: 'meteorological-fact',
-  validTime: '2026-07-30T08:00:00Z',
-  expiresAt: '2026-08-02T08:00:00Z',
-  variable: 'rain24h',
-  unit: 'mm',
-  value: 86,
-  qcStatus: 'checked',
-  qcVersion: 'meteomate.weather.qc/1.0.0',
-  metadata: {
-    classification: 'production',
-    synthetic: false,
-  },
-};
-const publicationAnalysis = {
-  region: '华南',
-  issueTime: '2026-07-30T08:00:00Z',
-  validPeriod: '2026-07-30T08:00:00Z/2026-07-31T08:00:00Z',
-  conclusions: [{
-    text: '存在强降水风险。',
-    evidenceIds: [publishableEvidence.id],
-  }],
-};
-for (const status of ['draft', 'failed']) {
-  const gate = ValidationEngine.runPublicationGate({
-    analysis: publicationAnalysis,
-    evidence: [publishableEvidence],
-    artifacts: [{
-      id: `artifact-${status}`,
-      name: `${status}.html`,
-      path: `/workspace/${status}.html`,
-      status,
-      contentHash: 'c'.repeat(64),
-      metadata: { classification: 'production', synthetic: false },
-    }],
-    humanSignoff: { approved: true },
-  });
-  assert.equal(gate.ready, false);
-  assert.ok(gate.blockers.some((blocker) => blocker.includes('状态必须为 ready 或 published')));
-}
-for (const status of ['ready', 'published']) {
-  const gate = ValidationEngine.runPublicationGate({
-    analysis: publicationAnalysis,
-    evidence: [publishableEvidence],
-    artifacts: [{
-      id: `artifact-${status}`,
-      name: `${status}.html`,
-      path: `/workspace/${status}.html`,
-      status,
-      contentHash: 'd'.repeat(64),
-      metadata: { classification: 'production', synthetic: false },
-    }],
-    humanSignoff: { approved: true },
-  });
-  assert.equal(gate.ready, true);
-}
-
-const versionedArtifactTask = {
-  id: 'versioned-artifact-task',
-  workspace: '/workspace',
-  publicationAnalysis,
-  evidence: [publishableEvidence],
-  publication: {
-    dirty: true,
-    signoff: { approved: true, reviewerId: 'forecaster-1' },
-  },
-  artifacts: [
-    {
-      id: 'risk-map-v1',
-      name: 'risk-map.html',
-      path: '/workspace/risk-map.html',
-      status: 'published',
-      contentHash: '1'.repeat(64),
-    },
-    {
-      id: 'uri-only-v1',
-      name: 'remote.json',
-      uri: 'file:///workspace/remote.json',
-      status: 'ready',
-      contentHash: '2'.repeat(64),
-    },
-    {
-      id: 'risk-map-v2',
-      name: 'risk-map.html',
-      path: '/workspace/risk-map.html',
-      status: 'ready',
-      contentHash: '3'.repeat(64),
-    },
-    {
-      id: 'uri-only-v2',
-      name: 'remote.json',
-      uri: 'file:///workspace/remote.json',
-      status: 'ready',
-      contentHash: '4'.repeat(64),
-    },
-    {
-      id: 'uri-only-distinct',
-      name: 'distinct.json',
-      uri: 'file:///workspace/distinct.json',
-      status: 'ready',
-      contentHash: '5'.repeat(64),
-    },
-  ],
-};
-const versionedRequest = PublicationState.requestForTask(versionedArtifactTask);
-assert.deepEqual(
-  versionedRequest.artifacts.map((record) => record.id),
-  ['risk-map-v2', 'uri-only-v2', 'uri-only-distinct'],
-);
-assert.equal(versionedArtifactTask.artifacts.length, 5);
-assert.equal(versionedArtifactTask.publication.signoff.approved, true);
-
-const latestDraftTask = {
-  ...versionedArtifactTask,
-  id: 'latest-draft-task',
-  artifacts: [
-    {
-      id: 'forecast-v1',
-      name: 'forecast.html',
-      path: '/workspace/forecast.html',
-      status: 'ready',
-      contentHash: '6'.repeat(64),
-    },
-    {
-      id: 'forecast-v2',
-      name: 'forecast.html',
-      path: '/workspace/forecast.html',
-      status: 'draft',
-      contentHash: '7'.repeat(64),
-    },
-  ],
-};
-const latestDraftRequest = PublicationState.requestForTask(latestDraftTask);
-assert.deepEqual(latestDraftRequest.artifacts.map((record) => record.id), ['forecast-v2']);
-const latestDraftGate = ValidationEngine.runPublicationGate({
-  analysis: latestDraftRequest.analysis,
-  artifacts: latestDraftRequest.artifacts,
-  evidence: latestDraftRequest.evidence,
-  humanSignoff: { approved: true },
-});
-assert.equal(latestDraftGate.ready, false);
-assert.ok(latestDraftGate.blockers.some((blocker) => blocker.includes('状态必须为 ready 或 published')));
 
 console.log('runtime Ledger retry and legacy Artifact tests passed');

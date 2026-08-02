@@ -7,7 +7,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 const productRoot = path.resolve(__dirname, '..');
-const runtimeVersion = '1.2.0';
+const runtimeVersion = '1.3.0';
 const runtimeRoot = path.join(productRoot, 'runtime', 'office', `${process.platform}-${process.arch}`);
 const requirementsPath = path.join(productRoot, 'services', 'office-mcp', 'python', 'requirements.lock');
 const workerSourcePath = path.join(productRoot, 'services', 'office-mcp', 'python', 'worker.py');

@@ -138,19 +138,6 @@ Policy Engine 返回 `allow / approval / deny`，后续可由组织级策略进�
 
 天气事实与用户偏好采用不同生命周期。气象事实默认建议按有效时间过期，不应进入永久个人记忆。
 
-### 2.7 Publication Gate
-
-`ValidationEngine` 提供第一版发布门禁：
-
-- 是否存在预报结论；
-- 结论是否引用存在的 Evidence；
-- 数值是否包含单位；
-- Evidence 是否过期；
-- Artifact 是否有可用路径或 URI；
-- 是否完成人工签发。
-
-未通过门禁的结果只能保持 `draft`，不能标记为可发布。
-
 ## 3. 状态迁移修复
 
 当前 main 中旧的 `migrateLegacyState()` 与 `normalizeStoredTask()` 存在未定义局部变量引用，可能导致 localStorage 恢复失败并退回初始状态。

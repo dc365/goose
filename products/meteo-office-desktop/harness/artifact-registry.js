@@ -44,7 +44,6 @@
   function semanticHash(record = {}) {
     const metadata = Shared.deepClone(record.metadata || {});
     delete metadata.responseId;
-    delete metadata.publicationAttestation;
     const semantic = {
       ...record,
       metadata,
@@ -62,20 +61,32 @@
     const record = createArtifact(input, { taskId: task.id, contextSnapshotId: task.contextSnapshotId, ...lineage });
     const duplicateId = task.artifacts.find((artifact) => artifact.id === record.id);
     if (duplicateId) {
+      const identityKeys = ['name', 'type', 'path', 'uri', 'mediaType', 'sizeBytes', 'contentHash'];
+      const identityConflict = identityKeys.some((key) =>
+        duplicateId[key] != null
+        && record[key] != null
+        && duplicateId[key] !== record[key]
+      );
+      if (identityConflict) throw new Error(`Artifact ID conflict: ${record.id}`);
+      const currentStatusRank = ARTIFACT_STATUSES.indexOf(duplicateId.status);
+      const nextStatusRank = ARTIFACT_STATUSES.indexOf(record.status);
       const reconciled = {
         ...duplicateId,
+        status: nextStatusRank >= currentStatusRank ? record.status : duplicateId.status,
+        updatedAt: Math.max(Number(duplicateId.updatedAt || 0), Number(record.updatedAt || 0), Date.now()),
         metadata: {
           ...(duplicateId.metadata || {}),
           ...(input.metadata || {}),
         },
       };
-      for (const key of Object.keys(input)) {
-        if (['id', 'createdAt', 'updatedAt', 'lineage', 'recordHash', 'metadata'].includes(key)) continue;
-        if (Object.prototype.hasOwnProperty.call(record, key)) reconciled[key] = record[key];
+      for (const key of identityKeys) {
+        if (reconciled[key] == null && record[key] != null) reconciled[key] = record[key];
       }
-      if (semanticHash(duplicateId) !== semanticHash(reconciled)) {
-        throw new Error(`Artifact ID conflict: ${record.id}`);
-      }
+      if (semanticHash(duplicateId) === semanticHash(reconciled)) return duplicateId;
+      const hashable = { ...reconciled };
+      delete hashable.recordHash;
+      reconciled.recordHash = Shared.contentHash(hashable);
+      Object.assign(duplicateId, reconciled);
       return duplicateId;
     }
     const duplicateSemantic = task.artifacts.find((artifact) => semanticHash(artifact) === semanticHash(record));

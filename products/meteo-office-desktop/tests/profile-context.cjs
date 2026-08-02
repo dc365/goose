@@ -5,7 +5,11 @@ const fs = require('node:fs');
 const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
-const { createProfileContext, normalizeDesktopPreferences } = require('../capabilities/profile-context.cjs');
+const {
+  createProfileContext,
+  normalizeCustomProviderMetadata,
+  normalizeDesktopPreferences,
+} = require('../capabilities/profile-context.cjs');
 
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'meteomate-profile-context-'));
 const userData = path.join(temp, 'user-data');
@@ -44,6 +48,8 @@ const server = http.createServer((request, response) => {
       policy: {
         defaultModel: 'openai/gpt-5.5',
         allowedModels: ['openai/gpt-5.5'],
+        allowedProviderIds: ['openai'],
+        requireVerifiedModels: true,
         defaultSkillIds: ['weather-review'],
         allowedConnectorIds: ['weather-data-local'],
         defaultPermissionProfileId: 'artifact-approval',
@@ -53,6 +59,26 @@ const server = http.createServer((request, response) => {
         revision: 7,
         updatedAt: '2026-07-17T00:00:00Z',
       },
+    });
+  }
+  if (request.url === '/v1/me/model-catalog' && request.method === 'GET') {
+    assert.equal(request.headers.authorization, 'Bearer session-secret-that-must-not-reach-disk');
+    return send(200, {
+      apiVersion: 'meteomate.ai/v1',
+      kind: 'OrganizationModelCatalog',
+      revision: 4,
+      updatedAt: '2026-08-01T01:00:00Z',
+      providers: [{
+        id: 'openai', name: '单位模型网关', enabled: true, presetMode: 'openai-compatible',
+        protocol: 'responses', streamingMode: 'off', baseUrl: 'https://llm.example.test/v1',
+        endpointPath: 'v1/responses', requiresAuth: true, credentialMode: 'local', credentialConfigured: false,
+        verification: { status: 'verified', checkedAt: '2026-08-01T00:00:00Z', checks: [{ id: 'text', status: 'passed' }] },
+        models: [{
+          id: 'gpt-5.5', name: '业务分析模型', enabled: true, toolCall: true, imageInput: true,
+          reasoning: true, contextLimit: 128000, maxOutputTokens: 32000,
+          verification: { status: 'verified', checkedAt: '2026-08-01T00:00:00Z', checks: [{ id: 'tool_call', status: 'passed' }] },
+        }],
+      }],
     });
   }
   if (request.url === '/v1/auth/logout') return send(200, { loggedOut: true });
@@ -71,6 +97,14 @@ server.listen(0, '127.0.0.1', async () => {
       assert.ok(ipcHandlers.has(name), `missing IPC handler ${name}`);
     }
     assert.equal(normalizeDesktopPreferences({ autoCompactThreshold: 2 }).autoCompactThreshold, 0.75);
+    assert.deepEqual(normalizeCustomProviderMetadata({ protocolMode: 'invalid' }), {
+      managedProviderId: '',
+      presetMode: 'auto',
+      protocolMode: 'auto',
+      streamingMode: 'auto',
+      endpointPathOverride: '',
+      verification: null,
+    });
 
     const legacyRoot = path.join(userData, 'capabilities');
     const oldSkill = path.join(temp, 'old-global-skill');
@@ -94,6 +128,9 @@ server.listen(0, '127.0.0.1', async () => {
     assert.equal(session.legacyDataAvailable, true);
     assert.equal(session.policyContext.policy.revision, 7);
     assert.equal(session.policyContext.policy.autoCompactThreshold, 0.84);
+    assert.equal(session.policyContext.policy.requireVerifiedModels, true);
+    assert.deepEqual(session.policyContext.policy.allowedProviderIds, ['openai']);
+    assert.equal(session.policyContext.modelCatalog.revision, 4);
     assert.equal(session.policyContext.profileBindingId, 'user:usr-forecaster');
     assert.deepEqual(context.defaultSkillIds(), ['weather-review']);
     assert.equal(context.connectorAllowed('weather-data-local'), true);
@@ -121,16 +158,62 @@ server.listen(0, '127.0.0.1', async () => {
       providerId: 'anthropic',
       modelId: 'claude-sonnet',
       providers: [
-        { id: 'openai', models: [{ id: 'gpt-5.5', name: 'GPT-5.5' }, { id: 'gpt-5-mini', name: 'GPT-5 mini' }] },
-        { id: 'anthropic', models: [{ id: 'claude-sonnet', name: 'Claude Sonnet' }] },
+        { id: 'openai', configured: true, models: [{ id: 'gpt-5.5', name: 'GPT-5.5' }, { id: 'gpt-5-mini', name: 'GPT-5 mini' }] },
+        { id: 'anthropic', configured: true, models: [{ id: 'claude-sonnet', name: 'Claude Sonnet' }] },
       ],
     };
     const filteredModels = context.filterModelSettings(rawModels);
     assert.equal(filteredModels.providerId, 'openai');
     assert.equal(filteredModels.modelId, 'gpt-5.5');
     assert.equal(filteredModels.organizationPolicy.autoCompactThreshold, 0.84);
+    assert.equal(filteredModels.organizationPolicy.catalogRevision, 4);
+    assert.equal(filteredModels.organizationPolicy.requireVerifiedModels, true);
     assert.equal(filteredModels.providers.length, 1);
     assert.deepEqual(filteredModels.providers[0].models.map((model) => model.id), ['gpt-5.5']);
+    assert.equal(filteredModels.providers[0].name, '单位模型网关');
+    assert.equal(filteredModels.providers[0].organizationManaged, true);
+    assert.equal(filteredModels.providers[0].models[0].toolCall, true);
+    const managedProvider = context.managedProviderMetadata('openai');
+    assert.equal(managedProvider.organizationManaged, true);
+    assert.equal(managedProvider.organizationProviderId, 'openai');
+    assert.equal(managedProvider.displayName, '单位模型网关');
+    assert.equal(managedProvider.description, '');
+    assert.equal(managedProvider.apiUrl, 'https://llm.example.test/v1');
+    assert.equal(managedProvider.protocolMode, 'responses');
+    assert.equal(managedProvider.verification.status, 'verified');
+    assert.deepEqual(managedProvider.models.map((model) => model.id), ['gpt-5.5']);
+    context.saveCustomProviderMetadata('openai', {
+      presetMode: 'openai-compatible',
+      protocolMode: 'responses',
+      streamingMode: 'off',
+      endpointPathOverride: '/gateway/v1/responses',
+      verification: {
+        status: 'verified',
+        verifiedAt: '2026-08-01T08:00:00.000Z',
+        protocol: 'responses',
+        tests: [{ id: 'text', label: '文本响应', status: 'passed' }],
+      },
+    });
+    assert.equal(context.customProviderMetadata('openai').protocolMode, 'responses');
+    const providerConfiguredModels = context.filterModelSettings(rawModels);
+    assert.equal(providerConfiguredModels.providers[0].streamingMode, 'off');
+    assert.equal(providerConfiguredModels.providers[0].endpointPathOverride, 'gateway/v1/responses');
+    assert.equal(providerConfiguredModels.providers[0].verification.status, 'verified');
+    context.saveCustomProviderMetadata('custom_unit', {
+      managedProviderId: 'openai',
+      protocolMode: 'responses',
+      streamingMode: 'off',
+    });
+    const boundModels = context.filterModelSettings({
+      providerId: 'custom_unit',
+      modelId: 'gpt-5.5',
+      providers: [{ id: 'custom_unit', configured: true, models: [{ id: 'gpt-5.5' }] }],
+    });
+    assert.equal(boundModels.providers[0].organizationProviderId, 'openai');
+    assert.equal(boundModels.providerId, 'custom_unit');
+    assert.equal(boundModels.modelId, 'gpt-5.5');
+    assert.equal(context.managedProviderMetadata('custom_unit').organizationProviderId, 'openai');
+    assert.doesNotThrow(() => context.enforceRuntimePolicy({ providerId: 'custom_unit', modelId: 'gpt-5.5' }));
     assert.throws(() => context.saveModelPreference({ providerId: 'anthropic', modelId: 'claude-sonnet' }), /允许范围/);
     context.saveModelPreference({ providerId: 'openai', modelId: 'gpt-5.5' });
     assert.equal(context.desktopPreferences().autoCompactThreshold, 0.72);
@@ -193,6 +276,7 @@ server.listen(0, '127.0.0.1', async () => {
     assert.equal(offline.status, 'offline');
     assert.equal(offline.policyContext.policy.revision, 7);
     assert.equal(offline.policyContext.policy.autoCompactThreshold, 0.84);
+    assert.equal(offline.policyContext.modelCatalog.revision, 4);
     console.log('MeteoMate profile context checks passed.');
   } finally {
     server.close();

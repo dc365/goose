@@ -190,14 +190,6 @@
             reason: 'permission_resolved',
           });
         } else if (event.type === 'turn_completed' && attempt) {
-          if (event.publicationAnalysis && typeof event.publicationAnalysis === 'object') {
-            task.publicationAnalysis = structuredClone(event.publicationAnalysis);
-            task.publication = {
-              ...(task.publication || {}),
-              dirty: true,
-              error: null,
-            };
-          }
           const contract = task.contextSnapshot?.completionContract;
           const completion = event.runtime === 'acp'
             ? harness.ContextCompiler.evaluateCompletion(contract, latestAssistantText(task))

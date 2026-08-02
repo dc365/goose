@@ -9,7 +9,6 @@ const Contracts = require('../capabilities/weather/contracts.cjs');
 const Diagnosis = require('../capabilities/weather/diagnosis.cjs');
 const Render = require('../capabilities/weather/render.cjs');
 const SchemaValidator = require('../capabilities/weather/schema-validator.cjs');
-const ValidationEngine = require('../harness/validation-engine');
 const QcPolicy = require('../harness/qc-policy');
 const Golden = require('./support/weather-golden-replay.cjs');
 
@@ -163,27 +162,6 @@ try {
     }, expected.diagnosis);
     assert.deepEqual(Golden.deterministicEvidence(fixtureRun.evidence), expected.evidence);
     assert.equal(fixtureRun.artifacts[0].contentHash, expected.artifact.contentHash);
-    const gateInput = {
-      taskId: 'golden-replay',
-      analysis: fixtureRun.publicationAnalysis,
-      artifacts: fixtureRun.artifacts,
-      evidence: fixtureRun.evidence,
-      humanSignoff: { approved: true, reviewerName: 'Golden Replay' },
-    };
-    const inWindowGate = ValidationEngine.runPublicationGate({
-      ...gateInput,
-      at: Date.parse(manifest.clock.inWindow),
-    });
-    assert.equal(inWindowGate.ready, false);
-    assert.ok(inWindowGate.blockers.some((blocker) => blocker.includes('synthetic')));
-    assert.equal(inWindowGate.blockers.some((blocker) => blocker.includes('expired')), false);
-    const expiredGate = ValidationEngine.runPublicationGate({
-      ...gateInput,
-      at: Date.parse(manifest.clock.expired),
-    });
-    assert.equal(expiredGate.ready, false);
-    assert.ok(expiredGate.blockers.some((blocker) => blocker.includes('synthetic')));
-    assert.ok(expiredGate.blockers.some((blocker) => blocker.includes('expired')));
   } finally {
     fs.rmSync(fixtureWorkspace, { recursive: true, force: true });
   }

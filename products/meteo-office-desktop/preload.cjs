@@ -31,6 +31,8 @@ contextBridge.exposeInMainWorld('meteoDesktop', {
   getRuntimeStatus: () => ipcRenderer.invoke('runtime:status'),
   getModelSettings: () => ipcRenderer.invoke('runtime:model-settings'),
   saveModelSettings: (request) => ipcRenderer.invoke('runtime:model-settings-save', request),
+  previewModelProviderRoute: (request) => ipcRenderer.invoke('runtime:model-provider-route-preview', request),
+  testModelProvider: (request) => ipcRenderer.invoke('runtime:model-provider-test', request),
   createModelProvider: (request) => ipcRenderer.invoke('runtime:model-provider-create', request),
   updateModelProvider: (request) => ipcRenderer.invoke('runtime:model-provider-update', request),
   deleteModelProvider: (request) => ipcRenderer.invoke('runtime:model-provider-delete', request),
@@ -48,23 +50,27 @@ contextBridge.exposeInMainWorld('meteoDesktop', {
   updateSharedProject: (request) => ipcRenderer.invoke('shared-project:update', request),
   setSharedProjectMember: (request) => ipcRenderer.invoke('shared-project:set-member', request),
   removeSharedProjectMember: (request) => ipcRenderer.invoke('shared-project:remove-member', request),
-  checkPublicationGate: (request) => ipcRenderer.invoke('publication:check', request),
-  waivePublicationQc: (request) => ipcRenderer.invoke('publication:waive-qc', request),
-  revokePublicationQcWaiver: (request) => ipcRenderer.invoke('publication:revoke-qc-waiver', request),
-  signPublication: (request) => ipcRenderer.invoke('publication:sign', request),
-  revokePublicationSignoff: (request) => ipcRenderer.invoke('publication:revoke', request),
   importWorkflow: () => ipcRenderer.invoke('workflow:import'),
   exportWorkflow: (request) => ipcRenderer.invoke('workflow:export', request),
   openExternalUrl: (targetUrl) => ipcRenderer.invoke('external:open', targetUrl),
+  showArtifactContextMenu: (request) => ipcRenderer.invoke('artifact:context-menu', request),
   showArtifactPreview: (request) => ipcRenderer.invoke('artifact-preview:show', request),
   updateArtifactPreviewBounds: (request) => ipcRenderer.invoke('artifact-preview:bounds', request),
   navigateArtifactPreview: (request) => ipcRenderer.invoke('artifact-preview:navigate', request),
   hideArtifactPreview: () => ipcRenderer.invoke('artifact-preview:hide'),
   closeArtifactPreview: (previewId) => ipcRenderer.invoke('artifact-preview:close', previewId),
+  highlightArtifactSelection: (request) => ipcRenderer.invoke('artifact-preview:selection-highlight', request),
+  jumpToArtifactSelection: (request) => ipcRenderer.invoke('artifact-preview:selection-jump', request),
+  removeArtifactSelection: (request) => ipcRenderer.invoke('artifact-preview:selection-remove', request),
   onArtifactPreviewStateChange: (callback) => {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on('artifact-preview:state', listener);
     return () => ipcRenderer.removeListener('artifact-preview:state', listener);
+  },
+  onArtifactPreviewSelection: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('artifact-preview:selection', listener);
+    return () => ipcRenderer.removeListener('artifact-preview:selection', listener);
   },
   listKnowledgeSources: () => ipcRenderer.invoke('knowledge:list'),
   importLocalKnowledgeSources: (request) => ipcRenderer.invoke('knowledge:import-local', request),

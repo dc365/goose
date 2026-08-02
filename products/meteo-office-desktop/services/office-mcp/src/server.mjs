@@ -12,7 +12,7 @@ import {
   markdownDocumentInput,
 } from './markdown-document.mjs';
 
-const SERVER_VERSION = '1.2.0';
+const SERVER_VERSION = '1.3.0';
 const MAX_WORKER_OUTPUT_BYTES = 8 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 120_000;
 const SCHEMA_VERSION = 'meteomate.office/v1';
@@ -145,6 +145,18 @@ const relativePath = z.string().min(1).max(1024)
   .refine((value) => !path.isAbsolute(value), '必须使用工作区相对路径')
   .refine((value) => !value.split(/[\\/]/).includes('..'), '路径不能包含 ..');
 const sourceHash = z.string().regex(/^(?:sha256:)?[a-f0-9]{64}$/i);
+const docxSelectionAnchor = z.object({
+  version: z.literal('meteomate.docx-anchor/v1'),
+  paragraphId: z.string().regex(/^paragraph:\d+$/),
+  paragraphIndex: z.number().int().min(0).max(1_999),
+  paragraphTextHash: z.string().regex(/^[a-f0-9]{64}$/i),
+  selectedTextHash: z.string().regex(/^[a-f0-9]{64}$/i),
+  normalizedStart: z.number().int().min(0).max(100_000),
+  normalizedEnd: z.number().int().min(1).max(100_000),
+}).strict().refine(
+  (anchor) => anchor.normalizedEnd > anchor.normalizedStart,
+  'normalizedEnd 必须大于 normalizedStart'
+);
 const objectValue = z.record(z.string(), z.unknown());
 const documentText = z.string().max(100_000);
 const documentCell = z.union([z.string().max(20_000), z.number(), z.boolean(), z.null()]);
@@ -258,6 +270,14 @@ registerTool('docx_inspect', '检查工作区内 DOCX 的段落、表格、样�
   include: z.array(z.enum(['structure', 'anchors', 'fonts', 'media', 'security'])).max(5).optional(),
 });
 
+registerTool('docx_resolve_selection', '将预览选区解析为唯一 DOCX 正文段落锚点；仅返回可编辑状态，不写入文件。', {
+  schemaVersion,
+  workspaceId,
+  sourcePath: relativePath,
+  sourceHash,
+  selectedText: z.string().min(1).max(2_000),
+});
+
 registerTool('docx_create_from_markdown', '普通 Word 新建的首选工具。标题单独提交，Markdown 正文按单行字符串数组 contentLines 提交；默认拒绝覆盖现有文件。', {
   schemaVersion,
   workspaceId,
@@ -296,6 +316,17 @@ registerTool('docx_edit', '以乐观锁方式对 DOCX 执行白名单结构化�
   outputPath: relativePath,
   operations: z.array(operation).min(1).max(200),
 });
+
+registerTool('docx_edit_selection', '仅修改 docx_resolve_selection 已确认的唯一段落选区；写前复核源文件和锚点，保留原件，自动生成新版本并完成渲染校验。', {
+  schemaVersion,
+  workspaceId,
+  sourcePath: relativePath,
+  sourceHash,
+  selectedText: z.string().min(1).max(2_000),
+  replacementText: z.string().max(100_000),
+  anchor: docxSelectionAnchor,
+  outputPath: relativePath.optional(),
+}, 180_000);
 
 registerTool('pptx_inspect', '检查工作区内 PPTX 的页面、布局、命名形状、表格、图表、媒体和安全风险。', {
   schemaVersion,

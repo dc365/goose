@@ -5,7 +5,9 @@ let settingsDialogCleanup = null;
 let projectDialogCleanup = null;
 let composerTriggerCleanup = null;
 let catalogDetailCleanup = null;
+let sidebarTaskMenuCleanup = null;
 let unsubscribeArtifactPreviewEvents = null;
+let unsubscribeArtifactPreviewSelectionEvents = null;
 let artifactPreviewResizeCleanup = null;
 let artifactPreviewSyncRequest = 0;
 let suppressNextUnloadStateSave = false;
@@ -254,6 +256,77 @@ function setTaskFileReferences(fileReferences) {
   }
 }
 
+function composerArtifactSelections() {
+  const task = getActiveTask();
+  if (!task) return state.draftArtifactSelections || [];
+  if (Array.isArray(task.queuedDraftArtifactSelections)) return task.queuedDraftArtifactSelections;
+  return task.artifactSelections || [];
+}
+
+function setTaskArtifactSelections(selections) {
+  const task = getActiveTask();
+  if (task) {
+    if (task.status === 'running' || Array.isArray(task.queuedDraftArtifactSelections)) {
+      task.queuedDraftArtifactSelections = [...selections];
+    } else {
+      task.artifactSelections = [...selections];
+    }
+    task.updatedAt = Date.now();
+  } else {
+    state.draftArtifactSelections = [...selections];
+  }
+}
+
+function artifactSelectionIdentity(selection) {
+  return JSON.stringify([
+    selection?.sourceHash || '',
+    selection?.pages || [],
+    String(selection?.quote || '').replace(/\s+/g, ' ').trim(),
+  ]);
+}
+
+function handleArtifactPreviewSelection(selection) {
+  const task = getActiveTask();
+  if (!task || task.id !== selection?.taskId) return;
+  const current = composerArtifactSelections();
+  const existing = current.find((entry) => artifactSelectionIdentity(entry) === artifactSelectionIdentity(selection));
+  const next = existing
+    ? current
+    : [...current, {
+        ...selection,
+        number: current.reduce((maximum, entry) => Math.max(maximum, Number(entry.number) || 0), 0) + 1,
+      }].slice(-8);
+  setTaskArtifactSelections(next);
+  saveState();
+  render();
+  const accepted = existing || next.at(-1);
+  window.requestAnimationFrame(() => {
+    const textarea = document.getElementById('task-prompt');
+    if (textarea && !textarea.disabled) {
+      textarea.focus();
+      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+    }
+    void window.meteoDesktop.highlightArtifactSelection({
+      previewId: accepted.previewId,
+      selection: accepted,
+    });
+  });
+}
+
+function taskArtifactSelections(task) {
+  const selections = [
+    ...(task?.artifactSelections || []),
+    ...(task?.queuedDraftArtifactSelections || []),
+    ...(task?.messages || []).flatMap((message) => message.artifactSelections || []),
+  ];
+  return [...new Map(selections.filter((selection) => selection?.selectionId)
+    .map((selection) => [selection.selectionId, selection])).values()];
+}
+
+function findArtifactSelection(task, selectionId) {
+  return taskArtifactSelections(task).find((selection) => selection.selectionId === selectionId) || null;
+}
+
 function focusComposerAfterRender(cursor) {
   window.requestAnimationFrame(() => {
     const textarea = document.getElementById('task-prompt');
@@ -433,6 +506,8 @@ function bindEvents() {
   taskComposerMenuCleanup = null;
   accountMenuCleanup?.();
   accountMenuCleanup = null;
+  sidebarTaskMenuCleanup?.();
+  sidebarTaskMenuCleanup = null;
   settingsDialogCleanup?.();
   settingsDialogCleanup = null;
   projectDialogCleanup?.();
@@ -446,11 +521,11 @@ function bindEvents() {
   document.getElementById('account-open-offline')?.addEventListener('click', openOfflineAccount);
   document.getElementById('account-logout')?.addEventListener('click', logoutAccount);
   document.getElementById('account-open-settings')?.addEventListener('click', () => openSettingsDialog());
-  document.getElementById('sidebar-toggle')?.addEventListener('click', () => {
-    state.sidebarCollapsed = !state.sidebarCollapsed;
-    saveState();
-    render();
-    requestAnimationFrame(() => document.getElementById('sidebar-toggle')?.focus());
+  document.querySelectorAll('[data-sidebar-toggle]').forEach((element) => {
+    element.addEventListener('click', toggleSidebar);
+  });
+  document.querySelectorAll('[data-sidebar-section-toggle]').forEach((element) => {
+    element.addEventListener('click', () => toggleSidebarSection(element.dataset.sidebarSectionToggle));
   });
   document.getElementById('sidebar-search')?.addEventListener('click', () => {
     navigate('catalog');
@@ -568,12 +643,67 @@ function bindEvents() {
   document.querySelectorAll('[data-task-id]').forEach((element) => {
     element.addEventListener('click', () => {
       const task = state.tasks.find((candidate) => candidate.id === element.dataset.taskId);
+      teamUI.collapsed = false;
+      teamUI.expanded = false;
+      teamUI.selectedMemberId = null;
       state.activeTaskId = task?.id || null;
       state.view = task?.kind === 'assistant' ? 'assistants' : 'task';
       saveState();
       render();
     });
   });
+
+  document.querySelectorAll('[data-sidebar-task-rename]').forEach((button) => {
+    button.addEventListener('click', () => startSidebarTaskRename(button.dataset.sidebarTaskRename));
+  });
+  document.querySelectorAll('[data-sidebar-task-menu]').forEach((button) => {
+    button.addEventListener('click', (event) => {
+      event.stopPropagation();
+      toggleSidebarTaskMenu(button.dataset.sidebarTaskMenu);
+    });
+  });
+  document.querySelectorAll('[data-sidebar-task-delete]').forEach((button) => {
+    button.addEventListener('click', () => deleteSidebarTask(button.dataset.sidebarTaskDelete));
+  });
+  document.querySelectorAll('[data-sidebar-task-rename-form]').forEach((form) => {
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const input = form.querySelector('input');
+      if (!commitSidebarTaskRename(form.dataset.sidebarTaskRenameForm, input?.value)) {
+        input?.setCustomValidity('任务名称不能为空');
+        input?.reportValidity();
+      }
+    });
+    form.querySelector('input')?.addEventListener('input', (event) => event.target.setCustomValidity(''));
+    form.querySelector('input')?.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') cancelSidebarTaskRename();
+    });
+  });
+  document.querySelector('[data-sidebar-task-rename-cancel]')?.addEventListener('click', cancelSidebarTaskRename);
+  const openSidebarTaskMenu = document.querySelector('.sidebar-task-menu');
+  if (openSidebarTaskMenu) {
+    const menuTask = openSidebarTaskMenu.closest('.sidebar-task');
+    const taskId = sidebarTaskUI.menuTaskId;
+    const closeOnOutsideClick = (event) => {
+      if (menuTask?.contains(event.target)) return;
+      sidebarTaskUI.menuTaskId = null;
+      render();
+    };
+    const closeOnEscape = (event) => {
+      if (event.key !== 'Escape') return;
+      sidebarTaskUI.menuTaskId = null;
+      render();
+      requestAnimationFrame(() => {
+        document.querySelector(`[data-sidebar-task-menu="${taskId}"]`)?.focus();
+      });
+    };
+    document.addEventListener('click', closeOnOutsideClick);
+    document.addEventListener('keydown', closeOnEscape);
+    sidebarTaskMenuCleanup = () => {
+      document.removeEventListener('click', closeOnOutsideClick);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }
 
   document.querySelectorAll('[data-scene-id]').forEach((element) => {
     element.addEventListener('click', () => {
@@ -781,6 +911,24 @@ function bindEvents() {
     });
   });
 
+  document.querySelectorAll('[data-artifact-path]').forEach((element) => {
+    element.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const target = element.dataset.artifactPath;
+      const currentTask = state.view === 'assistants' ? getAssistantTask() : getActiveTask();
+      const task = currentTask || state.tasks.find((candidate) =>
+        candidate.artifacts?.some((artifact) =>
+          [artifact.id, artifact.path, artifact.uri, artifact.name].filter(Boolean).includes(target)
+        )
+      );
+      void window.meteoDesktop.showArtifactContextMenu({
+        target,
+        workspace: previewWorkspace(task),
+      }).catch(() => {});
+    });
+  });
+
   document.querySelectorAll('[data-external-url]').forEach((element) => {
     element.addEventListener('click', (event) => {
       event.preventDefault();
@@ -831,7 +979,6 @@ function bindEvents() {
 
   bindTaskComposerMenus();
   bindArtifactPreviewEvents();
-  bindPublicationEvents();
 
   const sendButton = document.getElementById('send-task');
   if (sendButton) sendButton.addEventListener('click', () => sendTaskMessage());
@@ -866,7 +1013,9 @@ function bindEvents() {
       if (!item) return;
       task.queuedPrompts = queued.filter((_entry, entryIndex) => entryIndex !== index);
       task.fileReferences = [...(item.fileReferences || [])];
+      task.artifactSelections = [...(item.artifactSelections || [])];
       delete task.queuedDraftFileReferences;
+      delete task.queuedDraftArtifactSelections;
       saveState();
       void sendTaskMessage({ prompt: item.text, dequeue: true });
     });
@@ -977,6 +1126,34 @@ function bindEvents() {
       saveState();
       render();
       focusComposerAfterRender(cursor);
+    });
+  });
+
+  document.querySelectorAll('[data-remove-artifact-selection]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const removed = composerArtifactSelections().find((selection) =>
+        selection.selectionId === button.dataset.removeArtifactSelection
+      );
+      setTaskArtifactSelections(
+        composerArtifactSelections().filter((selection) =>
+          selection.selectionId !== button.dataset.removeArtifactSelection
+        )
+      );
+      if (removed) {
+        void window.meteoDesktop.removeArtifactSelection({
+          previewId: removed.previewId,
+          selectionId: removed.selectionId,
+        });
+      }
+      saveState();
+      render();
+      focusComposerAfterRender(document.getElementById('task-prompt')?.value.length || 0);
+    });
+  });
+
+  document.querySelectorAll('[data-artifact-selection-jump]').forEach((button) => {
+    button.addEventListener('click', () => {
+      void jumpToArtifactSelection(button.dataset.artifactSelectionJump);
     });
   });
 
@@ -1094,6 +1271,113 @@ function bindEvents() {
   bindProjectDialogEvents();
 }
 
+function toggleSidebar() {
+  state.sidebarCollapsed = !state.sidebarCollapsed;
+  saveState();
+  render();
+  requestAnimationFrame(() => {
+    document.getElementById('sidebar-toggle')?.focus();
+  });
+}
+
+function toggleSidebarSection(section) {
+  if (!['tasks', 'workspaces'].includes(section)) return;
+  const collapsedSections = new Set(
+    Array.isArray(state.collapsedSidebarSections) ? state.collapsedSidebarSections : []
+  );
+  if (collapsedSections.has(section)) collapsedSections.delete(section);
+  else collapsedSections.add(section);
+  state.collapsedSidebarSections = [...collapsedSections];
+  saveState();
+  render();
+  requestAnimationFrame(() => {
+    document.querySelector(`[data-sidebar-section-toggle="${section}"]`)?.focus();
+  });
+}
+
+function startSidebarTaskRename(taskId) {
+  if (!state.tasks.some((task) => task.id === taskId)) return;
+  sidebarTaskUI.menuTaskId = null;
+  sidebarTaskUI.editingTaskId = taskId;
+  render();
+  requestAnimationFrame(() => {
+    const input = document.querySelector(`[data-sidebar-task-rename-form="${taskId}"] input`);
+    input?.focus();
+    input?.select();
+  });
+}
+
+function toggleSidebarTaskMenu(taskId) {
+  if (!state.tasks.some((task) => task.id === taskId && task.kind !== 'assistant')) return;
+  sidebarTaskUI.menuTaskId = sidebarTaskUI.menuTaskId === taskId ? null : taskId;
+  render();
+  requestAnimationFrame(() => {
+    if (sidebarTaskUI.menuTaskId === taskId) {
+      document.querySelector('.sidebar-task-menu [role="menuitem"]')?.focus();
+    } else {
+      document.querySelector(`[data-sidebar-task-menu="${taskId}"]`)?.focus();
+    }
+  });
+}
+
+function cancelSidebarTaskRename() {
+  if (!sidebarTaskUI.editingTaskId) return;
+  sidebarTaskUI.editingTaskId = null;
+  render();
+}
+
+function commitSidebarTaskRename(taskId, value) {
+  const task = state.tasks.find((candidate) => candidate.id === taskId);
+  const title = String(value || '').trim();
+  if (!task || !title) return false;
+  task.title = title;
+  task.titleMode = 'manual';
+  sidebarTaskUI.editingTaskId = null;
+  sidebarTaskUI.menuTaskId = null;
+  saveState();
+  render();
+  return true;
+}
+
+function deleteSidebarTask(taskId) {
+  const task = state.tasks.find((candidate) => candidate.id === taskId);
+  if (!task || task.kind === 'assistant') return false;
+  if (task.status === 'running') {
+    alert('任务正在运行，请先停止任务后再删除。');
+    return false;
+  }
+  if (!confirm(`确定删除任务“${task.title}”吗？\n\n任务记录会从本机移除，已生成的成果文件不会删除。`)) {
+    return false;
+  }
+
+  for (const timers of [runtimeStreamCommitTimers, runtimeProgressCommitTimers]) {
+    const timer = timers.get(taskId);
+    if (timer) window.clearTimeout(timer);
+    timers.delete(taskId);
+  }
+  pendingStreamCommitTaskIds.delete(taskId);
+  pendingQueuedPromptTaskIds.delete(taskId);
+  sidebarTaskUI.editingTaskId = null;
+  sidebarTaskUI.menuTaskId = null;
+  state.tasks = state.tasks.filter((candidate) => candidate.id !== taskId);
+
+  const removedTabs = previewUI.tabs.filter((tab) => tab.taskId === taskId);
+  removedTabs.forEach((tab) => delete previewUI.surfaceStates[tab.id]);
+  previewUI.tabs = previewUI.tabs.filter((tab) => tab.taskId !== taskId);
+  if (previewUI.taskId === taskId) {
+    previewUI.open = false;
+    previewUI.taskId = null;
+    previewUI.activeId = null;
+  }
+  if (state.activeTaskId === taskId) {
+    state.activeTaskId = null;
+    state.view = 'catalog';
+  }
+  saveState();
+  render();
+  return true;
+}
+
 function currentPreviewTask() {
   return state.view === 'assistants' ? getAssistantTask() : getActiveTask();
 }
@@ -1155,6 +1439,32 @@ function activePreviewEntry() {
   return activePreviewTab(task);
 }
 
+async function jumpToArtifactSelection(selectionId) {
+  const task = currentPreviewTask();
+  const selection = findArtifactSelection(task, selectionId);
+  if (!task || !selection) return;
+  const artifact = task.artifacts?.find((entry) =>
+    entry.id === selection.artifactId
+    || [entry.path, entry.uri].filter(Boolean).includes(selection.sourcePath)
+    || [entry.path, entry.uri].filter(Boolean).includes(selection.path)
+  ) || {
+    id: selection.artifactId || `selection-artifact-${String(selection.sourceHash || selection.selectionId).slice(0, 12)}`,
+    name: selection.title,
+    path: selection.sourcePath,
+    uri: selection.sourcePath,
+  };
+  openArtifactPreview(artifact, task);
+  await new Promise((resolve) => window.requestAnimationFrame(resolve));
+  await syncArtifactPreviewSurface();
+  const activeTab = activePreviewEntry();
+  if (!activeTab) return;
+  const located = { ...selection, previewId: activeTab.id };
+  await window.meteoDesktop.jumpToArtifactSelection({
+    previewId: activeTab.id,
+    selection: located,
+  });
+}
+
 function applyArtifactPreviewState(payload = {}) {
   if (!payload.id) return;
   const nextPayload = payload.error
@@ -1184,20 +1494,38 @@ function applyArtifactPreviewState(payload = {}) {
   if (loadingButton && typeof nextPayload.loading === 'boolean') {
     loadingButton.dataset.previewNavigate = nextPayload.loading ? 'stop' : 'reload';
     loadingButton.classList.toggle('loading', nextPayload.loading);
+    loadingButton.disabled = false;
     loadingButton.innerHTML = icon(nextPayload.loading ? 'close' : 'refresh');
     loadingButton.setAttribute('aria-label', nextPayload.loading ? '停止加载' : '刷新');
     loadingButton.title = nextPayload.loading ? '停止加载' : '刷新';
   }
 
+  const documentDetail = document.getElementById('artifact-preview-document-detail');
+  if (documentDetail) {
+    const detail = [
+      nextPayload.pageCount ? `${nextPayload.pageCount} 页` : '只读预览',
+      nextPayload.imageBacked ? '高保真' : '',
+      nextPayload.cached ? '已缓存' : '',
+    ].filter(Boolean).join(' · ');
+    documentDetail.textContent = nextPayload.loading ? '正在加载页面…' : detail;
+  }
+
   const status = document.getElementById('artifact-preview-surface-status');
   if (!status) return;
   const error = String(nextPayload.error || '');
-  status.hidden = !error;
+  const loading = Boolean(nextPayload.loading);
+  status.hidden = !error && !loading;
   status.classList.toggle('error', Boolean(error));
+  status.classList.toggle('loading', !error && loading);
   const title = status.querySelector('strong');
   const detail = status.querySelector('p');
   if (title) title.textContent = error ? '暂时无法预览' : '正在准备预览';
-  if (detail) detail.textContent = error || 'MeteoMate 正在打开成果物。';
+  if (detail) {
+    const tab = previewUI.tabs.find((item) => item.id === nextPayload.id);
+    detail.textContent = error || (tab?.extension === 'PDF'
+      ? '正在加载页面…'
+      : `正在将 ${tab?.extension || 'Office 文件'} 转换为只读预览…`);
+  }
 }
 
 async function syncArtifactPreviewSurface() {
@@ -1215,8 +1543,11 @@ async function syncArtifactPreviewSurface() {
   try {
     const snapshot = await window.meteoDesktop.showArtifactPreview({
       id: surface.dataset.previewId,
+      originalTarget: surface.dataset.previewOriginalTarget,
       target: surface.dataset.previewTarget,
       workspace: surface.dataset.previewWorkspace,
+      taskId: surface.dataset.previewTaskId,
+      artifactId: surface.dataset.previewArtifactId,
       bounds: {
         x: rect.x,
         y: rect.y,
@@ -1224,7 +1555,19 @@ async function syncArtifactPreviewSurface() {
         height: rect.height,
       },
     });
-    if (requestId === artifactPreviewSyncRequest) applyArtifactPreviewState(snapshot);
+    if (requestId === artifactPreviewSyncRequest) {
+      applyArtifactPreviewState(snapshot);
+      const task = currentPreviewTask();
+      taskArtifactSelections(task)
+        .filter((selection) => selection.previewId === surface.dataset.previewId)
+        .slice(-24)
+        .forEach((selection) => {
+          void window.meteoDesktop.highlightArtifactSelection({
+            previewId: surface.dataset.previewId,
+            selection,
+          });
+        });
+    }
   } catch (error) {
     if (requestId !== artifactPreviewSyncRequest) return;
     applyArtifactPreviewState({
@@ -1381,10 +1724,28 @@ function bindArtifactPreviewEvents() {
   document.querySelectorAll('[data-preview-close]').forEach((element) => {
     element.addEventListener('click', () => closePreviewTab(element.dataset.previewClose));
   });
-  document.querySelector('[data-preview-panel-close]')?.addEventListener('click', () => {
-    previewUI.open = false;
-    void window.meteoDesktop.hideArtifactPreview();
-    render();
+  document.querySelector('[data-preview-panel-toggle]')?.addEventListener('click', () => {
+    const task = currentPreviewTask();
+    if (!task) return;
+    const previewOpen = previewUI.open && previewUI.taskId === task.id;
+    if (previewOpen) {
+      previewUI.open = false;
+      void window.meteoDesktop.hideArtifactPreview();
+      render();
+      return;
+    }
+    const taskTabs = previewUI.tabs.filter((tab) => tab.taskId === task.id);
+    if (taskTabs.length) {
+      previewUI.taskId = task.id;
+      previewUI.activeId = taskTabs.some((tab) => tab.id === previewUI.activeId)
+        ? previewUI.activeId
+        : taskTabs.at(-1).id;
+      previewUI.open = true;
+      render();
+      return;
+    }
+    const artifact = task.artifacts?.at(-1);
+    if (artifact) openArtifactPreview(artifact, task);
   });
   document.querySelectorAll('[data-preview-navigate]').forEach((element) => {
     element.addEventListener('click', () => navigateActivePreview(element.dataset.previewNavigate));
@@ -1398,341 +1759,6 @@ function bindArtifactPreviewEvents() {
     element.addEventListener('click', openActivePreviewExternally);
   });
   bindArtifactPreviewResizer();
-}
-
-function publicationAnalysisFromForm(task) {
-  const current = window.MeteoMateHarness.PublicationState.analysisForTask(task);
-  return {
-    ...current,
-    region: document.querySelector('[data-publication-region]')?.value.trim() || null,
-    issueTime: document.querySelector('[data-publication-issue-time]')?.value.trim() || null,
-    validPeriod: document.querySelector('[data-publication-valid-period]')?.value.trim() || null,
-  };
-}
-
-function savePublicationContext(task, { rerender = true } = {}) {
-  if (!task) return null;
-  const analysis = window.MeteoMateHarness.PublicationState.updateAnalysis(
-    task,
-    publicationAnalysisFromForm(task)
-  );
-  task.updatedAt = Date.now();
-  publicationUI.error = '';
-  saveState();
-  if (rerender) render();
-  return analysis;
-}
-
-function ensurePublicationFormCurrent(task) {
-  const api = window.MeteoMateHarness.PublicationState;
-  const formAnalysis = publicationAnalysisFromForm(task);
-  if (api.analysisMatchesTask(task, formAnalysis)) return true;
-  api.updateAnalysis(task, formAnalysis);
-  task.updatedAt = Date.now();
-  publicationUI.error = '发布上下文已修改，请重新运行发布检查后再签发。';
-  saveState();
-  render();
-  return false;
-}
-
-function applyPublicationResult(task, request, result) {
-  const api = window.MeteoMateHarness.PublicationState;
-  api.applyServiceResult(task, request, result);
-  if (api.requestMatchesTask(task, request)) return true;
-  const message = '审核期间分析、Evidence 或 Artifact 已发生变化，请重新运行发布检查。';
-  task.publication = {
-    ...task.publication,
-    dirty: true,
-    error: message,
-  };
-  publicationUI.error = message;
-  return false;
-}
-
-function addPublicationConclusion(task) {
-  if (!task) return;
-  const editor = document.querySelector('[data-publication-new-conclusion]');
-  const text = editor?.value.trim() || '';
-  const evidenceIds = [...document.querySelectorAll('[data-publication-new-evidence]:checked')]
-    .map((input) => input.value)
-    .filter(Boolean);
-  if (!text || !evidenceIds.length) {
-    if (editor) {
-      editor.setCustomValidity(text ? '请至少选择一条 Evidence' : '请输入预报结论');
-      editor.reportValidity();
-      editor.addEventListener('input', () => editor.setCustomValidity(''), { once: true });
-    }
-    return;
-  }
-  const analysis = publicationAnalysisFromForm(task);
-  analysis.conclusions = [
-    ...(analysis.conclusions || []),
-    { text, evidenceIds: [...new Set(evidenceIds)] },
-  ];
-  window.MeteoMateHarness.PublicationState.updateAnalysis(task, analysis);
-  task.updatedAt = Date.now();
-  publicationUI.error = '';
-  saveState();
-  render();
-}
-
-function removePublicationConclusion(task, index) {
-  if (!task || !Number.isInteger(index)) return;
-  const analysis = publicationAnalysisFromForm(task);
-  if (!analysis.conclusions[index]) return;
-  analysis.conclusions = analysis.conclusions.filter((_conclusion, itemIndex) => itemIndex !== index);
-  window.MeteoMateHarness.PublicationState.updateAnalysis(task, analysis);
-  task.updatedAt = Date.now();
-  publicationUI.error = '';
-  saveState();
-  render();
-}
-
-async function checkTaskPublication(task, { saveForm = true } = {}) {
-  if (!task || publicationUI.busy) return;
-  if (saveForm) savePublicationContext(task, { rerender: false });
-  publicationUI.busy = 'check';
-  publicationUI.busyTargetId = null;
-  publicationUI.error = '';
-  render();
-  try {
-    const request = window.MeteoMateHarness.PublicationState.requestForTask(task);
-    const result = await window.meteoDesktop.checkPublicationGate(request);
-    applyPublicationResult(task, request, result);
-  } catch (error) {
-    publicationUI.error = error?.message || String(error);
-    window.MeteoMateHarness.PublicationState.applyError(task, error);
-  } finally {
-    publicationUI.busy = '';
-    publicationUI.busyTargetId = null;
-    task.updatedAt = Date.now();
-    saveState();
-    render();
-  }
-}
-
-function publicationQcWaiverReasonInput(evidenceId) {
-  return [...document.querySelectorAll('[data-publication-qc-waiver-reason]')]
-    .find((input) => input.dataset.publicationQcWaiverReason === String(evidenceId || '')) || null;
-}
-
-function publicationQcActionReady(task) {
-  const api = window.MeteoMateHarness.PublicationState;
-  if (
-    task?.publication?.gate
-    && !task.publication.dirty
-    && api.cachedRequestMatchesTask(task)
-  ) {
-    return true;
-  }
-  publicationUI.error = '请先运行发布检查，确认当前 Evidence、QC 状态和成果物未发生变化。';
-  render();
-  return false;
-}
-
-async function createPublicationQcWaiver(task, evidenceId) {
-  if (!task || !evidenceId || publicationUI.busy) return;
-  const reasonInput = publicationQcWaiverReasonInput(evidenceId);
-  const reason = reasonInput?.value.trim() || '';
-  publicationUI.qcWaiverReasons[publicationQcReasonKey(task.id, evidenceId)] = reason;
-  if (reason.length < 8 || reason.length > 1000) {
-    if (reasonInput) {
-      reasonInput.setCustomValidity(
-        reason.length < 8 ? '请填写至少 8 个字符的人工豁免理由' : '人工豁免理由不能超过 1000 个字符'
-      );
-      reasonInput.reportValidity();
-      reasonInput.addEventListener('input', () => reasonInput.setCustomValidity(''), { once: true });
-    }
-    return;
-  }
-  if (!ensurePublicationFormCurrent(task) || !publicationQcActionReady(task)) return;
-  publicationUI.busy = 'waive-qc';
-  publicationUI.busyTargetId = evidenceId;
-  publicationUI.error = '';
-  render();
-  try {
-    const request = window.MeteoMateHarness.PublicationState.requestForTask(task, {
-      evidenceId,
-      reason,
-    });
-    const result = await window.meteoDesktop.waivePublicationQc(request);
-    if (applyPublicationResult(task, request, result)) {
-      delete publicationUI.qcWaiverReasons[publicationQcReasonKey(task.id, evidenceId)];
-    }
-  } catch (error) {
-    publicationUI.error = error?.message || String(error);
-    window.MeteoMateHarness.PublicationState.applyError(task, error);
-  } finally {
-    publicationUI.busy = '';
-    publicationUI.busyTargetId = null;
-    task.updatedAt = Date.now();
-    saveState();
-    render();
-  }
-}
-
-function publicationRevocationReason(subject) {
-  const value = window.prompt(
-    `请输入撤销${subject}的理由（8-1000 个字符）。该理由会写入不可静默修改的审计记录：`,
-    ''
-  );
-  if (value == null) return null;
-  const reason = value.trim();
-  if (reason.length < 8 || reason.length > 1000) {
-    publicationUI.error = reason.length < 8
-      ? '撤销理由至少需要 8 个字符。'
-      : '撤销理由不能超过 1000 个字符。';
-    render();
-    return null;
-  }
-  return reason;
-}
-
-async function revokePublicationQcWaiver(task, waiverId) {
-  if (!task || !waiverId || publicationUI.busy) return;
-  if (!publicationQcActionReady(task)) return;
-  const reason = publicationRevocationReason('这条 QC 人工豁免');
-  if (!reason) return;
-  publicationUI.busy = 'revoke-qc-waiver';
-  publicationUI.busyTargetId = waiverId;
-  publicationUI.error = '';
-  render();
-  try {
-    const request = window.MeteoMateHarness.PublicationState.requestForTask(task, {
-      waiverId,
-      reason,
-    });
-    const result = await window.meteoDesktop.revokePublicationQcWaiver(request);
-    applyPublicationResult(task, request, result);
-  } catch (error) {
-    publicationUI.error = error?.message || String(error);
-    window.MeteoMateHarness.PublicationState.applyError(task, error);
-  } finally {
-    publicationUI.busy = '';
-    publicationUI.busyTargetId = null;
-    task.updatedAt = Date.now();
-    saveState();
-    render();
-  }
-}
-
-async function signTaskPublication(task) {
-  if (!task || publicationUI.busy) return;
-  if (!ensurePublicationFormCurrent(task)) return;
-  if (!confirm('确认以当前账户签发这份预报结论、证据和成果物吗？签发后任何内容变化都需要重新审核。')) return;
-  publicationUI.busy = 'sign';
-  publicationUI.busyTargetId = null;
-  publicationUI.error = '';
-  render();
-  try {
-    const request = window.MeteoMateHarness.PublicationState.requestForTask(task);
-    const result = await window.meteoDesktop.signPublication(request);
-    applyPublicationResult(task, request, result);
-  } catch (error) {
-    publicationUI.error = error?.message || String(error);
-    window.MeteoMateHarness.PublicationState.applyError(task, error);
-  } finally {
-    publicationUI.busy = '';
-    publicationUI.busyTargetId = null;
-    task.updatedAt = Date.now();
-    saveState();
-    render();
-  }
-}
-
-async function revokeTaskPublication(task) {
-  if (!task || publicationUI.busy) return;
-  const reason = publicationRevocationReason('当前签发');
-  if (!reason) return;
-  publicationUI.busy = 'revoke';
-  publicationUI.busyTargetId = null;
-  publicationUI.error = '';
-  render();
-  try {
-    await window.meteoDesktop.revokePublicationSignoff({ taskId: task.id, reason });
-    task.publication = {
-      signoff: null,
-      gate: null,
-      checkedAt: Date.now(),
-      error: null,
-      dirty: true,
-    };
-    saveState();
-    const request = window.MeteoMateHarness.PublicationState.requestForTask(task);
-    const result = await window.meteoDesktop.checkPublicationGate(request);
-    applyPublicationResult(task, request, result);
-  } catch (error) {
-    publicationUI.error = error?.message || String(error);
-    window.MeteoMateHarness.PublicationState.applyError(task, error);
-  } finally {
-    publicationUI.busy = '';
-    publicationUI.busyTargetId = null;
-    task.updatedAt = Date.now();
-    saveState();
-    render();
-  }
-}
-
-function bindPublicationEvents() {
-  document.querySelector('[data-publication-toggle]')?.addEventListener('click', () => {
-    const task = getActiveTask();
-    if (!task) return;
-    const isCurrent = publicationUI.open && publicationUI.taskId === task.id;
-    publicationUI.open = !isCurrent;
-    publicationUI.taskId = publicationUI.open ? task.id : null;
-    publicationUI.error = '';
-    render();
-    if (publicationUI.open) {
-      requestAnimationFrame(() => {
-        document.getElementById('publication-review-panel')?.scrollIntoView({
-          behavior: 'smooth',
-          block: 'start',
-        });
-        if (task.publication?.gate || task.publication?.signoff) {
-          void checkTaskPublication(task, { saveForm: false });
-        }
-      });
-    }
-  });
-  const task = getActiveTask();
-  document.querySelector('[data-publication-save-context]')?.addEventListener('click', () => {
-    savePublicationContext(task);
-  });
-  document.querySelector('[data-publication-add-conclusion]')?.addEventListener('click', () => {
-    addPublicationConclusion(task);
-  });
-  document.querySelectorAll('[data-publication-remove-conclusion]').forEach((button) => {
-    button.addEventListener('click', () => {
-      removePublicationConclusion(task, Number(button.dataset.publicationRemoveConclusion));
-    });
-  });
-  document.querySelectorAll('[data-publication-qc-waiver-reason]').forEach((input) => {
-    input.addEventListener('input', () => {
-      publicationUI.qcWaiverReasons[
-        publicationQcReasonKey(task?.id, input.dataset.publicationQcWaiverReason)
-      ] = input.value;
-      input.setCustomValidity('');
-    });
-  });
-  document.querySelectorAll('[data-publication-waive-qc]').forEach((button) => {
-    button.addEventListener('click', () => {
-      void createPublicationQcWaiver(task, button.dataset.publicationWaiveQc);
-    });
-  });
-  document.querySelectorAll('[data-publication-revoke-qc-waiver]').forEach((button) => {
-    button.addEventListener('click', () => {
-      void revokePublicationQcWaiver(task, button.dataset.publicationRevokeQcWaiver);
-    });
-  });
-  document.querySelector('[data-publication-check]')?.addEventListener('click', () => {
-    void checkTaskPublication(task);
-  });
-  document.querySelector('[data-publication-sign]')?.addEventListener('click', () => {
-    void signTaskPublication(task);
-  });
-  document.querySelector('[data-publication-revoke]')?.addEventListener('click', () => {
-    void revokeTaskPublication(task);
-  });
 }
 
 window.MeteoMatePreview = {
@@ -1774,6 +1800,7 @@ function openSettingsDialog(section = 'general') {
   settingsDialog.providerDraft = null;
   settingsDialog.modelDraft = null;
   settingsDialog.pendingProvider = null;
+  settingsDialog.providerTest = { status: 'idle', result: null };
   modelSettings.message = '';
   modelSettings.error = '';
   render();
@@ -1788,6 +1815,7 @@ function closeSettingsDialog() {
   settingsDialog.providerDraft = null;
   settingsDialog.modelDraft = null;
   settingsDialog.pendingProvider = null;
+  settingsDialog.providerTest = { status: 'idle', result: null };
   if (returnContext) {
     state.view = returnContext.view;
     state.activeTaskId = returnContext.activeTaskId;
@@ -1810,6 +1838,7 @@ function closeSettingsEditor() {
     settingsDialog.providerDraft = { ...settingsDialog.pendingProvider };
     settingsDialog.modelDraft = null;
     settingsDialog.pendingProvider = null;
+    settingsDialog.providerTest = { status: 'idle', result: null };
     modelSettings.message = '';
     modelSettings.error = '';
     render();
@@ -1818,6 +1847,7 @@ function closeSettingsEditor() {
   settingsDialog.providerDraft = null;
   settingsDialog.modelDraft = null;
   settingsDialog.pendingProvider = null;
+  settingsDialog.providerTest = { status: 'idle', result: null };
   modelSettings.message = '';
   modelSettings.error = '';
   render();
@@ -1903,7 +1933,12 @@ function bindSettingsDialogEvents() {
         apiUrl: '',
         apiKeySet: false,
         requiresAuth: true,
+        presetMode: 'auto',
+        protocolMode: 'auto',
+        streamingMode: 'auto',
+        endpointPathOverride: '',
       };
+      settingsDialog.providerTest = { status: 'idle', result: null };
       modelSettings.error = '';
       modelSettings.message = '';
       render();
@@ -1933,7 +1968,25 @@ function bindSettingsDialogEvents() {
         apiUrl: provider.apiUrl,
         apiKeySet: provider.apiKeySet,
         requiresAuth: provider.requiresAuth,
+        presetMode: provider.presetMode || 'auto',
+        providerPreset: provider.providerPreset,
+        protocolMode: provider.protocolMode || 'auto',
+        protocol: provider.protocol,
+        streamingMode: provider.streamingMode || 'auto',
+        supportsStreaming: provider.supportsStreaming,
+        endpointPathOverride: provider.endpointPathOverride || '',
+        endpointUrl: provider.endpointUrl,
+        verification: provider.verification,
+        organizationManaged: Boolean(provider.organizationManaged),
+        organizationProviderId: provider.organizationProviderId || provider.id,
+        localProviderAvailable: provider.localProviderAvailable !== false,
+        credentialMode: provider.credentialMode || 'local',
+        credentialConfigured: Boolean(provider.credentialConfigured),
+        modelId: provider.models?.[0]?.id || '',
+        toolCall: Boolean(provider.models?.[0]?.toolCall),
+        imageInput: Boolean(provider.models?.[0]?.imageInput),
       };
+      settingsDialog.providerTest = { status: 'idle', result: provider.verification || null };
       modelSettings.error = '';
       modelSettings.message = '';
       render();
@@ -2002,8 +2055,24 @@ function bindSettingsDialogEvents() {
   document.querySelectorAll('[data-delete-model]').forEach((element) => {
     element.addEventListener('click', () => deleteCustomModel(element.dataset.providerId, element.dataset.deleteModel));
   });
+  document.querySelectorAll('[data-test-provider]').forEach((element) => {
+    element.addEventListener('click', () => testCustomProviderConnection(element.dataset.testProvider));
+  });
+  document.querySelectorAll('#provider-api-url, #provider-endpoint-path, #provider-api-key, #provider-no-auth, input[name="provider-preset-mode"], input[name="provider-protocol-mode"], input[name="provider-streaming-mode"]').forEach((element) => {
+    const eventName = element.matches('input[type="radio"]') ? 'change' : 'input';
+    element.addEventListener(eventName, () => {
+      invalidateProviderTest();
+      void refreshProviderRoutePreview();
+    });
+  });
+  if (settingsDialog.pendingProvider) {
+    document.querySelectorAll('#custom-model-id, #model-tool-call, #model-image-input').forEach((element) => {
+      element.addEventListener(element.type === 'checkbox' ? 'change' : 'input', invalidateProviderTest);
+    });
+  }
   document.getElementById('provider-editor-form')?.addEventListener('submit', saveCustomProvider);
   document.getElementById('model-editor-form')?.addEventListener('submit', saveCustomModel);
+  if (settingsDialog.providerDraft) void refreshProviderRoutePreview();
 
   const keyHandler = (event) => {
     if (event.key === 'Escape') {
@@ -2017,13 +2086,102 @@ function bindSettingsDialogEvents() {
   settingsDialogCleanup = () => document.removeEventListener('keydown', keyHandler);
 }
 
+function selectedProviderOption(name, fallback = 'auto') {
+  return document.querySelector(`input[name="${name}"]:checked`)?.value || fallback;
+}
+
+function readProviderConnectionForm() {
+  const noAuth = Boolean(document.getElementById('provider-no-auth')?.checked);
+  return {
+    displayName: document.getElementById('provider-display-name')?.value.trim() || '',
+    apiUrl: document.getElementById('provider-api-url')?.value.trim() || '',
+    apiKey: noAuth ? '' : document.getElementById('provider-api-key')?.value || '',
+    requiresAuth: !noAuth,
+    presetMode: selectedProviderOption('provider-preset-mode'),
+    protocolMode: selectedProviderOption('provider-protocol-mode'),
+    streamingMode: selectedProviderOption('provider-streaming-mode'),
+    endpointPathOverride: document.getElementById('provider-endpoint-path')?.value.trim() || '',
+  };
+}
+
+function invalidateProviderTest() {
+  settingsDialog.providerTest = { status: 'idle', result: null };
+  if (settingsDialog.providerDraft) settingsDialog.providerDraft.verification = null;
+  const container = document.getElementById('provider-test-result');
+  if (container) container.innerHTML = renderProviderVerification(null, { emptyText: '配置已变化，请重新验证' });
+}
+
+async function refreshProviderRoutePreview() {
+  const endpoint = document.getElementById('provider-effective-endpoint');
+  if (!endpoint) return;
+  const request = readProviderConnectionForm();
+  if (!request.apiUrl) {
+    endpoint.textContent = '输入 Base URL 后显示实际请求地址';
+    return;
+  }
+  try {
+    const route = await window.meteoDesktop.previewModelProviderRoute(request);
+    endpoint.textContent = route.endpointUrl || '无法推导请求地址';
+    endpoint.title = route.endpointUrl || '';
+    const transport = document.getElementById('provider-resolved-transport');
+    const streaming = document.getElementById('provider-resolved-streaming');
+    if (transport) transport.textContent = `${providerPresetLabel(route.providerPreset)} · ${providerProtocolLabel(route.protocol)}`;
+    if (streaming) streaming.textContent = route.supportsStreaming ? '流式' : '非流式';
+  } catch {
+    endpoint.textContent = 'Base URL 无效';
+  }
+}
+
+async function testCustomProviderConnection(context) {
+  if (settingsDialog.providerTest.status === 'testing') return;
+  const providerForm = context === 'provider';
+  const request = providerForm
+    ? {
+        ...readProviderConnectionForm(),
+        modelId: settingsDialog.providerDraft.modelId,
+        toolCall: settingsDialog.providerDraft.toolCall,
+        imageInput: settingsDialog.providerDraft.imageInput,
+      }
+    : {
+        ...settingsDialog.pendingProvider,
+        modelId: document.getElementById('custom-model-id')?.value.trim() || '',
+        toolCall: Boolean(document.getElementById('model-tool-call')?.checked),
+        imageInput: Boolean(document.getElementById('model-image-input')?.checked),
+      };
+  const button = document.querySelector(`[data-test-provider="${context}"]`);
+  const container = document.getElementById('provider-test-result');
+  settingsDialog.providerTest = { status: 'testing', result: null };
+  if (button) {
+    button.disabled = true;
+    button.textContent = '验证中…';
+  }
+  if (container) container.innerHTML = '<div class="provider-verification-state testing"><span></span><div><strong>正在连接模型服务</strong><small>验证文本响应和已声明能力…</small></div></div>';
+  try {
+    const result = await window.meteoDesktop.testModelProvider(request);
+    settingsDialog.providerTest = { status: result.status, result };
+    if (container) container.innerHTML = renderProviderVerification(result);
+  } catch (error) {
+    const result = {
+      status: 'failed',
+      verifiedAt: new Date().toISOString(),
+      tests: [],
+      message: error?.message || '连接验证失败',
+    };
+    settingsDialog.providerTest = { status: 'failed', result };
+    if (container) container.innerHTML = renderProviderVerification(result);
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = '重新测试';
+    }
+  }
+}
+
 async function saveCustomProvider(event) {
   event.preventDefault();
   if (modelSettings.status === 'saving') return;
-  const displayName = document.getElementById('provider-display-name')?.value.trim() || '';
-  const apiUrl = document.getElementById('provider-api-url')?.value.trim() || '';
-  const apiKey = document.getElementById('provider-api-key')?.value || '';
-  const noAuth = Boolean(document.getElementById('provider-no-auth')?.checked);
+  const request = readProviderConnectionForm();
+  const { displayName, apiUrl, apiKey } = request;
   if (!displayName) return showSettingsError('请输入提供商名称。');
   try {
     const parsed = new URL(apiUrl);
@@ -2031,16 +2189,14 @@ async function saveCustomProvider(event) {
   } catch {
     return showSettingsError('请输入有效的 HTTP 或 HTTPS Base URL。');
   }
-  if (!noAuth && !apiKey && !settingsDialog.providerDraft.apiKeySet) {
+  if (request.requiresAuth && !apiKey && !settingsDialog.providerDraft.apiKeySet) {
     return showSettingsError('请输入 API Key，或勾选“此地址无需 API Key”。');
   }
   const editing = Boolean(settingsDialog.providerDraft.id);
   if (!editing) {
     settingsDialog.pendingProvider = {
-      displayName,
-      apiUrl,
-      apiKey: noAuth ? '' : apiKey,
-      requiresAuth: !noAuth,
+      ...request,
+      verification: settingsDialog.providerTest.result,
     };
     settingsDialog.providerDraft = null;
     settingsDialog.modelDraft = {
@@ -2063,14 +2219,16 @@ async function saveCustomProvider(event) {
   modelSettings.error = '';
   render();
   try {
-    const request = {
+    const updateRequest = {
+      ...request,
       providerId: settingsDialog.providerDraft.id || null,
-      displayName,
-      apiUrl,
-      apiKey: noAuth ? '' : apiKey || null,
-      requiresAuth: !noAuth,
+      organizationManaged: Boolean(settingsDialog.providerDraft.organizationManaged),
+      organizationProviderId: settingsDialog.providerDraft.organizationProviderId || '',
+      localProviderAvailable: settingsDialog.providerDraft.localProviderAvailable !== false,
+      apiKey: request.requiresAuth ? apiKey || null : '',
+      verification: settingsDialog.providerTest.result,
     };
-    const settings = await window.meteoDesktop.updateModelProvider(request);
+    const settings = await window.meteoDesktop.updateModelProvider(updateRequest);
     settingsDialog.providerDraft = null;
     applyModelSettings(settings, '提供商已更新。');
     settingsDialog.selectedProviderId = settings.lastChangedProviderId || settings.providerId;
@@ -2122,7 +2280,11 @@ async function saveCustomModel(event) {
   render();
   try {
     const settings = settingsDialog.pendingProvider
-      ? await window.meteoDesktop.createModelProvider({ ...settingsDialog.pendingProvider, model })
+      ? await window.meteoDesktop.createModelProvider({
+          ...settingsDialog.pendingProvider,
+          model,
+          verification: settingsDialog.providerTest.result,
+        })
       : await window.meteoDesktop.saveCustomModel({
           providerId: settingsDialog.modelDraft.providerId,
           originalModelId: settingsDialog.modelDraft.originalId || null,
@@ -2141,7 +2303,12 @@ async function saveCustomModel(event) {
 }
 
 async function deleteCustomModel(providerId, modelId) {
-  if (!confirm(`确定删除模型“${modelId}”吗？`)) return;
+  const provider = modelSettings.providers.find((entry) => entry.id === providerId);
+  const model = provider?.models.find((entry) => entry.id === modelId);
+  const modelLabel = model?.name || modelId;
+  const isDefault = modelSettings.providerId === providerId && modelSettings.modelId === modelId;
+  const defaultNotice = isDefault ? '\n\n这是当前默认模型，删除后需要重新选择默认模型。' : '';
+  if (!confirm(`确定删除模型“${modelLabel}”吗？${defaultNotice}`)) return;
   modelSettings.status = 'saving';
   modelSettings.error = '';
   render();
@@ -2174,8 +2341,10 @@ function navigate(view) {
     knowledgeUI.testResult = null;
   }
   if (view === 'task-new') {
+    teamUI.collapsed = false;
     teamUI.expanded = false;
     teamUI.selectedMemberId = null;
+    teamUI.expandedResultIds.clear();
     state.selectedExpertId = null;
     state.activeProjectId = null;
     state.activeTaskId = null;
@@ -2186,6 +2355,7 @@ function navigate(view) {
     state.draftConnectorIds = [];
     state.draftToolSelections = {};
     state.draftFileReferences = [];
+    state.draftArtifactSelections = [];
     state.draftPermissionProfileId = null;
     state.draftProviderId = null;
     state.draftModelId = null;
@@ -2294,8 +2464,10 @@ async function persistModelSettings() {
 function openExpert(expertId, prompt = '') {
   if (!expertId) return;
   catalogUI.detailExpertId = null;
+  teamUI.collapsed = false;
   teamUI.expanded = false;
   teamUI.selectedMemberId = null;
+  teamUI.expandedResultIds.clear();
   state.selectedExpertId = expertId;
   state.draftSceneId = catalog.scenes.find((scene) => scene.expertId === expertId)?.id || null;
   state.draftTaskMode = catalog.scenes.find((scene) => scene.id === state.draftSceneId)?.group || 'forecast';
@@ -3327,6 +3499,7 @@ async function executeAutomationById(automationId, source = 'manual') {
   state.activeProjectId = project.id;
   const task = createTask(expert, prompt, permissionProfile.id, providerId, modelId);
   task.title = automation.name;
+  task.titleMode = 'fixed';
   task.projectId = project.id;
   task.workspace = project.workspace;
   task.skillIds = enabledSkillIds(template.skillIds || [], project.id);
@@ -3497,28 +3670,61 @@ function selectTaskProject(projectId) {
     state.draftConnectorIds = [...(capabilities.connectors || [])];
     state.draftToolSelections = normalizeToolSelections(capabilities.toolSelections, state.draftConnectorIds);
     state.draftFileReferences = [];
+    state.draftArtifactSelections = [];
   } else if (!task) {
     state.draftCapabilityMode = 'inherit';
     state.draftConnectorIds = [];
     state.draftToolSelections = {};
     state.draftFileReferences = [];
+    state.draftArtifactSelections = [];
   }
   saveState();
   render();
 }
 
+function revealTeamProcessMember(runId, memberId) {
+  const target = [...document.querySelectorAll('[data-team-process-member]')].find(
+    (element) => element.dataset.teamRunId === runId && element.dataset.teamProcessMember === memberId
+  );
+  if (!target) return;
+  const process = target.closest('[data-team-run-process]');
+  if (process) process.open = true;
+  target.focus({ preventScroll: true });
+  target.scrollIntoView({
+    block: 'nearest',
+    behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+  });
+}
+
 function bindTaskComposerMenus() {
-  document.querySelectorAll('[data-team-toggle]').forEach((element) => {
+  document.querySelectorAll('[data-team-result-toggle]').forEach((element) => {
     element.addEventListener('click', () => {
-      teamUI.expanded = !teamUI.expanded;
+      const resultId = element.dataset.teamResultToggle;
+      if (teamUI.expandedResultIds.has(resultId)) teamUI.expandedResultIds.delete(resultId);
+      else teamUI.expandedResultIds.add(resultId);
+      render();
+    });
+  });
+  document.querySelectorAll('[data-team-collapse]').forEach((element) => {
+    element.addEventListener('click', () => {
+      const expanding = element.getAttribute('aria-expanded') === 'false';
+      teamUI.collapsed = !expanding;
+      teamUI.expanded = expanding;
+      if (!expanding) {
+        teamUI.selectedMemberId = null;
+      }
       render();
     });
   });
   document.querySelectorAll('[data-team-member-id]').forEach((element) => {
     element.addEventListener('click', () => {
+      teamUI.collapsed = false;
       teamUI.selectedMemberId = element.dataset.teamMemberId;
       teamUI.expanded = true;
+      const runId = element.dataset.teamRunId;
+      const memberId = element.dataset.teamMemberId;
       render();
+      window.requestAnimationFrame(() => revealTeamProcessMember(runId, memberId));
     });
   });
   const moreTrigger = document.getElementById('composer-more');
@@ -3577,6 +3783,39 @@ function bindTaskComposerMenus() {
   };
 }
 
+function compactTaskTitle(value, limit = 34) {
+  const normalized = String(value || '')
+    .replace(/^\s*#{1,6}\s*/, '')
+    .replace(/^["'“‘《]+|["'”’》]+$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const characters = Array.from(normalized);
+  return characters.length > limit ? `${characters.slice(0, limit - 1).join('')}…` : normalized;
+}
+
+function automaticTaskTitle(prompt) {
+  const title = compactTaskTitle(prompt);
+  const chineseCharacterCount = (title.match(/[\u3400-\u9fff]/g) || []).length;
+  return chineseCharacterCount >= 2 ? title : '新任务';
+}
+
+function normalizeAutomaticSessionTitle(value) {
+  const title = compactTaskTitle(value);
+  const chineseCharacterCount = (title.match(/[\u3400-\u9fff]/g) || []).length;
+  return chineseCharacterCount >= 2 ? title : '';
+}
+
+function applyAutomaticSessionTitle(task, value) {
+  if (!task || task.titleMode === 'manual' || task.titleMode === 'fixed' || task.messages.length > 2) {
+    return false;
+  }
+  const title = normalizeAutomaticSessionTitle(value);
+  if (!title) return false;
+  task.title = title;
+  task.titleMode = 'automatic';
+  return true;
+}
+
 function createTask(expert, prompt, permissionProfileId, providerId, modelId) {
   const assistantTask = expert.id === primaryAssistant.id;
   const project = assistantTask ? getAssistantProject() : getActiveProject();
@@ -3587,15 +3826,17 @@ function createTask(expert, prompt, permissionProfileId, providerId, modelId) {
   const task = {
     id: cryptoRandomId(),
     kind: assistantTask ? 'assistant' : 'task',
-    title: assistantTask ? primaryAssistant.name : truncate(prompt, 34),
+    title: assistantTask ? primaryAssistant.name : automaticTaskTitle(prompt),
+    titleMode: assistantTask ? 'fixed' : 'automatic',
     expertId: expert.id,
     expertName: expert.name,
     expertSnapshot: frozenExpert,
     teamDefinition: frozenExpert.kind === 'team' ? teamDefinitionForExpert(frozenExpert) : null,
     teamRun: null,
+    teamRuns: [],
     sceneId: assistantTask ? null : state.draftSceneId || null,
     projectId: project?.id || null,
-    workspace: project?.workspace || '',
+    workspace: project?.workspace || state.assistantWorkspace || '',
     runtimePreference: 'auto',
     runtimeMode: null,
     sessionId: null,
@@ -3611,6 +3852,7 @@ function createTask(expert, prompt, permissionProfileId, providerId, modelId) {
     artifacts: [],
     pendingPermissions: [],
     fileReferences: [...(state.draftFileReferences || [])],
+    artifactSelections: [...(state.draftArtifactSelections || [])],
     draftPrompt: '',
     usage: null,
     createdAt: now,
@@ -3730,7 +3972,7 @@ function scheduleRuntimeProgressCommit(task) {
 }
 
 function runtimeEventCommitMode(eventType) {
-  if (['assistant_message_delta', 'thought_delta'].includes(eventType)) return 'stream';
+  if (['assistant_message_delta', 'thought_delta', 'team_member_progress'].includes(eventType)) return 'stream';
   if (['runtime_progress', 'artifact_created', 'evidence_created'].includes(eventType)) return 'progress';
   return 'immediate';
 }
@@ -3826,7 +4068,9 @@ function flushQueuedTaskPrompts(taskId) {
   if (!next) return;
   activeTask.queuedPrompts = queued.slice(1);
   activeTask.fileReferences = [...(next.fileReferences || [])];
+  activeTask.artifactSelections = [...(next.artifactSelections || [])];
   delete activeTask.queuedDraftFileReferences;
+  delete activeTask.queuedDraftArtifactSelections;
   saveState();
   void sendTaskMessage({ prompt: next.text, dequeue: true });
 }
@@ -3849,13 +4093,16 @@ async function sendTaskMessage(options = {}) {
       id: `queued-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       text: prompt,
       fileReferences: [...(existing.queuedDraftFileReferences || [])],
+      artifactSelections: [...(existing.queuedDraftArtifactSelections || [])],
       createdAt: Date.now(),
     };
     const queued = Array.isArray(existing.queuedPrompts) ? existing.queuedPrompts : [];
     existing.queuedPrompts = options.dequeue ? [item, ...queued] : [...queued, item];
     if (!options.dequeue) {
       existing.queuedDraftFileReferences = [];
+      existing.queuedDraftArtifactSelections = [];
       state.draftFileReferences = [];
+      state.draftArtifactSelections = [];
       if (textarea) textarea.value = '';
       existing.draftPrompt = '';
       state.draftPrompt = '';
@@ -3887,21 +4134,27 @@ async function sendTaskMessage(options = {}) {
   if (Array.isArray(task.queuedDraftFileReferences)) {
     task.fileReferences = [...task.queuedDraftFileReferences];
   }
+  if (Array.isArray(task.queuedDraftArtifactSelections)) {
+    task.artifactSelections = [...task.queuedDraftArtifactSelections];
+  }
   const submittedFileReferences = [...(task.fileReferences || [])];
+  const submittedArtifactSelections = [...(task.artifactSelections || [])];
   task.queuedDraftFileReferences = [];
+  task.queuedDraftArtifactSelections = [];
 
   task.permissionProfileId = permissionProfile.id;
   task.allowFileTools = allowFileTools;
   task.workMode = 'execute';
   task.providerId = providerId;
   task.modelId = modelId;
-  task.workspace = getConversationProject(task)?.workspace || task.workspace || '';
+  task.workspace = getConversationProject(task)?.workspace || task.workspace || state.assistantWorkspace || '';
   task.status = 'running';
   task.updatedAt = Date.now();
   task.pendingPermissions = [];
   task.plan = createDefaultPlan();
 
-  appendMessage(task, 'user', prompt);
+  const userMessage = appendMessage(task, 'user', prompt);
+  userMessage.artifactSelections = submittedArtifactSelections;
   const response = ensureStreamingAssistant(task);
   response.modelId = modelId || '';
   response.responsePhase = 'preparing';
@@ -3922,8 +4175,10 @@ async function sendTaskMessage(options = {}) {
 
   if (textarea) textarea.value = '';
   task.draftPrompt = '';
+  task.artifactSelections = [];
   state.draftPrompt = '';
   state.draftFileReferences = [];
+  state.draftArtifactSelections = [];
   render();
   scrollConversationToBottom();
   await waitForPendingResponsePaint();
@@ -3945,6 +4200,7 @@ async function sendTaskMessage(options = {}) {
       modelId,
       submittedAt: response.startedAt,
       fileReferences: submittedFileReferences,
+      artifactSelections: submittedArtifactSelections,
       transcript: previousTranscript,
       team: teamDefinition,
     });
@@ -4060,15 +4316,11 @@ async function resendEditedMessage(messageId, text) {
   }
   task.artifactIds = [...new Set(task.artifacts.map((artifact) => artifact.id).filter(Boolean))];
   task.evidenceIds = [...new Set((task.evidence || []).map((entry) => entry.id).filter(Boolean))];
-  if (removedArtifactIds.size || removedEvidenceIds.size || removedAssistantIds.size) {
-    task.publication = {
-      ...(task.publication || {}),
-      dirty: true,
-      error: null,
-    };
-  }
   task.pendingPermissions = [];
-  task.teamRun = null;
+  task.teamRuns = (Array.isArray(task.teamRuns) ? task.teamRuns : []).filter(
+    (run) => !run?.responseId || !removedAssistantIds.has(run.responseId)
+  );
+  task.teamRun = task.teamRuns.at(-1) || null;
   task.sessionId = null;
   task.runtimeMode = null;
   task.sessionCapabilityHash = null;
@@ -4079,7 +4331,8 @@ async function resendEditedMessage(messageId, text) {
   task.status = 'completed';
   task.updatedAt = Date.now();
   if (!task.messages.some((message) => message.role === 'user')) {
-    task.title = task.kind === 'assistant' ? primaryAssistant.name : truncate(prompt, 34);
+    task.title = task.kind === 'assistant' ? primaryAssistant.name : automaticTaskTitle(prompt);
+    task.titleMode = task.kind === 'assistant' ? 'fixed' : 'automatic';
   }
   messageUI.editingTaskId = null;
   messageUI.editingMessageId = null;
@@ -4106,102 +4359,59 @@ async function resolvePermission(permissionId, action) {
   }
 }
 
-function extractArtifactCandidates(value) {
-  let text = '';
-  try {
-    text = typeof value === 'string' ? value : JSON.stringify(value);
-  } catch {
-    return [];
-  }
-  const pattern = /(?:https?:\/\/|file:\/\/\/|[A-Za-z]:[\\/]|\.{0,2}[\\/])?[^\s"'`()<>()[\]{},;|]+\.(?:docx|xlsx|pptx|pdf|html|md|png|jpg|jpeg|webp|csv|geojson|tif|tiff)\b/gi;
-  return [...new Set(text.match(pattern) || [])]
-    .filter((candidate) => !/^(?:https?:|file:)/i.test(candidate))
-    .slice(0, 8);
+function normalizedArtifactTarget(value) {
+  return String(value || '')
+    .trim()
+    .replaceAll('\\', '/')
+    .replace(/^(?:\.\/)+/, '');
 }
 
-function artifactCandidatePath(task, candidate) {
-  const value = String(candidate || '').trim().replaceAll('\\', '/');
-  const workspace = String(task?.workspace || '').trim().replaceAll('\\', '/').replace(/\/+$/, '');
-  if (!value || !workspace || /^(?:https?:|file:|\/\/)/i.test(value)) return '';
-
-  const absolute = value.startsWith('/') || /^[A-Za-z]:\//.test(value);
-  if (absolute) {
-    const comparableValue = /^[A-Za-z]:\//.test(value) ? value.toLowerCase() : value;
-    const comparableWorkspace = /^[A-Za-z]:\//.test(workspace) ? workspace.toLowerCase() : workspace;
-    if (
-      comparableValue !== comparableWorkspace
-      && !comparableValue.startsWith(`${comparableWorkspace}/`)
-    ) {
-      return '';
-    }
-    return value;
-  }
-  if (value === '..' || value.startsWith('../')) return '';
-  return `${workspace}/${value.replace(/^(?:\.\/)+/, '')}`;
+function trustedArtifactRecord(artifact) {
+  const source = String(artifact?.metadata?.source || '');
+  const contentHash = String(artifact?.contentHash || '').replace(/^sha256:/i, '');
+  return Boolean(
+    (artifact?.path || artifact?.uri)
+    && /^[a-f0-9]{64}$/i.test(contentHash)
+    && !['legacy-assistant-text', 'legacy-artifact-reconciliation'].includes(source)
+  );
 }
 
-function registerArtifacts(task, source) {
-  for (const candidate of extractArtifactCandidates(source)) {
-    const pathValue = artifactCandidatePath(task, candidate);
-    if (!pathValue) continue;
-    const name = pathBaseName(pathValue);
-    if (task.artifacts.some((artifact) => artifact.path === pathValue || artifact.name === name)) continue;
-    const record = window.MeteoMateHarness.ArtifactRegistry.registerArtifact(task, {
-      id: cryptoRandomId(),
-      name,
-      path: pathValue,
-      type: name.split('.').pop()?.toUpperCase() || 'FILE',
-      metadata: { source: 'legacy-assistant-text' },
-      createdAt: Date.now(),
-    });
-    const assistant = currentStreamingAssistant(task) || latestAssistantMessage(task);
-    if (assistant) {
-      assistant.artifactIds = [...new Set([...(assistant.artifactIds || []), record.id])];
-    }
-    if (task.publication) {
-      task.publication = {
-        ...task.publication,
-        dirty: true,
-        error: null,
-      };
-    }
-  }
+function deliverableArtifactRecord(artifact) {
+  return trustedArtifactRecord(artifact)
+    && ['validated', 'ready', 'published'].includes(artifact.status);
 }
 
-function completionArtifactUri(task, value) {
-  const uri = String(value || '').trim();
-  if (!uri) return '';
-  if (/^(?:https?:|file:|[A-Za-z]:[\\/]|\/)/i.test(uri)) return uri;
-  return task?.workspace ? uri : '';
+function completionArtifactMatches(record, declared) {
+  const target = normalizedArtifactTarget(declared?.uri);
+  if (!target) return false;
+  return [record.path, record.uri, record.metadata?.relativePath]
+    .map(normalizedArtifactTarget)
+    .filter(Boolean)
+    .includes(target);
 }
 
-function registerCompletionArtifacts(task, artifacts) {
-  for (const artifact of Array.isArray(artifacts) ? artifacts : []) {
-    const uri = completionArtifactUri(task, artifact?.uri);
-    if (!uri) continue;
-    const name = String(artifact.name || pathBaseName(uri) || '成果');
-    if (task.artifacts.some((item) => item.path === uri || item.uri === uri || item.name === name)) continue;
-    const record = window.MeteoMateHarness.ArtifactRegistry.registerArtifact(task, {
-      id: cryptoRandomId(),
-      name,
-      path: uri,
-      uri,
-      type: artifact.mediaType || name.split('.').pop()?.toUpperCase() || 'FILE',
-      description: artifact.description || '',
-      createdAt: Date.now(),
-    });
-    const assistant = currentStreamingAssistant(task) || latestAssistantMessage(task);
-    if (assistant) {
-      assistant.artifactIds = [...new Set([...(assistant.artifactIds || []), record.id])];
-    }
-    if (task.publication) {
-      task.publication = {
-        ...task.publication,
-        dirty: true,
-        error: null,
-      };
-    }
+function verifiedCompletionArtifacts(task, declaredArtifacts, assistant) {
+  const responseArtifactIds = new Set(assistant?.artifactIds || []);
+  return (Array.isArray(declaredArtifacts) ? declaredArtifacts : []).map((declared) =>
+    (task.artifacts || []).find((record) =>
+      responseArtifactIds.has(record.id)
+      && deliverableArtifactRecord(record)
+      && completionArtifactMatches(record, declared)
+    ) || null
+  );
+}
+
+function pruneUnverifiedArtifactRecords(task) {
+  const rejectedIds = new Set(
+    (task.artifacts || []).filter((artifact) => !trustedArtifactRecord(artifact)).map((artifact) => artifact.id)
+  );
+  if (!rejectedIds.size) return false;
+  task.artifacts = (task.artifacts || []).filter((artifact) => !rejectedIds.has(artifact.id));
+  task.artifactIds = (task.artifactIds || []).filter((id) => !rejectedIds.has(id));
+  for (const message of task.messages || []) {
+    message.artifactIds = (message.artifactIds || []).filter((id) => !rejectedIds.has(id));
   }
+  return true;
 }
 
 function linkRuntimeRecordToResponse(task, event, kind) {
@@ -4241,7 +4451,22 @@ function runtimeCompletion(task, event, assistant) {
   if (event.runtime !== 'acp' || !contract?.required) {
     return { required: false, valid: true, status: 'completed', envelope: null };
   }
-  return window.MeteoMateHarness.ContextCompiler.evaluateCompletion(contract, assistant.text);
+  const completion = window.MeteoMateHarness.ContextCompiler.evaluateCompletion(contract, assistant.text);
+  if (!completion.valid || completion.status !== 'completed' || !contract.requiresArtifact) {
+    return completion;
+  }
+  const declared = completion.envelope?.artifacts || [];
+  const verified = verifiedCompletionArtifacts(task, declared, assistant);
+  if (declared.length && verified.length === declared.length && verified.every(Boolean)) {
+    return { ...completion, verifiedArtifactIds: verified.map((artifact) => artifact.id) };
+  }
+  return {
+    ...completion,
+    valid: false,
+    status: 'partial',
+    reason: '完成结果声明了文件，但本轮没有与之匹配的已校验成果物事件和内容摘要',
+    artifactVerificationFailed: true,
+  };
 }
 
 function settleResponseActivities(task, assistant, completed) {
@@ -4313,28 +4538,168 @@ function retryIncompleteCompletion(task, assistant, completion) {
   return true;
 }
 
-function ensureTeamRunMember(task, event) {
-  if (!task.teamRun) {
-    const team = teamDefinitionForTask(task, getTaskExpert(task));
-    if (team) task.teamRun = window.MeteoMateHarness.ExpertTeam.createRunState(team);
+function rememberTeamRun(task, run) {
+  if (!run) return null;
+  const history = Array.isArray(task.teamRuns) ? task.teamRuns : [];
+  const existingIndex = history.findIndex((candidate) => candidate?.id === run.id);
+  if (existingIndex >= 0) history[existingIndex] = run;
+  else history.push(run);
+  const limit = window.MeteoMateHarness.ExpertTeam.RUN_HISTORY_LIMIT || 20;
+  task.teamRuns = history.slice(-limit);
+  return run;
+}
+
+function teamRunForEvent(task, event = {}) {
+  const runId = event.runId || event.teamRun?.id || null;
+  const history = Array.isArray(task.teamRuns) ? task.teamRuns : [];
+  if (runId) {
+    const historicalRun = history.find((run) => run?.id === runId);
+    if (historicalRun) return historicalRun;
+    if (task.teamRun?.id === runId) return task.teamRun;
+    return null;
   }
-  if (!task.teamRun) return null;
+  return task.teamRun || history.at(-1) || null;
+}
+
+function recordTeamRunTimeline(run, entry) {
+  if (!run) return null;
+  return window.MeteoMateHarness.ExpertTeam.appendTimelineEntry(run, entry);
+}
+
+function safeTeamActivity(activity = {}) {
+  const now = Date.now();
+  return {
+    id: activity.id || cryptoRandomId(),
+    title: String(activity.title || activity.toolName || '工具执行'),
+    toolName: activity.toolName || null,
+    extensionName: activity.extensionName || null,
+    status: activity.status || 'running',
+    createdAt: Number(activity.createdAt || activity.at) || now,
+    updatedAt: Number(activity.updatedAt || activity.at) || now,
+  };
+}
+
+function appendTeamMemberUpdate(member, entry, limit = 16) {
+  if (!member || typeof member !== 'object') return null;
+  entry = entry || {};
+  const source = String(entry.source || 'status');
+  const text = String(entry.text || entry.detail || entry.title || '').trim();
+  if (!text) return null;
+  const at = Number(entry.at || entry.updatedAt || entry.createdAt) || Date.now();
+  const updates = Array.isArray(member.updates)
+    ? member.updates.filter((item) => item && typeof item === 'object').map((item) => ({ ...item }))
+    : [];
+  const id = String(entry.id || `${source}:${at}:${updates.length + 1}`);
+  const normalized = {
+    id,
+    source,
+    text,
+    toolName: entry.toolName || null,
+    status: entry.status || (source === 'message' ? 'streaming' : 'running'),
+    createdAt: Number(entry.createdAt) || at,
+    updatedAt: at,
+  };
+  const existingIndex = updates.findIndex((item) => item.id === id);
+  if (existingIndex >= 0) {
+    updates[existingIndex] = {
+      ...updates[existingIndex],
+      ...normalized,
+      createdAt: updates[existingIndex].createdAt || normalized.createdAt,
+    };
+  } else {
+    const last = updates.at(-1);
+    if (source === 'status' && last?.source === 'status' && last.text === text) {
+      updates[updates.length - 1] = {
+        ...last,
+        status: normalized.status,
+        updatedAt: at,
+      };
+    } else {
+      if (last?.source === 'message' && last.status === 'streaming') {
+        last.status = 'completed';
+        last.updatedAt = at;
+      }
+      updates.push(normalized);
+    }
+  }
+  member.updates = updates.slice(-Math.max(1, Number(limit) || 16));
+  return member.updates.find((item) => item.id === id) || member.updates.at(-1) || null;
+}
+
+function teamMemberProgressDisplay(event) {
+  event = event || {};
+  return {
+    id: event.progressId || null,
+    source: event.source || 'status',
+    text: String(event.detail || '').trim(),
+  };
+}
+
+function finalizeTeamMemberUpdates(member, status = 'completed', at = Date.now()) {
+  if (!member) return [];
+  const updatedAt = Number(at) || Date.now();
+  const terminalStatus = ['completed', 'failed', 'blocked', 'cancelled', 'interrupted'].includes(status)
+    ? status
+    : 'interrupted';
+  const activeStatuses = new Set(['streaming', 'running', 'pending', 'in_progress']);
+  member.updates = (Array.isArray(member.updates) ? member.updates : []).map((entry) => (
+    entry && activeStatuses.has(entry.status)
+      ? { ...entry, status: terminalStatus, updatedAt }
+      : entry
+  ));
+  member.activities = (Array.isArray(member.activities) ? member.activities : []).map((activity) => (
+    activity && activeStatuses.has(activity.status)
+      ? { ...activity, status: terminalStatus, updatedAt }
+      : activity
+  ));
+  return member.updates;
+}
+
+function collapseTerminalTeamUI(task) {
+  if (!task || task.id !== state.activeTaskId) return;
+  teamUI.collapsed = true;
+  teamUI.expanded = false;
+  teamUI.selectedMemberId = null;
+}
+
+function ensureTeamRunMember(task, event) {
+  let run = teamRunForEvent(task, event);
+  if (!run && event.runId && task.teamRun && task.teamRun.id !== event.runId) return null;
+  if (!run) {
+    const team = teamDefinitionForTask(task, getTaskExpert(task));
+    if (team) {
+      const assistant = ensureStreamingAssistant(task);
+      run = window.MeteoMateHarness.ExpertTeam.createRunState(team, {
+        id: event.runId,
+        responseId: assistant.id,
+      });
+      task.teamRun = run;
+      assistant.teamRunId = run.id;
+      rememberTeamRun(task, run);
+    }
+  }
+  if (!run) return null;
   const memberId = event.teamMemberId || event.member?.id;
-  let member = task.teamRun.members.find((candidate) => candidate.id === memberId);
+  let member = run.members.find((candidate) => candidate.id === memberId);
   if (!member && event.member) {
     member = {
       ...structuredClone(event.member),
       status: 'pending',
       sessionId: null,
+      activatedAt: null,
       startedAt: null,
       completedAt: null,
       summary: '',
       detail: '',
+      detailSource: '',
+      detailUpdatedAt: null,
       error: '',
       activities: [],
+      updates: [],
     };
-    task.teamRun.members.push(member);
+    run.members.push(member);
   }
+  rememberTeamRun(task, run);
   return member || null;
 }
 
@@ -4347,15 +4712,58 @@ function updateTeamRunMember(task, event, patch) {
   return member;
 }
 
-function interruptActiveTeamMembers(task, status, detail = '') {
-  if (!task.teamRun) return;
-  task.teamRun.members.forEach((member) => {
+function teamMemberAcceptsLiveUpdate(member) {
+  return !member || ['pending', 'running'].includes(member.status);
+}
+
+function settleTeamRunMembers(run, completedAt = Date.now()) {
+  if (!run || !Array.isArray(run.members)) return [];
+  const settled = [];
+  run.members.forEach((member) => {
+    if (member.status !== 'running') return;
+    if (member.summary) {
+      member.status = 'completed';
+      member.detail = '';
+      member.detailSource = 'completed';
+    } else if (member.error) {
+      member.status = 'failed';
+      member.detail = '';
+      member.detailSource = 'error';
+    } else {
+      member.status = 'interrupted';
+      member.error = '负责人已结束本轮协作，但成员会话未返回终态。';
+      member.detail = '';
+      member.detailSource = 'error';
+    }
+    member.detailUpdatedAt = completedAt;
+    member.completedAt = member.completedAt || completedAt;
+    finalizeTeamMemberUpdates(member, member.status, completedAt);
+    settled.push(member);
+  });
+  return settled;
+}
+
+function runtimeOutputFailureMessage(task, failure) {
+  const run = task?.teamRun;
+  const completed = run?.members?.filter((member) => member.status === 'completed').length || 0;
+  if (run) {
+    return `负责人汇总时遇到工具调用格式错误。已保留 ${completed} 位专家的完成结果，请重试本轮汇总。`;
+  }
+  return failure?.message || '模型生成的工具调用格式无法解析，请重试。';
+}
+
+function interruptActiveTeamMembers(task, status, detail = '', event = {}) {
+  const run = teamRunForEvent(task, event);
+  if (!run) return;
+  run.members.forEach((member) => {
     if (['pending', 'running'].includes(member.status)) {
       member.status = status;
       member.completedAt = Date.now();
       if (detail) member.error = detail;
+      finalizeTeamMemberUpdates(member, status, member.completedAt);
     }
   });
+  rememberTeamRun(task, run);
 }
 
 function handleRuntimeEvent(event) {
@@ -4374,12 +4782,36 @@ function handleRuntimeEvent(event) {
 
   switch (event.type) {
     case 'team_started':
-      task.teamRun = structuredClone(event.teamRun);
-      task.teamRun.status = 'running';
-      task.teamRun.phase = 'dispatching';
-      teamUI.selectedMemberId = task.teamRun.members[0]?.id || null;
+      {
+        const assistant = ensureStreamingAssistant(task);
+        const run = structuredClone(event.teamRun);
+        run.responseId = assistant.id;
+        run.status = 'running';
+        run.phase = 'dispatching';
+        run.timeline = Array.isArray(run.timeline) ? run.timeline : [];
+        run.members = (run.members || []).map((member) => ({
+          ...member,
+          activatedAt: member.activatedAt || member.startedAt || null,
+          activities: Array.isArray(member.activities) ? member.activities : [],
+          updates: Array.isArray(member.updates) ? member.updates : [],
+        }));
+        task.teamRun = run;
+        assistant.teamRunId = run.id;
+        advanceAssistantResponsePhase(task, 'analyzing');
+        rememberTeamRun(task, run);
+        recordTeamRunTimeline(run, {
+          key: `run:${run.id}:dispatch`,
+          type: 'dispatch',
+          actor: '交付负责人',
+          title: '专家团已就位',
+          detail: `已按依赖关系分派 ${run.members.length} 位专家，完成后由负责人统一交付。`,
+          status: 'completed',
+          at: run.startedAt,
+        });
+        teamUI.selectedMemberId = null;
+      }
       addActivity(task, {
-        id: `team-run-${task.teamRun.id}`,
+        id: `team-run-${task.teamRun?.id}`,
         type: 'info',
         title: '专家团已就位',
         detail: `${task.teamRun.members.length} 位专家将按依赖关系协作，最后由负责人统一交付。`,
@@ -4388,31 +4820,104 @@ function handleRuntimeEvent(event) {
       break;
 
     case 'team_member_started':
-      updateTeamRunMember(task, event, {
-        status: 'running',
-        startedAt: event.startedAt || Date.now(),
-      });
-      if (task.teamRun) task.teamRun.phase = 'executing';
+      {
+        const existingMember = ensureTeamRunMember(task, event);
+        if (!teamMemberAcceptsLiveUpdate(existingMember)) break;
+        const startedAt = existingMember?.startedAt || event.startedAt || Date.now();
+        const member = updateTeamRunMember(task, event, {
+          status: 'running',
+          activatedAt: existingMember?.activatedAt || startedAt,
+          startedAt,
+        });
+        const run = teamRunForEvent(task, event);
+        if (run) {
+          run.phase = 'executing';
+          recordTeamRunTimeline(run, {
+            key: `member:${member?.id}:started`,
+            type: 'member',
+            memberId: member?.id,
+            actor: member?.name || event.teamMemberName || '专家成员',
+            title: '开始执行专业任务',
+            detail: member?.objective || '',
+            status: 'running',
+            at: event.startedAt,
+          });
+          rememberTeamRun(task, run);
+        }
+        if (!teamUI.selectedMemberId && member) teamUI.selectedMemberId = member.id;
+        advanceAssistantResponsePhase(task, 'analyzing');
+      }
       break;
 
     case 'team_member_progress':
-      updateTeamRunMember(task, event, {
-        status: 'running',
-        detail: event.detail || '',
-      });
+      {
+        const updatedAt = event.at || Date.now();
+        const existingMember = ensureTeamRunMember(task, event);
+        if (!teamMemberAcceptsLiveUpdate(existingMember)) break;
+        const display = teamMemberProgressDisplay(event);
+        const member = updateTeamRunMember(task, event, {
+          status: 'running',
+          detail: display.text,
+          detailSource: display.source,
+          detailUpdatedAt: updatedAt,
+        });
+        appendTeamMemberUpdate(member, {
+          id: display.id,
+          source: display.source,
+          text: display.text,
+          status: 'streaming',
+          at: updatedAt,
+        });
+        const run = teamRunForEvent(task, event);
+        recordTeamRunTimeline(run, {
+          key: `member:${member?.id}:progress`,
+          type: 'progress',
+          memberId: member?.id,
+          actor: member?.name || event.teamMemberName || '专家成员',
+          title: display.source === 'status' ? '正在分析任务' : '形成阶段结果',
+          detail: display.text,
+          status: 'running',
+          at: updatedAt,
+        });
+      }
       break;
 
     case 'team_member_activity': {
+      const updatedAt = Date.now();
+      const existingMember = ensureTeamRunMember(task, event);
+      if (!teamMemberAcceptsLiveUpdate(existingMember)) break;
       const member = updateTeamRunMember(task, event, {
         status: 'running',
         detail: event.activity?.title || '',
+        detailSource: 'activity',
+        detailUpdatedAt: updatedAt,
       });
       if (member && event.activity) {
         const activities = Array.isArray(member.activities) ? member.activities : [];
-        const index = activities.findIndex((activity) => activity.id === event.activity.id);
-        if (index >= 0) activities[index] = { ...activities[index], ...event.activity };
-        else activities.push(structuredClone(event.activity));
+        const activity = safeTeamActivity(event.activity);
+        const index = activities.findIndex((candidate) => candidate.id === activity.id);
+        if (index >= 0) activities[index] = { ...activities[index], ...activity };
+        else activities.push(activity);
         member.activities = activities.slice(-6);
+        appendTeamMemberUpdate(member, {
+          id: `activity:${activity.id}`,
+          source: 'activity',
+          text: activity.title,
+          toolName: activity.toolName,
+          status: activity.status,
+          createdAt: activity.createdAt,
+          at: activity.updatedAt,
+        });
+        const run = teamRunForEvent(task, event);
+        recordTeamRunTimeline(run, {
+          key: `member:${member.id}:activity:${activity.id}`,
+          type: 'activity',
+          memberId: member.id,
+          actor: member.name || event.teamMemberName || '专家成员',
+          title: activity.title,
+          detail: activity.toolName ? `调用 ${activity.toolName}` : '执行已授权的工具操作',
+          status: activity.status,
+        });
       }
       break;
     }
@@ -4422,75 +4927,175 @@ function handleRuntimeEvent(event) {
       break;
 
     case 'team_member_completed':
-      updateTeamRunMember(task, event, {
-        status: 'completed',
-        summary: event.summary || '',
-        detail: '',
-        completedAt: event.completedAt || Date.now(),
-      });
+      {
+        const member = updateTeamRunMember(task, event, {
+          status: 'completed',
+          summary: event.summary || '',
+          detail: '',
+          detailSource: 'completed',
+          detailUpdatedAt: event.completedAt || Date.now(),
+          completedAt: event.completedAt || Date.now(),
+        });
+        finalizeTeamMemberUpdates(member, 'completed', event.completedAt || Date.now());
+        recordTeamRunTimeline(teamRunForEvent(task, event), {
+          key: `member:${member?.id}:result`,
+          type: 'handoff',
+          memberId: member?.id,
+          actor: member?.name || event.teamMemberName || '专家成员',
+          title: '已提交交接结果',
+          detail: event.summary || '',
+          status: 'completed',
+          at: event.completedAt,
+        });
+      }
       break;
 
     case 'team_member_failed':
     case 'team_member_cancelled':
     case 'team_member_blocked': {
       const status = event.type.replace('team_member_', '');
-      updateTeamRunMember(task, event, {
+      const member = updateTeamRunMember(task, event, {
         status,
         error: event.message || '',
         detail: '',
+        detailSource: 'error',
+        detailUpdatedAt: event.completedAt || Date.now(),
         completedAt: event.completedAt || Date.now(),
+      });
+      finalizeTeamMemberUpdates(member, status, event.completedAt || Date.now());
+      recordTeamRunTimeline(teamRunForEvent(task, event), {
+        key: `member:${member?.id}:result`,
+        type: 'error',
+        memberId: member?.id,
+        actor: member?.name || event.teamMemberName || '专家成员',
+        title: status === 'blocked' ? '任务受上游阻塞' : status === 'cancelled' ? '任务已停止' : '执行失败',
+        detail: event.message || '',
+        status,
+        at: event.completedAt,
       });
       break;
     }
 
     case 'team_synthesis_started':
-      if (task.teamRun) {
-        task.teamRun.status = 'running';
-        task.teamRun.phase = 'synthesizing';
+      {
+        const run = teamRunForEvent(task, event);
+        if (run) {
+          run.status = 'running';
+          run.phase = 'synthesizing';
+          recordTeamRunTimeline(run, {
+            key: `run:${run.id}:synthesis`,
+            type: 'synthesis',
+            actor: '交付负责人',
+            title: '开始汇总成员交接结果',
+            detail: `正在整合 ${run.members.filter((member) => member.status === 'completed').length} 位专家的可用结论。`,
+            status: 'running',
+            at: event.startedAt,
+          });
+          rememberTeamRun(task, run);
+        }
+        advanceAssistantResponsePhase(task, 'analyzing');
       }
       break;
 
     case 'team_completed':
-      if (task.teamRun) {
-        task.teamRun.status = event.status || 'completed';
-        task.teamRun.phase = 'completed';
-        task.teamRun.completedAt = event.completedAt || Date.now();
-        task.teamRun.completedCount = event.completedCount;
-        task.teamRun.failedCount = event.failedCount;
+      {
+        const run = teamRunForEvent(task, event);
+        if (run) {
+          const reconciled = settleTeamRunMembers(run, event.completedAt || Date.now());
+          const actualCompletedCount = run.members.filter((member) => member.status === 'completed').length;
+          const actualFailedCount = run.members.filter((member) =>
+            ['failed', 'blocked', 'cancelled', 'interrupted'].includes(member.status)
+          ).length;
+          const reconciliationFailed = reconciled.some((member) => member.status !== 'completed')
+            || actualFailedCount > 0;
+          const reportedStatus = event.status || 'completed';
+          run.status = reconciliationFailed && reportedStatus === 'completed'
+            ? 'partial'
+            : reportedStatus;
+          run.phase = 'completed';
+          run.completedAt = event.completedAt || Date.now();
+          run.completedCount = actualCompletedCount;
+          run.failedCount = actualFailedCount;
+          recordTeamRunTimeline(run, {
+            key: `run:${run.id}:completed`,
+            type: 'completion',
+            actor: '交付负责人',
+            title: actualFailedCount ? '已汇总可用结果' : '专家团协作完成',
+            detail: actualFailedCount
+              ? `${actualCompletedCount} 位成员完成，${actualFailedCount} 位失败或受阻。`
+              : `${actualCompletedCount || run.members.length} 位成员已完成交接。`,
+            status: run.status,
+            at: event.completedAt,
+          });
+          rememberTeamRun(task, run);
+        }
       }
-      updateActivity(task, `team-run-${task.teamRun?.id}`, {
-        status: event.status === 'partial' ? 'interrupted' : 'completed',
-        detail: event.failedCount
-          ? `${event.completedCount || 0} 位成员完成，${event.failedCount} 位失败或受阻；负责人已交付可用部分。`
-          : `${event.completedCount || task.teamRun?.members.length || 0} 位成员已完成，负责人已汇总交付。`,
-      });
+      {
+        const completedCount = task.teamRun?.completedCount ?? event.completedCount ?? 0;
+        const failedCount = task.teamRun?.failedCount ?? event.failedCount ?? 0;
+        updateActivity(task, `team-run-${event.runId || task.teamRun?.id}`, {
+          status: task.teamRun?.status === 'partial' ? 'interrupted' : 'completed',
+          detail: failedCount
+            ? `${completedCount} 位成员完成，${failedCount} 位失败或受阻；负责人已交付可用部分。`
+            : `${completedCount || task.teamRun?.members.length || 0} 位成员已完成，负责人已汇总交付。`,
+        });
+      }
+      collapseTerminalTeamUI(task);
       break;
 
     case 'team_failed':
-      if (task.teamRun) {
-        task.teamRun.status = 'failed';
-        task.teamRun.phase = 'failed';
-        task.teamRun.error = event.message || '';
-        task.teamRun.completedAt = event.completedAt || Date.now();
+      {
+        const run = teamRunForEvent(task, event);
+        if (run) {
+          run.status = 'failed';
+          run.phase = 'failed';
+          run.error = event.message || '';
+          run.completedAt = event.completedAt || Date.now();
+          recordTeamRunTimeline(run, {
+            key: `run:${run.id}:failed`,
+            type: 'error',
+            actor: '交付负责人',
+            title: '专家团执行失败',
+            detail: event.message || '',
+            status: 'failed',
+            at: event.completedAt,
+          });
+          rememberTeamRun(task, run);
+        }
       }
-      interruptActiveTeamMembers(task, 'interrupted', event.message || '');
-      updateActivity(task, `team-run-${task.teamRun?.id}`, {
+      interruptActiveTeamMembers(task, 'interrupted', event.message || '', event);
+      updateActivity(task, `team-run-${event.runId || task.teamRun?.id}`, {
         status: 'failed',
         detail: event.message || '专家团执行失败。',
       });
+      collapseTerminalTeamUI(task);
       break;
 
     case 'team_cancelled':
-      if (task.teamRun) {
-        task.teamRun.status = 'cancelled';
-        task.teamRun.phase = 'cancelled';
-        task.teamRun.completedAt = event.completedAt || Date.now();
+      {
+        const run = teamRunForEvent(task, event);
+        if (run) {
+          run.status = 'cancelled';
+          run.phase = 'cancelled';
+          run.completedAt = event.completedAt || Date.now();
+          recordTeamRunTimeline(run, {
+            key: `run:${run.id}:cancelled`,
+            type: 'completion',
+            actor: '交付负责人',
+            title: '专家团任务已停止',
+            detail: '保留停止前已经完成的成员结果。',
+            status: 'cancelled',
+            at: event.completedAt,
+          });
+          rememberTeamRun(task, run);
+        }
       }
-      interruptActiveTeamMembers(task, 'cancelled');
-      updateActivity(task, `team-run-${task.teamRun?.id}`, {
+      interruptActiveTeamMembers(task, 'cancelled', '', event);
+      updateActivity(task, `team-run-${event.runId || task.teamRun?.id}`, {
         status: 'failed',
         detail: '专家团任务已停止。',
       });
+      collapseTerminalTeamUI(task);
       break;
 
     case 'runtime_progress': {
@@ -4579,9 +5184,14 @@ function handleRuntimeEvent(event) {
         completeRunningThought(task);
         advanceAssistantResponsePhase(task, 'responding');
       }
+      if (assistant.runtimeOutputFailure) break;
       assistant.text += event.text || '';
+      const runtimeFailure = window.MeteoMateHarness.ExpertTeam.runtimeOutputFailure(assistant.text);
+      if (runtimeFailure) {
+        assistant.runtimeOutputFailure = runtimeFailure;
+        assistant.text = runtimeOutputFailureMessage(task, runtimeFailure);
+      }
       if (streamingAssistant) assistant.status = 'streaming';
-      registerArtifacts(task, event.text || '');
       break;
     }
 
@@ -4589,6 +5199,23 @@ function handleRuntimeEvent(event) {
       break;
 
     case 'thought_delta': {
+      const teamAssistant = currentStreamingAssistant(task);
+      const activeTeamRun = task.teamRun?.responseId === teamAssistant?.id ? task.teamRun : null;
+      if (activeTeamRun) {
+        advanceAssistantResponsePhase(task, 'analyzing');
+        if (activeTeamRun.phase === 'synthesizing') {
+          recordTeamRunTimeline(activeTeamRun, {
+            key: `run:${activeTeamRun.id}:synthesis-progress`,
+            type: 'synthesis',
+            actor: '交付负责人',
+            title: '正在校验成员结论',
+            detail: '对齐证据、分歧、不确定性和待确认项。',
+            status: 'running',
+          });
+          rememberTeamRun(task, activeTeamRun);
+        }
+        break;
+      }
       if (event.text) advanceAssistantResponsePhase(task, 'analyzing');
       const last = task.activities.at(-1);
       if (last?.type === 'thought' && last.status === 'running') {
@@ -4705,7 +5332,7 @@ function handleRuntimeEvent(event) {
       break;
 
     case 'session_info':
-      if (event.title && task.messages.length <= 2) task.title = event.title;
+      applyAutomaticSessionTitle(task, event.title);
       break;
 
     case 'usage_update':
@@ -4736,6 +5363,45 @@ function handleRuntimeEvent(event) {
     case 'turn_completed': {
       const assistant = currentStreamingAssistant(task);
       if (!assistant) break;
+      const completedAt = Date.now();
+      const reconciled = settleTeamRunMembers(task.teamRun, completedAt);
+      if (reconciled.some((member) => member.status !== 'completed') && task.teamRun?.status === 'completed') {
+        task.teamRun.status = 'partial';
+      }
+      const runtimeFailure = assistant.runtimeOutputFailure
+        || window.MeteoMateHarness.ExpertTeam.runtimeOutputFailure(assistant.text);
+      if (runtimeFailure) {
+        task.status = 'failed';
+        assistant.runtimeOutputFailure = runtimeFailure;
+        assistant.text = runtimeOutputFailureMessage(task, runtimeFailure);
+        if (task.teamRun) {
+          task.teamRun.status = 'failed';
+          task.teamRun.phase = 'failed';
+          task.teamRun.error = runtimeFailure.message;
+          task.teamRun.completedAt = completedAt;
+          recordTeamRunTimeline(task.teamRun, {
+            key: `run:${task.teamRun.id}:runtime-output-failure`,
+            type: 'error',
+            actor: '交付负责人',
+            title: '汇总输出格式错误',
+            detail: runtimeFailure.message,
+            status: 'failed',
+            at: completedAt,
+          });
+          rememberTeamRun(task, task.teamRun);
+        }
+        addActivity(task, {
+          type: 'error',
+          title: '汇总输出格式错误',
+          detail: runtimeFailure.message,
+          status: 'failed',
+        });
+        settleResponseActivities(task, assistant, false);
+        markPlan(task, 'analyze', 'completed');
+        markPlan(task, 'deliver', 'failed');
+        finalizeAssistantResponse(task, 'failed');
+        break;
+      }
       const completion = runtimeCompletion(task, event, assistant);
       const completed = !completion.required || (completion.valid && completion.status === 'completed');
       const failed = completion.required && completion.valid && completion.status === 'failed';
@@ -4743,10 +5409,11 @@ function handleRuntimeEvent(event) {
       task.status = completed ? 'completed' : failed ? 'failed' : 'interrupted';
       if (completion.envelope) {
         assistant.completion = completion.envelope;
-        assistant.text = completionText(completion.envelope)
-          || completion.envelope.summary
-          || '任务尚未形成可显示的最终结果。';
-        registerCompletionArtifacts(task, completion.envelope.artifacts);
+        assistant.text = completion.artifactVerificationFailed && !completed
+          ? `请求的文件未生成成功。${completion.reason}。MeteoMate 未登记可打开成果物，也不会猜测或补全文件路径。`
+          : completionText(completion.envelope)
+            || completion.envelope.summary
+            || '任务尚未形成可显示的最终结果。';
       } else if (!assistant.text.trim()) {
         assistant.text = completed
           ? '任务已完成，但没有返回可显示的文本。'
@@ -4773,7 +5440,16 @@ function handleRuntimeEvent(event) {
         task.teamRun.status = 'cancelled';
         task.teamRun.phase = 'cancelled';
         task.teamRun.completedAt = Date.now();
-        interruptActiveTeamMembers(task, 'cancelled');
+        recordTeamRunTimeline(task.teamRun, {
+          key: `run:${task.teamRun.id}:cancelled`,
+          type: 'completion',
+          actor: '交付负责人',
+          title: '专家团任务已停止',
+          detail: '保留停止前已经完成的成员结果。',
+          status: 'cancelled',
+        });
+        rememberTeamRun(task, task.teamRun);
+        interruptActiveTeamMembers(task, 'cancelled', '', { runId: task.teamRun.id });
       }
       const assistant = currentStreamingAssistant(task);
       if (assistant) {
@@ -4804,7 +5480,16 @@ function handleRuntimeEvent(event) {
         task.teamRun.phase = 'failed';
         task.teamRun.error = event.message || '';
         task.teamRun.completedAt = Date.now();
-        interruptActiveTeamMembers(task, 'interrupted', event.message || '');
+        recordTeamRunTimeline(task.teamRun, {
+          key: `run:${task.teamRun.id}:failed`,
+          type: 'error',
+          actor: '交付负责人',
+          title: '专家团执行失败',
+          detail: event.message || '',
+          status: 'failed',
+        });
+        rememberTeamRun(task, task.teamRun);
+        interruptActiveTeamMembers(task, 'interrupted', event.message || '', { runId: task.teamRun.id });
       }
       const technicalFailure = /ACP|Headless|runtime/i.test(event.message || '');
       const failureMessage = technicalFailure
@@ -4883,6 +5568,7 @@ async function initialize(accountStatePromise) {
     return;
   }
   state = loadState(accountSession.profileKey);
+  state.tasks.forEach(pruneUnverifiedArtifactRecords);
   window.MeteoMateWorkflowCenter?.normalizeState?.();
   const savedPreviewWidth = Number(localStorage.getItem('meteomate-preview-width-v1'));
   if (Number.isFinite(savedPreviewWidth)) previewUI.width = savedPreviewWidth;
@@ -4898,6 +5584,9 @@ async function initialize(accountStatePromise) {
   unsubscribeRuntimeEvents = runtimeRouter.subscribe(handleRuntimeEvent);
   unsubscribeArtifactPreviewEvents = window.meteoDesktop.onArtifactPreviewStateChange?.(
     applyArtifactPreviewState
+  );
+  unsubscribeArtifactPreviewSelectionEvents = window.meteoDesktop.onArtifactPreviewSelection?.(
+    handleArtifactPreviewSelection
   );
   try {
     state.windowMaximized = Boolean(await window.meteoDesktop.windowIsMaximized?.());
@@ -4968,6 +5657,7 @@ window.addEventListener('beforeunload', () => {
   composerTriggerCleanup?.();
   unsubscribeRuntimeEvents?.();
   unsubscribeArtifactPreviewEvents?.();
+  unsubscribeArtifactPreviewSelectionEvents?.();
   void window.meteoDesktop.hideArtifactPreview();
 });
 

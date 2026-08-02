@@ -128,7 +128,7 @@ Capability Center 中新增一个 `office-artifacts` connector。四个 Skill �
 1. 校验 Managed Runtime 的平台、架构、版本和 SHA-256。
 2. 注册并启用 `office-artifacts` connector。
 3. 安装或启用四个 bundled skill。
-4. 通过 MCP `initialize` 和 `tools/list` 验证固定的 14 个工具。
+4. 通过 MCP `initialize` 和 `tools/list` 验证固定的 17 个工具。
 5. 提示用户创建新 Session，使能力快照生效。
 
 任一步失败都回滚本次安装状态，不允许留下“Skill 已启用但运行时不可用”的半安装状态。
@@ -176,7 +176,7 @@ runtime/office/<platform>-<arch>/
 ```json
 {
   "schemaVersion": "meteomate.office-runtime/v1",
-  "runtimeVersion": "1.1.0",
+  "runtimeVersion": "1.3.0",
   "platform": "darwin",
   "arch": "arm64",
   "createdAt": "2026-07-24T00:00:00Z",
@@ -226,13 +226,16 @@ manifest 记录运行时版本、平台、架构、锁定依赖版本，以及 P
 
 ### 7.1 工具清单
 
-Connector 固定暴露以下 14 个工具：
+Connector 固定暴露以下 17 个工具：
 
 | 工具 | 类型 | 说明 |
 | --- | --- | --- |
 | `docx_inspect` | 只读 | 提取 DOCX 结构、样式、锚点、媒体和风险 |
+| `docx_resolve_selection` | 只读 | 将预览选区解析为唯一正文段落锚点 |
+| `docx_create_from_markdown` | 写入 | 从受控 Markdown 行创建普通 DOCX |
 | `docx_create` | 写入 | 从规范或模板创建 DOCX |
 | `docx_edit` | 写入 | 对现有 DOCX 执行结构化操作 |
+| `docx_edit_selection` | 写入 | 复核源文件与段落锚点，生成并校验新的 DOCX 版本 |
 | `pptx_inspect` | 只读 | 提取母版、布局、页面、形状和锚点 |
 | `pptx_create` | 写入 | 从规范或模板创建 PPTX |
 | `pptx_edit` | 写入 | 对现有 PPTX 执行结构化操作 |
@@ -267,6 +270,8 @@ Connector 固定暴露以下 14 个工具：
 - 拒绝绝对路径、`..`、符号链接逃逸、设备路径和网络路径。
 - 输出目录由 Connector 创建；目录权限为 `0700`，文件权限为 `0600`。
 - 创建和编辑默认拒绝覆盖现有文件。
+- 预览选区修改必须使用 `docx_edit_selection`；源文件 hash、唯一段落锚点或选区 hash 任一不匹配即拒绝写入。
+- `docx_edit_selection` 默认在原文件旁生成 `_已修改` 版本，名称冲突时递增编号，并在返回前完成结构、安全与逐页渲染检查。
 - `outputPath` 的扩展名必须与工具格式一致。
 - 单次调用必须声明 `schemaVersion`。
 
@@ -754,7 +759,7 @@ npm run check
 测试覆盖：
 
 - runtime manifest、hash、平台和架构校验。
-- MCP initialize、tools/list 和 14 个工具 schema 快照。
+- MCP initialize、tools/list 和 17 个工具 schema 快照。
 - 路径逃逸、符号链接、输出覆盖和乐观锁失败。
 - OOXML zip bomb、XXE、宏、外链和 PDF JavaScript 拒绝。
 - 创建、编辑、渲染、校验和 Artifact 状态转换。
@@ -769,7 +774,7 @@ npm run check
 必须在真实 Electron source runtime 和新 Session 中验证：
 
 1. 在 Capability Center 启用 Office 工作台。
-2. 新 Session 的 MCP 快照包含准确的 14 个工具。
+2. 新 Session 的 MCP 快照包含准确的 17 个工具。
 3. 完成各阶段验收样例。
 4. 会话卡片可预览、打开和在 Finder 中显示。
 5. 项目资产区显示正确状态、hash、模板和血缘。

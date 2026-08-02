@@ -8,10 +8,11 @@
   'use strict';
 
   const ID = 'office-artifacts';
-  const RUNTIME_VERSION = '1.2.0';
+  const RUNTIME_VERSION = '1.3.0';
 
   const OBSERVE_TOOLS = Object.freeze([
     'docx_inspect',
+    'docx_resolve_selection',
     'pptx_inspect',
     'xlsx_inspect',
     'pdf_inspect',
@@ -22,6 +23,7 @@
     'docx_create_from_markdown',
     'docx_create',
     'docx_edit',
+    'docx_edit_selection',
     'pptx_create',
     'pptx_edit',
     'xlsx_create',
@@ -30,12 +32,17 @@
     'pdf_transform',
   ]);
   const SAFE_TOOLS = Object.freeze([...OBSERVE_TOOLS, ...MUTATION_TOOLS]);
+  const FULL_SELECTION_BASELINE = Object.freeze(SAFE_TOOLS.filter((tool) => ![
+    'docx_create_from_markdown',
+    'docx_resolve_selection',
+    'docx_edit_selection',
+  ].includes(tool)));
 
   const PRESET = Object.freeze({
     id: ID,
     name: 'Office 成果物',
     description: '在当前项目内创建、编辑、渲染并校验 DOCX、PPTX、XLSX 和 PDF 成果物。',
-    version: '1.2.0',
+    version: '1.3.0',
     transport: 'stdio',
     command: 'MeteoMate Runtime',
     args: [],
@@ -53,6 +60,13 @@
     if (!Array.isArray(selectedTools)) return [...SAFE_TOOLS];
     const requested = new Set(selectedTools.map(String));
     return SAFE_TOOLS.filter((tool) => requested.has(tool));
+  }
+
+  function upgradeToolSelection(selectedTools) {
+    if (!Array.isArray(selectedTools)) return selectedTools;
+    const selected = new Set(selectedTools.map(String).filter(Boolean));
+    if (FULL_SELECTION_BASELINE.every((tool) => selected.has(tool))) return [...SAFE_TOOLS];
+    return [...selected];
   }
 
   function toolRisk(toolName) {
@@ -97,9 +111,11 @@
     OBSERVE_TOOLS,
     MUTATION_TOOLS,
     SAFE_TOOLS,
+    FULL_SELECTION_BASELINE,
     isOfficeConnector,
     allowedTools,
     toolRisk,
     materialize,
+    upgradeToolSelection,
   });
 });

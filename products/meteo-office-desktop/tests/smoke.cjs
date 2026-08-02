@@ -54,8 +54,6 @@ const harnessAssets = [
   'harness/artifact-preview.js',
   'harness/evidence-ledger.js',
   'harness/runtime-records.js',
-  'harness/validation-engine.js',
-  'harness/publication-state.js',
   'harness/state-store.js',
   'harness/state-bootstrap.js',
   'harness/state-restore.js',
@@ -90,7 +88,6 @@ assert.ok(html.indexOf('harness/state-bootstrap.js') < html.indexOf('renderer-co
 assert.ok(html.indexOf('styles-tokens.css') < html.indexOf('styles-base.css'));
 assert.ok(html.indexOf('harness/shared.js') < html.indexOf('harness/qc-policy.js'));
 assert.ok(html.indexOf('harness/qc-policy.js') < html.indexOf('harness/evidence-ledger.js'));
-assert.ok(html.indexOf('harness/qc-policy.js') < html.indexOf('harness/validation-engine.js'));
 assert.ok(html.indexOf('renderer-core.js') < html.indexOf('harness/state-restore.js'));
 assert.ok(html.indexOf('harness/state-restore.js') < html.indexOf('renderer-actions.js'));
 const stylesheetHrefs = [...html.matchAll(/<link rel="stylesheet" href="([^"]+)"/g)]
@@ -160,20 +157,17 @@ for (const team of context.window.METEOMATE_TEAMS) {
 const mainSource = fs.readFileSync(path.join(root, 'main.cjs'), 'utf8');
 const whenReadyBlock = extractBlock(mainSource, mainSource.indexOf('app.whenReady().then(() =>'));
 const mainWrapperSource = fs.readFileSync(path.join(root, 'capabilities/main-wrapper.cjs'), 'utf8');
-const publicationAttestorSource = fs.readFileSync(
-  path.join(root, 'capabilities/publication-attestor.cjs'),
-  'utf8'
-);
-const publicationContractsSource = fs.readFileSync(
-  path.join(root, 'capabilities/publication-contracts.cjs'),
-  'utf8'
-);
 const preloadSource = fs.readFileSync(path.join(root, 'preload.cjs'), 'utf8');
 const rendererSource = fs.readFileSync(path.join(root, 'renderer-core.js'), 'utf8');
 const rendererActionsSource = fs.readFileSync(path.join(root, 'renderer-actions.js'), 'utf8');
+const artifactPreviewRendererSource = fs.readFileSync(
+  path.join(root, 'artifact-preview-renderer.mjs'),
+  'utf8'
+);
 const expertCenterSource = fs.readFileSync(path.join(root, 'capability-center/experts.js'), 'utf8');
 const responseStylesSource = fs.readFileSync(path.join(root, 'styles/app-4.css'), 'utf8');
 const polishStylesSource = fs.readFileSync(path.join(root, 'styles-polish.css'), 'utf8');
+const teamStylesSource = fs.readFileSync(path.join(root, 'styles-team.css'), 'utf8');
 const computerPipHtmlSource = fs.readFileSync(path.join(root, 'computer-pip.html'), 'utf8');
 const computerPipSource = fs.readFileSync(
   path.join(root, 'capabilities/computer-pip-controller.cjs'),
@@ -188,8 +182,23 @@ assert.match(
   polishStylesSource,
   /\.message-row\.assistant \.message-bubble\s*\{[^}]*width:\s*100%;[^}]*max-width:\s*none;[^}]*\}/s,
 );
+assert.match(
+  polishStylesSource,
+  /\.sidebar-account-trigger\s*\{[^}]*border:\s*1px solid transparent;[^}]*background:\s*transparent;/s,
+);
+assert.match(
+  polishStylesSource,
+  /\.composer-dock\s*\{[^}]*background:\s*transparent;[^}]*padding-top:\s*12px;/s,
+);
+assert.match(
+  polishStylesSource,
+  /\.chat-workspace\s*\{[^}]*background:\s*var\(--polish-bg\);/s,
+);
+assert.match(
+  polishStylesSource,
+  /\.composer-shell\s*\{[^}]*background:\s*var\(--polish-control-surface\);[^}]*box-shadow:\s*0 3px 14px/s,
+);
 assert.ok(computerPipHtmlSource.indexOf('styles-tokens.css') < computerPipHtmlSource.indexOf('computer-pip.css'));
-assert.match(polishStylesSource, /@media \(max-width: 920px\)\s*\{\s*\.publication-review-columns\s*\{\s*grid-template-columns: 1fr;/s);
 
 const acpImageContext = vm.createContext({});
 vm.runInContext(
@@ -204,13 +213,9 @@ assert.deepEqual(
   [{ type: 'image', data: 'cG5n', mimeType: 'image/png' }]
 );
 assert.ok(mainSource.includes("type: 'artifact_created'"));
-assert.ok(mainSource.includes('publicationAttestor?.attestRuntimeEvent(payload)'));
-assert.ok(mainWrapperSource.includes('createPublicationAttestor'));
-assert.ok(mainWrapperSource.includes('publicationAttestor,'));
-assert.ok(publicationAttestorSource.includes("createHmac('sha256'"));
-assert.ok(publicationAttestorSource.includes('timingSafeEqual'));
-assert.ok(publicationContractsSource.includes('publication-signoff.schema.json'));
-assert.ok(publicationContractsSource.includes('evidence-qc-waiver.schema.json'));
+assert.ok(!mainSource.includes('publicationAttestor?.attestRuntimeEvent(payload)'));
+assert.ok(!mainWrapperSource.includes('createPublicationService'));
+assert.ok(!mainWrapperSource.includes('createPublicationAttestor'));
 assert.ok(mainWrapperSource.includes('requestSingleInstanceLock'));
 assert.equal((mainSource.match(/app\.on\('activate'/g) || []).length, 1);
 assert.ok(
@@ -224,6 +229,14 @@ assert.ok(mainSource.includes('WeatherConnector.fixtureRuntimeEvents'));
 assert.ok(mainSource.includes("type: 'team_member_started'"));
 assert.ok(mainSource.includes('async runTeamTurn('));
 assert.ok(mainSource.includes('sanitizeAcpPayload(update.content)'));
+assert.ok(mainSource.includes("source: runtimeFailure ? 'status' : 'message'"));
+assert.ok(mainSource.includes("source: 'status'"));
+assert.ok(mainSource.includes('TEAM_MEMBER_PROGRESS_INTERVAL_MS = 120'));
+assert.ok(mainSource.includes('function streamingTextPreview(value, limit = 4_000)'));
+assert.ok(mainSource.includes('progressId: runtimeFailure'));
+assert.ok(mainSource.includes('ExpertTeam.runtimeOutputFailure(output)'));
+assert.ok(mainSource.includes('正在分析任务上下文并形成阶段结论。'));
+assert.ok(!mainSource.includes('detail: ExpertTeam.clipText(detail, 360)'));
 assert.ok(rendererActionsSource.includes("case 'artifact_created'"));
 assert.ok(rendererActionsSource.includes("case 'evidence_created'"));
 assert.ok(rendererActionsSource.includes("case 'team_synthesis_started'"));
@@ -231,13 +244,56 @@ assert.ok(rendererActionsSource.includes("const key = kind === 'artifact' ? 'art
 assert.ok(rendererActionsSource.includes('assistant[key] ='));
 assert.ok(rendererSource.includes('function renderMessageArtifacts(message, task)'));
 assert.ok(rendererSource.includes('function renderTeamCollaborationBar(task, expert)'));
+assert.ok(rendererSource.includes('class="team-avatar-stack"'));
+assert.ok(rendererSource.includes('data-team-collapse'));
+assert.ok(!rendererSource.includes('data-team-toggle'));
+assert.ok(rendererActionsSource.includes("const expanding = element.getAttribute('aria-expanded') === 'false'"));
+assert.ok(rendererActionsSource.includes('teamUI.collapsed = !expanding'));
+assert.ok(rendererSource.includes('function renderTeamRunProcess(message, run)'));
+assert.ok(rendererSource.includes('function teamMemberHasEnteredRun(member)'));
+assert.ok(!rendererSource.includes('function cleanTeamStreamPreview(value)'));
+assert.ok(rendererSource.includes('team-process-feed-markdown markdown-body'));
+assert.ok(!rendererSource.includes('<article class="team-member-detail">'));
+assert.ok(rendererSource.includes('定位到${escapeHtml(member.name)}的协作过程'));
+assert.ok(rendererSource.includes("result.length > 480 || result.split(/\\r?\\n/).length > 8"));
+assert.ok(rendererSource.includes('renderMarkdown(text)'));
+assert.ok(rendererSource.includes('function teamProcessFeedEntries(member)'));
+assert.ok(rendererSource.includes('function scrollTeamProcessFeeds()'));
+assert.ok(rendererSource.includes('function renderTeamHandoffResult(member, run)'));
+assert.ok(rendererSource.includes('team-handoff-markdown markdown-body'));
+assert.ok(rendererSource.includes('renderMarkdown(result)'));
+assert.ok(rendererSource.includes('const visibleMembers = members.filter(teamMemberHasEnteredRun)'));
+assert.ok(rendererSource.includes('不展示模型内部思维链'));
+assert.ok(!rendererSource.includes('实时输出'));
+assert.ok(rendererActionsSource.includes('assistant.teamRunId = run.id'));
+assert.ok(rendererActionsSource.includes('function recordTeamRunTimeline(run, entry)'));
+assert.ok(rendererActionsSource.includes('function safeTeamActivity(activity = {})'));
+assert.ok(rendererActionsSource.includes('function teamMemberProgressDisplay(event)'));
+assert.ok(rendererActionsSource.includes('function settleTeamRunMembers(run, completedAt = Date.now())'));
+assert.ok(rendererActionsSource.includes('function appendTeamMemberUpdate(member, entry, limit = 16)'));
+assert.ok(rendererActionsSource.includes('teamUI.expandedResultIds.has(resultId)'));
+assert.ok(teamStylesSource.includes('.team-run-process'));
+assert.match(teamStylesSource, /\.team-run-process\s*\{[^}]*width:\s*100%;/s);
+assert.ok(teamStylesSource.includes('.team-process-feed'));
+assert.ok(teamStylesSource.includes('.team-process-feed-entry.activity'));
+assert.ok(teamStylesSource.includes('.team-process-feed-markdown'));
+assert.ok(teamStylesSource.includes('--team-detail-max-height: 112px'));
+assert.ok(teamStylesSource.includes('--team-live-output-height: 84px'));
+assert.ok(teamStylesSource.includes('.team-process-member.running .team-process-feed'));
+assert.ok(teamStylesSource.includes('grid-template-columns: var(--team-avatar-size) minmax(68px, auto) 18px'));
+assert.ok(teamStylesSource.includes('min-height: var(--team-chip-height)'));
+assert.ok(teamStylesSource.includes('min-height: calc(var(--team-chip-height) + 2px)'));
+assert.ok(teamStylesSource.includes('align-items: baseline'));
+assert.ok(teamStylesSource.includes('.team-handoff-result'));
+assert.ok(teamStylesSource.includes('.team-handoff-markdown.clamped'));
+assert.ok(teamStylesSource.includes('.team-phase-rail'));
+assert.ok(!rendererSource.includes('协作动态'));
+assert.ok(!rendererSource.includes('renderTeamTimelineEntry'));
+assert.ok(!teamStylesSource.includes('.team-timeline'));
 assert.ok(rendererSource.includes('function renderArtifactPreviewPanel(task)'));
-assert.ok(rendererSource.includes('function renderTaskPublicationPanel(task)'));
-assert.ok(rendererSource.includes('data-publication-toggle'));
-assert.ok(rendererSource.includes('data-publication-waive-qc'));
-assert.ok(rendererSource.includes('data-publication-revoke-qc-waiver'));
-assert.ok(rendererSource.includes('data-publication-sign'));
-assert.ok(rendererSource.includes('data-publication-revoke'));
+assert.ok(!rendererSource.includes('function renderTaskPublicationPanel(task)'));
+assert.ok(!rendererSource.includes('data-publication-toggle'));
+assert.ok(!rendererSource.includes('发布审核'));
 assert.ok(rendererSource.includes("'专家协作中'"));
 assert.ok(rendererSource.includes('class="message-artifact-gallery"'));
 assert.ok(responseStylesSource.includes('.message-artifact-image img'));
@@ -256,16 +312,8 @@ const documentsSkill = fs.readFileSync(
 assert.ok(documentsSkill.includes(`version: "${documentsManifest.version}"`));
 
 assert.ok(rendererActionsSource.includes('function latestAssistantMessage(task)'));
-assert.ok(rendererActionsSource.includes('async function checkTaskPublication(task,'));
-assert.ok(rendererActionsSource.includes('async function createPublicationQcWaiver(task, evidenceId)'));
-assert.ok(rendererActionsSource.includes('async function revokePublicationQcWaiver(task, waiverId)'));
-assert.ok(rendererActionsSource.includes('async function signTaskPublication(task)'));
-assert.ok(rendererActionsSource.includes('async function revokeTaskPublication(task)'));
-assert.ok(preloadSource.includes("ipcRenderer.invoke('publication:check'"));
-assert.ok(preloadSource.includes("ipcRenderer.invoke('publication:waive-qc'"));
-assert.ok(preloadSource.includes("ipcRenderer.invoke('publication:revoke-qc-waiver'"));
-assert.ok(preloadSource.includes("ipcRenderer.invoke('publication:sign'"));
-assert.ok(preloadSource.includes("ipcRenderer.invoke('publication:revoke'"));
+assert.ok(!rendererActionsSource.includes('function bindPublicationEvents()'));
+assert.ok(!preloadSource.includes("ipcRenderer.invoke('publication:"));
 assert.ok(rendererActionsSource.includes('const assistant = currentStreamingAssistant(task);\n  if (!assistant) return null;'));
 assert.ok(rendererActionsSource.includes("task.status === 'running' ? ensureStreamingAssistant(task) : null"));
 assert.ok(rendererActionsSource.includes('currentStreamingAssistant(task) || latestAssistantMessage(task)'));
@@ -292,6 +340,8 @@ assert.ok(mainSource.includes("args.push('--provider', request.providerId)"));
 assert.ok(mainSource.includes("args.push('--model', request.modelId)"));
 assert.ok(preloadSource.includes('getModelSettings'));
 assert.ok(preloadSource.includes('saveModelSettings'));
+assert.ok(preloadSource.includes('previewModelProviderRoute'));
+assert.ok(preloadSource.includes('testModelProvider'));
 assert.ok(preloadSource.includes('getDesktopPreferences'));
 assert.ok(preloadSource.includes('saveDesktopPreferences'));
 assert.ok(preloadSource.includes('refreshRuntimePreferences'));
@@ -304,9 +354,19 @@ assert.ok(preloadSource.includes('setWindowMode'));
 assert.ok(preloadSource.includes('openExternalUrl'));
 assert.ok(preloadSource.includes('showArtifactPreview'));
 assert.ok(preloadSource.includes('navigateArtifactPreview'));
+assert.ok(preloadSource.includes('onArtifactPreviewSelection'));
+assert.ok(preloadSource.includes('jumpToArtifactSelection'));
 assert.ok(mainSource.includes("ipcMain.handle('artifact-preview:show'"));
+assert.ok(mainSource.includes("ipcMain.handle('artifact-preview:selection-add'"));
+assert.ok(mainSource.includes('pendingArtifactPreviewShows'));
+assert.ok(fs.existsSync(path.join(root, 'artifact-preview.html')));
+assert.ok(fs.existsSync(path.join(root, 'artifact-preview-renderer.mjs')));
+assert.ok(artifactPreviewRendererSource.includes('artifact-semantic-text-layer'));
+assert.ok(artifactPreviewRendererSource.includes('applySemanticTextLayers'));
 assert.ok(mainSource.includes("ipcMain.handle('window:mode'"));
 assert.ok(mainSource.includes("ipcMain.handle('runtime:preferences-refresh'"));
+assert.ok(mainSource.includes("ipcMain.handle('runtime:model-provider-route-preview'"));
+assert.ok(mainSource.includes("ipcMain.handle('runtime:model-provider-test'"));
 assert.ok(mainSource.includes('WINDOW_MODES'));
 const titleBarContext = vm.createContext({});
 vm.runInContext(
@@ -324,6 +384,9 @@ assert.ok(mainSource.includes("ipcMain.handle('external:open'"));
 assert.ok(mainSource.includes('## MeteoMate 演示模式'));
 assert.ok(mainSource.includes("path.join(app.getPath('documents'), 'MeteoMate', 'Claw')"));
 assert.ok(rendererSource.includes('id="provider-api-url"'));
+assert.ok(rendererSource.includes("group: 'provider-protocol-mode'"));
+assert.ok(rendererSource.includes('id="provider-effective-endpoint"'));
+assert.ok(rendererSource.includes('data-test-provider="model"'));
 assert.ok(rendererSource.includes('id="account-open-settings"'));
 assert.ok(rendererSource.includes('settingsDialog.open'));
 assert.ok(rendererSource.includes('专家 · 技能 · 工具'));
@@ -338,6 +401,10 @@ assert.ok(rendererSource.includes("navItem('more-knowledge', 'folder', '资料�
 assert.ok(rendererSource.includes("state.view === 'more-files'"));
 assert.ok(rendererSource.includes("state.view === 'more-knowledge'"));
 assert.ok(rendererSource.includes('id="custom-model-id"'));
+assert.ok(rendererSource.includes('class="configured-model-delete"'));
+assert.ok(rendererSource.includes('aria-label="删除模型 ${escapeHtml(model.name || model.id)}"'));
+assert.ok(rendererSource.includes("provider.models.length === 1 ? 'disabled' : ''"));
+assert.ok(rendererActionsSource.includes('这是当前默认模型，删除后需要重新选择默认模型。'));
 assert.ok(rendererSource.includes('class="chat-workspace ${assistantMode'));
 assert.ok(rendererSource.includes("sidebarCollapsed: false"));
 assert.ok(rendererSource.includes('id="sidebar-toggle"'));
@@ -377,6 +444,10 @@ assert.ok(rendererActionsSource.includes('async function resendEditedMessage(mes
 assert.ok(rendererActionsSource.includes('removedAssistantIds'));
 assert.ok(preloadSource.includes("clipboard:write-text"));
 assert.ok(mainSource.includes("ipcMain.handle('clipboard:write-text'"));
+assert.ok(preloadSource.includes("artifact:context-menu"));
+assert.ok(mainSource.includes("ipcMain.handle('artifact:context-menu'"));
+assert.ok(rendererSource.includes('data-artifact-path-label'));
+assert.ok(rendererActionsSource.includes("addEventListener('contextmenu'"));
 assert.ok(rendererSource.includes('captureInteractionSnapshot()'));
 assert.ok(rendererActionsSource.includes('composerImeComposing'));
 assert.ok(rendererActionsSource.includes('flushQueuedTaskPrompts(task.id)'));
@@ -497,7 +568,8 @@ assert.ok(mainSource.includes("type: 'runtime_progress'"));
 assert.ok(mainSource.includes("sendRuntimeProgress(constrainedRequest.taskId, 'preparing_context'"));
 assert.ok(mainSource.includes("sendRuntimeProgress(request.taskId, 'model_requested'"));
 assert.ok(mainSource.includes("sendRuntimeProgress(taskId, 'model_first_event'"));
-assert.ok(mainSource.includes('const [knowledgeEnrichedRequest, fileContext] = await Promise.all'));
+assert.ok(mainSource.includes('const [knowledgeEnrichedRequest, fileContext, selectionContext] = await Promise.all'));
+assert.ok(mainSource.includes('artifactSelectionContext(constrainedRequest.workspace'));
 assert.ok(mainSource.includes('const canReuseLoadedSession = Boolean('));
 assert.ok(mainSource.includes('this.sessionModelMap.get(sessionId) !== request.modelId'));
 assert.ok(responseStylesSource.includes('height:34px'));
@@ -521,6 +593,8 @@ assert.ok(packageMacScript.includes('**/node_modules/@aaif/goose-binary-*/bin/go
 assert.ok(packageMacScript.includes('**/node_modules/@trycua/**/*'));
 assert.ok(packageMacScript.includes('**/node_modules/@ubjs/**/*'));
 assert.ok(packageMacScript.includes("--asar.unpackDir='runtime'"));
+assert.ok(packageMacScript.includes("^/output($|/)"));
+assert.ok(packageMacScript.includes("^/\\.playwright-cli($|/)"));
 assert.ok(packageMacScript.includes("^/\\.meteomate-phase1-apply\\.json$"));
 
 assert.ok(stateStoreSource.includes('function normalizeStoredTask'));

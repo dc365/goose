@@ -30,12 +30,9 @@
   }
 
   function recordLineage(payload, task, event, runId) {
-    const attested = payload?.metadata?.publicationAttestation?.version
-      === 'meteomate-publication/v2';
     const stored = payload?.lineage && typeof payload.lineage === 'object'
       ? payload.lineage
       : {};
-    if (attested) return { ...stored };
     return {
       taskId: stored.taskId || task.id,
       runId: stored.runId || runId,
@@ -84,13 +81,6 @@
         }, recordLineage(payload, task, event, runId));
         evidenceChanged = (task.evidence || []).length > previousCount;
       }
-    }
-    if ((artifactChanged || evidenceChanged) && task.publication) {
-      task.publication = {
-        ...task.publication,
-        dirty: true,
-        error: null,
-      };
     }
     return {
       normalizedEvent,

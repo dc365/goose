@@ -9,9 +9,17 @@ const OfficeConnector = require('../capabilities/office-connector.js');
 const OfficeRuntime = require('../capabilities/office-runtime.cjs');
 const officePackage = require('../services/office-mcp/package.json');
 
-assert.equal(OfficeConnector.SAFE_TOOLS.length, 15);
+assert.equal(OfficeConnector.SAFE_TOOLS.length, 17);
+assert.equal(OfficeConnector.FULL_SELECTION_BASELINE.length, 14);
+assert.deepEqual(
+  OfficeConnector.upgradeToolSelection(OfficeConnector.FULL_SELECTION_BASELINE),
+  OfficeConnector.SAFE_TOOLS,
+);
+assert.deepEqual(OfficeConnector.upgradeToolSelection(['docx_inspect']), ['docx_inspect']);
 assert.equal(officePackage.version, OfficeConnector.RUNTIME_VERSION);
 assert.equal(OfficeConnector.toolRisk('docx_inspect'), 'observe');
+assert.equal(OfficeConnector.toolRisk('docx_resolve_selection'), 'observe');
+assert.equal(OfficeConnector.toolRisk('docx_edit_selection'), 'mutation');
 assert.equal(OfficeConnector.toolRisk('pptx_inspect'), 'observe');
 assert.equal(OfficeConnector.toolRisk('xlsx_edit'), 'mutation');
 assert.equal(OfficeConnector.toolRisk('pdf_create'), 'mutation');

@@ -29,6 +29,8 @@ var permissionProfiles = map[string]struct{}{
 type Settings struct {
 	DefaultModel                string   `json:"defaultModel"`
 	AllowedModels               []string `json:"allowedModels"`
+	AllowedProviderIDs          []string `json:"allowedProviderIds"`
+	RequireVerifiedModels       bool     `json:"requireVerifiedModels"`
 	DefaultSkillIDs             []string `json:"defaultSkillIds"`
 	AllowedSkillIDs             []string `json:"allowedSkillIds"`
 	AllowedConnectorIDs         []string `json:"allowedConnectorIds"`
@@ -41,6 +43,8 @@ type Settings struct {
 type Patch struct {
 	DefaultModel                *string   `json:"defaultModel,omitempty"`
 	AllowedModels               *[]string `json:"allowedModels,omitempty"`
+	AllowedProviderIDs          *[]string `json:"allowedProviderIds,omitempty"`
+	RequireVerifiedModels       *bool     `json:"requireVerifiedModels,omitempty"`
 	DefaultSkillIDs             *[]string `json:"defaultSkillIds,omitempty"`
 	AllowedSkillIDs             *[]string `json:"allowedSkillIds,omitempty"`
 	AllowedConnectorIDs         *[]string `json:"allowedConnectorIds,omitempty"`
@@ -76,6 +80,7 @@ type Store struct {
 func DefaultSettings() Settings {
 	return Settings{
 		AllowedModels:               []string{},
+		AllowedProviderIDs:          []string{},
 		DefaultSkillIDs:             []string{},
 		AllowedSkillIDs:             []string{},
 		AllowedConnectorIDs:         []string{},
@@ -267,6 +272,7 @@ func (s *Store) Effective(userID, role string) Effective {
 	settings := cloneSettings(s.state.Organization)
 	sources := map[string]string{
 		"defaultModel": "organization", "allowedModels": "organization",
+		"allowedProviderIds": "organization", "requireVerifiedModels": "organization",
 		"defaultSkillIds": "organization", "allowedSkillIds": "organization", "allowedConnectorIds": "organization",
 		"defaultPermissionProfileId": "organization", "allowedPermissionProfileIds": "organization",
 		"autoCompactThreshold": "organization", "skillPublishMode": "organization",
@@ -276,6 +282,13 @@ func (s *Store) Effective(userID, role string) Effective {
 	if len(settings.AllowedModels) > 0 && !contains(settings.AllowedModels, settings.DefaultModel) {
 		settings.DefaultModel = ""
 		sources["defaultModel"] = "policy-fallback"
+	}
+	if len(settings.AllowedProviderIDs) > 0 && settings.DefaultModel != "" {
+		providerID := strings.SplitN(settings.DefaultModel, "/", 2)[0]
+		if !contains(settings.AllowedProviderIDs, providerID) {
+			settings.DefaultModel = ""
+			sources["defaultModel"] = "policy-fallback"
+		}
 	}
 	if len(settings.AllowedPermissionProfileIDs) > 0 && !contains(settings.AllowedPermissionProfileIDs, settings.DefaultPermissionProfileID) {
 		settings.DefaultPermissionProfileID = settings.AllowedPermissionProfileIDs[0]
@@ -307,6 +320,10 @@ func normalizeSettings(input Settings) (Settings, error) {
 	if result.AllowedModels, err = normalizeList(input.AllowedModels, "allowedModels"); err != nil {
 		return Settings{}, err
 	}
+	if result.AllowedProviderIDs, err = normalizeList(input.AllowedProviderIDs, "allowedProviderIds"); err != nil {
+		return Settings{}, err
+	}
+	result.RequireVerifiedModels = input.RequireVerifiedModels
 	if result.DefaultSkillIDs, err = normalizeList(input.DefaultSkillIDs, "defaultSkillIds"); err != nil {
 		return Settings{}, err
 	}
@@ -326,6 +343,12 @@ func normalizeSettings(input Settings) (Settings, error) {
 	}
 	if len(result.AllowedModels) > 0 && result.DefaultModel != "" && !contains(result.AllowedModels, result.DefaultModel) {
 		return Settings{}, errors.New("defaultModel must be included in allowedModels")
+	}
+	if len(result.AllowedProviderIDs) > 0 && result.DefaultModel != "" {
+		providerID := strings.SplitN(result.DefaultModel, "/", 2)[0]
+		if !contains(result.AllowedProviderIDs, providerID) {
+			return Settings{}, errors.New("defaultModel provider must be included in allowedProviderIds")
+		}
 	}
 	if len(result.AllowedSkillIDs) > 0 && !isSubset(result.DefaultSkillIDs, result.AllowedSkillIDs) {
 		return Settings{}, errors.New("defaultSkillIds must be included in allowedSkillIds")
@@ -349,6 +372,10 @@ func normalizePatch(input Patch) (Patch, error) {
 		value := strings.TrimSpace(*input.DefaultModel)
 		result.DefaultModel = &value
 	}
+	if input.RequireVerifiedModels != nil {
+		value := *input.RequireVerifiedModels
+		result.RequireVerifiedModels = &value
+	}
 	if input.DefaultPermissionProfileID != nil {
 		value := strings.TrimSpace(*input.DefaultPermissionProfileID)
 		if value != "" {
@@ -364,6 +391,7 @@ func normalizePatch(input Patch) (Patch, error) {
 		name   string
 	}{
 		{input.AllowedModels, &result.AllowedModels, "allowedModels"},
+		{input.AllowedProviderIDs, &result.AllowedProviderIDs, "allowedProviderIds"},
 		{input.DefaultSkillIDs, &result.DefaultSkillIDs, "defaultSkillIds"},
 		{input.AllowedSkillIDs, &result.AllowedSkillIDs, "allowedSkillIds"},
 		{input.AllowedConnectorIDs, &result.AllowedConnectorIDs, "allowedConnectorIds"},
@@ -455,6 +483,14 @@ func applyPatch(settings *Settings, sources map[string]string, patch Patch, sour
 		settings.AllowedModels = append([]string(nil), (*patch.AllowedModels)...)
 		sources["allowedModels"] = source
 	}
+	if patch.AllowedProviderIDs != nil {
+		settings.AllowedProviderIDs = append([]string(nil), (*patch.AllowedProviderIDs)...)
+		sources["allowedProviderIds"] = source
+	}
+	if patch.RequireVerifiedModels != nil {
+		settings.RequireVerifiedModels = *patch.RequireVerifiedModels
+		sources["requireVerifiedModels"] = source
+	}
 	if patch.DefaultSkillIDs != nil {
 		settings.DefaultSkillIDs = append([]string(nil), (*patch.DefaultSkillIDs)...)
 		sources["defaultSkillIds"] = source
@@ -511,6 +547,7 @@ func intersection(values, allowed []string) []string {
 
 func cloneSettings(input Settings) Settings {
 	input.AllowedModels = append([]string(nil), input.AllowedModels...)
+	input.AllowedProviderIDs = append([]string(nil), input.AllowedProviderIDs...)
 	input.DefaultSkillIDs = append([]string(nil), input.DefaultSkillIDs...)
 	input.AllowedSkillIDs = append([]string(nil), input.AllowedSkillIDs...)
 	input.AllowedConnectorIDs = append([]string(nil), input.AllowedConnectorIDs...)

@@ -59,6 +59,7 @@
             <p class="nav-group-label">组织治理</p>
             <button class="nav-button" data-view="governance"><span aria-hidden="true">治</span><span>安装治理</span></button>
             <button class="nav-button" data-view="users"><span aria-hidden="true">人</span><span>用户管理</span></button>
+            <button class="nav-button" data-view="model-catalog"><span aria-hidden="true">模</span><span>模型目录</span></button>
             <button class="nav-button" data-view="policies"><span aria-hidden="true">策</span><span>策略下发</span></button>
             <button class="nav-button" data-view="audit"><span aria-hidden="true">录</span><span>审计记录</span></button>
           </div>
@@ -226,6 +227,25 @@
           </div>
         </section>
 
+        <section class="view-panel" id="model-catalog-view" hidden>
+          <div class="metric-strip" aria-label="模型目录概览">
+            <div><span>目录修订</span><strong id="model-catalog-metric-revision">0</strong></div>
+            <div><span>启用提供商</span><strong id="model-catalog-metric-providers">0</strong></div>
+            <div><span>启用模型</span><strong id="model-catalog-metric-models">0</strong></div>
+            <div><span>已验证模型</span><strong id="model-catalog-metric-verified">0</strong></div>
+          </div>
+
+          <div class="content-heading"><div><h2>模型与连接目录</h2><p>统一登记协议、请求地址、凭据边界、模型能力和验证结果。</p></div><button class="button primary" id="create-model-provider-button"><span aria-hidden="true">＋</span>添加提供商</button></div>
+          <div class="model-catalog-boundary"><span aria-hidden="true">密</span><p><strong>后台只保存密钥引用</strong><small>可登记 env://、vault://、secret:// 或 k8s:// 引用；普通用户接口和桌面端永远不会收到引用值或明文密钥。</small></p><em>传输 → 验证 → 策略</em></div>
+          <div class="toolbar">
+            <label class="search-field"><span class="visually-hidden">搜索模型提供商</span><input id="model-catalog-search" type="search" placeholder="搜索提供商、模型或地址" /></label>
+            <label class="select-field"><span class="visually-hidden">按状态筛选</span><select id="model-catalog-status-filter"><option value="">全部状态</option><option value="enabled">已启用</option><option value="disabled">已停用</option><option value="verified">已验证</option><option value="untested">待验证</option></select></label>
+            <button class="button quiet" id="refresh-model-catalog-button">刷新目录</button>
+          </div>
+          <div class="model-catalog-list" id="model-catalog-list"></div>
+          <div class="empty-state model-catalog-empty" id="model-catalog-empty" hidden><strong>还没有模型提供商</strong><span>先登记一个可运行连接，再从目录选择模型下发到组织策略。</span></div>
+        </section>
+
         <section class="view-panel" id="policies-view" hidden>
           <div class="metric-strip policy-metrics" aria-label="策略概览">
             <div><span>策略修订</span><strong id="policy-metric-revision">0</strong></div>
@@ -253,7 +273,7 @@
           <div class="content-heading"><div><h2>安全与管理记录</h2><p>登录、用户修改、会话和 Skill 操作按时间倒序显示。</p></div><button class="button quiet" id="refresh-audit-button">刷新记录</button></div>
           <div class="toolbar">
             <label class="search-field audit-search"><span class="visually-hidden">搜索审计记录</span><input id="audit-search" type="search" placeholder="搜索操作、用户或目标" /></label>
-            <label class="select-field"><span class="visually-hidden">按操作筛选</span><select id="audit-action-filter"><option value="">全部操作</option><option value="auth.login">登录成功</option><option value="auth.login.failed">登录失败</option><option value="user.create">创建用户</option><option value="user.update">更新用户</option><option value="user.password.reset">重置密码</option><option value="user.sessions.revoke">撤销会话</option><option value="policy.organization.update">更新组织策略</option><option value="policy.role.update">更新角色策略</option><option value="policy.user.update">更新用户策略</option><option value="expert.create">创建专家</option><option value="expert.update">更新专家</option><option value="expert.review.submit">提交专家审核</option><option value="expert.review.approve">通过专家审核</option><option value="expert.review.reject">退回专家审核</option><option value="expert.status.update">更新专家状态</option><option value="expert.distribution.update">更新专家分发</option><option value="expert.rollback">回滚专家</option><option value="skill.update">更新 Skill 资料</option><option value="skill.owner.transfer">转交 Skill 负责人</option><option value="skill.version.publish">发布 Skill</option><option value="skill.version.deprecate">弃用 Skill 版本</option><option value="collection.put">保存 Skill 套件</option><option value="collection.delete">删除 Skill 套件</option><option value="recommendation.rule.put">保存推荐规则</option><option value="recommendation.rule.delete">删除推荐规则</option><option value="featured.placements.put">更新精选位</option></select></label>
+            <label class="select-field"><span class="visually-hidden">按操作筛选</span><select id="audit-action-filter"><option value="">全部操作</option><option value="auth.login">登录成功</option><option value="auth.login.failed">登录失败</option><option value="user.create">创建用户</option><option value="user.update">更新用户</option><option value="user.password.reset">重置密码</option><option value="user.sessions.revoke">撤销会话</option><option value="model.provider.put">保存模型提供商</option><option value="model.provider.verify">记录模型验证</option><option value="model.provider.delete">删除模型提供商</option><option value="policy.organization.update">更新组织策略</option><option value="policy.role.update">更新角色策略</option><option value="policy.user.update">更新用户策略</option><option value="expert.create">创建专家</option><option value="expert.update">更新专家</option><option value="expert.review.submit">提交专家审核</option><option value="expert.review.approve">通过专家审核</option><option value="expert.review.reject">退回专家审核</option><option value="expert.status.update">更新专家状态</option><option value="expert.distribution.update">更新专家分发</option><option value="expert.rollback">回滚专家</option><option value="skill.update">更新 Skill 资料</option><option value="skill.owner.transfer">转交 Skill 负责人</option><option value="skill.version.publish">发布 Skill</option><option value="skill.version.deprecate">弃用 Skill 版本</option><option value="collection.put">保存 Skill 套件</option><option value="collection.delete">删除 Skill 套件</option><option value="recommendation.rule.put">保存推荐规则</option><option value="recommendation.rule.delete">删除推荐规则</option><option value="featured.placements.put">更新精选位</option></select></label>
           </div>
           <div class="table-surface">
             <table class="data-table audit-table">

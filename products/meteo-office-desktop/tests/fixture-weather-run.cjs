@@ -6,9 +6,6 @@ const vm = require('node:vm');
 
 const WeatherConnector = require('../capabilities/weather-connector.js');
 const ExpertTeam = require('../harness/expert-team');
-const RuntimeRecords = require('../harness/runtime-records');
-const ValidationEngine = require('../harness/validation-engine');
-const { createPublicationService } = require('../capabilities/publication-service.cjs');
 
 const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'meteomate-fixture-weather-'));
 
@@ -79,10 +76,10 @@ try {
   assert.ok(fs.statSync(fixture.artifacts[0].path).isFile());
 
   const evidenceIds = new Set(fixture.evidence.map((record) => record.id));
-  assert.ok(fixture.publicationAnalysis.conclusions.length >= 3);
-  assert.equal(typeof fixture.publicationAnalysis.validPeriod, 'string');
-  assert.match(fixture.publicationAnalysis.validPeriod, /\//);
-  for (const conclusion of fixture.publicationAnalysis.conclusions) {
+  assert.ok(fixture.forecastSummary.conclusions.length >= 3);
+  assert.equal(typeof fixture.forecastSummary.validPeriod, 'string');
+  assert.match(fixture.forecastSummary.validPeriod, /\//);
+  for (const conclusion of fixture.forecastSummary.conclusions) {
     assert.ok(conclusion.text);
     assert.ok(conclusion.evidenceIds.length > 0);
     assert.ok(conclusion.evidenceIds.every((id) => evidenceIds.has(id)));
@@ -113,58 +110,6 @@ try {
     .every((event) =>
       event.extensionName === 'gis-map' && event.toolName === 'weather_render_dataset_map'
     ));
-  assert.deepEqual(events.at(-1).publicationAnalysis, fixture.publicationAnalysis);
-
-  const publicationRequest = {
-    taskId: 'fixture-task',
-    workspace,
-    analysis: fixture.publicationAnalysis,
-    artifacts: fixture.artifacts,
-    evidence: fixture.evidence,
-    at: Date.parse('2026-07-30T00:00:00.000Z'),
-  };
-  const gate = ValidationEngine.runPublicationGate({
-    ...publicationRequest,
-    humanSignoff: { approved: true, reviewerName: 'Fixture reviewer' },
-  });
-  assert.equal(gate.ready, false);
-  assert.equal(gate.policy.allowSynthetic, false);
-  assert.ok(gate.blockers.some((blocker) => blocker.includes('synthetic')));
-  assert.ok(gate.blockers.some((blocker) => blocker.includes('expired')));
-
-  const profileRoot = path.join(workspace, '.profile');
-  const publicationService = createPublicationService({
-    ipcMain: { handle() {} },
-    profileContext: {
-      currentPaths: () => ({ root: profileRoot }),
-      isAuthenticated: () => false,
-      publicState: () => ({ cachedUser: null }),
-    },
-    securityMode: 'internal',
-  });
-  assert.throws(
-    () => publicationService.sign(publicationRequest),
-    /发布门禁未通过/
-  );
-  const runtimeTask = { id: 'fixture-task', artifacts: [], evidence: [] };
-  for (const event of events.slice(0, -1)) {
-    RuntimeRecords.recordRuntimeEvent(
-      runtimeTask,
-      publicationService.publicationAttestor.attestRuntimeEvent({
-        ...event,
-        runId: 'fixture-run',
-      }),
-      { runId: 'fixture-run' },
-    );
-  }
-  const attestedFixtureGate = publicationService.check({
-    ...publicationRequest,
-    artifacts: runtimeTask.artifacts,
-    evidence: runtimeTask.evidence,
-  }).gate;
-  assert.equal(attestedFixtureGate.ready, false);
-  assert.ok(attestedFixtureGate.blockers.some((blocker) => blocker.includes('synthetic')));
-  assert.ok(!attestedFixtureGate.blockers.some((blocker) => blocker.includes('Connector/Tool')));
 
   const mainSource = fs.readFileSync(path.resolve(__dirname, '..', 'main.cjs'), 'utf8');
   const runtimeEvents = [];
@@ -211,7 +156,6 @@ try {
   );
   assert.equal(records[0].evidence.metadata.classification, 'demo');
   assert.equal(records[0].evidence.metadata.synthetic, true);
-  assert.ok(records.at(-1).publicationAnalysis.conclusions.length >= 3);
   const mockResponse = runtimeEvents
     .filter((event) => event.type === 'assistant_message_delta')
     .map((event) => event.text)
@@ -274,7 +218,6 @@ try {
   );
   assert.ok(teamRecords.some((event) => event.type === 'evidence_created'));
   assert.ok(teamRecords.some((event) => event.type === 'artifact_created'));
-  assert.deepEqual(teamRecords.at(-1).publicationAnalysis, fixture.publicationAnalysis);
   const teamText = teamRuntimeEvents
     .filter((event) => ['assistant_message_delta', 'team_member_completed'].includes(event.type))
     .map((event) => event.text || event.summary || '')

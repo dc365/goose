@@ -12,7 +12,6 @@ Harness 位于 Goose Runtime 与 MeteoMate 产品对象之间，负责把“项�
 - `event-normalizer.js`：统一 Goose、Codex 和远程 Worker 事件；
 - `artifact-registry.js`：显式登记成果物及生成血缘；
 - `evidence-ledger.js`：登记气象数据、算法和结论证据；
-- `validation-engine.js`：结构校验和发布门禁；
 - `state-store.js`：稳定地迁移和恢复桌面本地状态；
 - `state-bootstrap.js` / `state-restore.js`：兼容当前 Renderer 启动顺序，并接管状态恢复和任务上下文编译。
 

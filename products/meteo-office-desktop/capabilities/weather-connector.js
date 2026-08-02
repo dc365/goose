@@ -455,7 +455,7 @@ function fixtureDataset() {
   });
 }
 
-function fixturePublicationAnalysis(dataset, result) {
+function fixtureForecastSummary(dataset, result) {
   const idsFor = (prefix) => result.evidence
     .filter((record) => String(record.variable || '').startsWith(prefix))
     .map((record) => record.id);
@@ -513,7 +513,7 @@ function createFixtureWeatherRun(workspace) {
     evidence: result.evidence,
     artifacts: [artifact],
     publication: result.publication,
-    publicationAnalysis: fixturePublicationAnalysis(dataset, result),
+    forecastSummary: fixtureForecastSummary(dataset, result),
   };
 }
 
@@ -550,7 +550,6 @@ function fixtureRuntimeEvents({
       taskId,
       runtime,
       sessionId: null,
-      publicationAnalysis: clone(fixture.publicationAnalysis),
     },
   ];
 }
@@ -699,15 +698,13 @@ ${convection.hazards.map((item) => `- **${item.type}：** 概率 ${(item.probabi
 触发条件为低压倒槽辐合叠加地形抬升；缺少真实径向速度、云顶温度和高频探空，不能把旋转或大风风险写成确定结论。`);
   }
   if (wantsProduct) {
-    blocks.push(fixtureRun ? `### 可审核的预报初稿
+    blocks.push(fixtureRun ? `### 预报分析初稿
 
-${fixture.publicationAnalysis.conclusions.map((item) => `- ${item.text}`).join('\n')}
-
-发布门禁将把本次构造、演示和已过期资料保持为草稿，不能签发。` : `### 可审核的预报初稿
+${fixture.forecastSummary.conclusions.map((item) => `- ${item.text}`).join('\n')}` : `### 预报分析初稿
 
 ${SYNTHETIC_CASE.forecastDraft.summary}重点时段为 **${SYNTHETIC_CASE.forecastDraft.keyPeriod}**，需关注城乡积涝、山洪地质灾害、低能见度和局地雷暴大风。
 
-发布前必须用真实业务资料替换全部构造数值，并由值班预报员审核风险用语。`);
+业务使用前必须用真实资料替换全部构造数值，并核对风险用语。`);
   }
   return blocks;
 }
@@ -725,7 +722,7 @@ function buildDemoResponse({ prompt, expertName, workspace, artifacts = [], fixt
     `### 不确定性与下一步
 
 - 强中心位置在三套构造模式之间相差约 30–50 km，实际业务需随雷达和逐小时雨量滚动订正。
-- 本结果用于验证“数据读取 → 诊断 → 风险图 → 预报稿”链路，不可直接发布。
+- 本结果仅用于验证“数据读取 → 诊断 → 风险图 → 预报稿”链路。
 - 知识口径参考 \`weather_course_site\` 第 1、6–10、15 课。`,
   ].join('\n\n');
 }

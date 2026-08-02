@@ -47,7 +47,9 @@ async function main() {
         'docx_create',
         'docx_create_from_markdown',
         'docx_edit',
+        'docx_edit_selection',
         'docx_inspect',
+        'docx_resolve_selection',
         'pdf_create',
         'pdf_inspect',
         'pdf_transform',
@@ -89,6 +91,37 @@ async function main() {
       workspace,
       markdownCreated.structuredContent.artifact.path
     )));
+    const resolvedSelection = await client.callTool({
+      name: 'docx_resolve_selection',
+      arguments: {
+        schemaVersion: 'meteomate.office/v1',
+        workspaceId: 'project-current',
+        sourcePath: markdownCreated.structuredContent.artifact.path,
+        sourceHash: markdownCreated.structuredContent.artifact.contentHash,
+        selectedText: '未来三天以多云天气为主。',
+      },
+    });
+    assert.equal(resolvedSelection.isError, undefined);
+    assert.equal(resolvedSelection.structuredContent.editable, true);
+    const selectionEdited = await client.callTool({
+      name: 'docx_edit_selection',
+      arguments: {
+        schemaVersion: 'meteomate.office/v1',
+        workspaceId: 'project-current',
+        sourcePath: markdownCreated.structuredContent.artifact.path,
+        sourceHash: markdownCreated.structuredContent.artifact.contentHash,
+        selectedText: '未来三天以多云天气为主。',
+        replacementText: '未来三天以晴到多云天气为主。',
+        anchor: resolvedSelection.structuredContent.anchor,
+      },
+    });
+    assert.equal(selectionEdited.isError, undefined);
+    assert.equal(selectionEdited.structuredContent.status, 'ready');
+    assert.notEqual(
+      selectionEdited.structuredContent.artifact.path,
+      markdownCreated.structuredContent.artifact.path,
+    );
+    assert.ok(fs.existsSync(path.join(workspace, selectionEdited.structuredContent.artifact.path)));
     const created = await client.callTool({
       name: 'pdf_create',
       arguments: {

@@ -206,7 +206,9 @@ function createCapabilityService({
       }
     }
     for (const [connectorId, values] of Object.entries(toolSelections)) {
-      const requestedTools = uniqueStrings(values);
+      const requestedTools = uniqueStrings(
+        connectorId === OfficeConnector.ID ? OfficeConnector.upgradeToolSelection(values) : values
+      );
       if (!requestedTools.length || unavailableConnectorIds.has(connectorId)) continue;
       const connector = connectors.find((item) => item.id === connectorId);
       if (!connector?.enabled || !connectorAllowed(connectorId)) {
@@ -218,9 +220,11 @@ function createCapabilityService({
         continue;
       }
       const ceiling = connectorToolCeiling(connector);
-      const discovered = connector.lastTest.result.tools
-        .map((tool) => String(tool?.name || '').trim())
-        .filter(Boolean);
+      const discovered = OfficeConnector.isOfficeConnector(connector)
+        ? ceiling
+        : connector.lastTest.result.tools
+          .map((tool) => String(tool?.name || '').trim())
+          .filter(Boolean);
       const available = new Set(
         ceiling ? discovered.filter((tool) => ceiling.includes(tool)) : discovered
       );
@@ -1084,8 +1088,11 @@ function createCapabilityService({
       const runtimeConnector = materializeConnectorInput(connector, request);
       const toolCeiling = connectorToolCeiling(runtimeConnector);
       const hasToolSelection = Object.prototype.hasOwnProperty.call(toolSelections, connector.id);
+      const requestedValues = Array.isArray(toolSelections[connector.id]) ? toolSelections[connector.id] : [];
       const requestedTools = hasToolSelection
-        ? [...new Set((Array.isArray(toolSelections[connector.id]) ? toolSelections[connector.id] : []).map(String).filter(Boolean))]
+        ? [...new Set((OfficeConnector.isOfficeConnector(connector)
+          ? OfficeConnector.upgradeToolSelection(requestedValues)
+          : requestedValues).map(String).filter(Boolean))]
         : null;
       const availableTools = toolCeiling
         ? toolCeiling.filter((tool) => !requestedTools || requestedTools.includes(tool))
@@ -1114,7 +1121,9 @@ function createCapabilityService({
       .map((connector) => {
         const toolCeiling = connectorToolCeiling(connector);
         const requestedTools = Object.prototype.hasOwnProperty.call(toolSelections, connector.id)
-          ? [...new Set((toolSelections[connector.id] || []).map(String).filter(Boolean))]
+          ? [...new Set((OfficeConnector.isOfficeConnector(connector)
+            ? OfficeConnector.upgradeToolSelection(toolSelections[connector.id] || [])
+            : toolSelections[connector.id] || []).map(String).filter(Boolean))]
           : null;
         const selectedTools = toolCeiling
           ? toolCeiling.filter((tool) => !requestedTools || requestedTools.includes(tool))

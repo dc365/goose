@@ -11,8 +11,6 @@ const { createKnowledgeService } = require('./knowledge-service.cjs');
 const { createSecretStore } = require('./secret-store.cjs');
 const { createAuthCredentialStore } = require('./auth-credential-store.cjs');
 const { createSharedProjectService } = require('./shared-project-service.cjs');
-const { createPublicationService } = require('./publication-service.cjs');
-const { createPublicationAttestor } = require('./publication-attestor.cjs');
 const SecurityMode = require('./security-mode.cjs');
 
 const ownsSingleInstanceLock = typeof electron.app.requestSingleInstanceLock === 'function'
@@ -76,16 +74,6 @@ const sharedProjectService = createSharedProjectService({
   ipcMain: electron.ipcMain,
   profileContext,
 });
-const publicationAttestor = createPublicationAttestor({ profileContext });
-const publicationService = createPublicationService({
-  ipcMain: electron.ipcMain,
-  profileContext,
-  dialog: electron.dialog,
-  publicationAttestor,
-  safeStorage: electron.safeStorage,
-  securityMode,
-});
-
 registerRuntimeServices({
   profileContext,
   capabilityService: service,
@@ -94,8 +82,6 @@ registerRuntimeServices({
   knowledgeService,
   secretStore,
   sharedProjectService,
-  publicationAttestor,
-  publicationService,
   securityMode: SecurityMode.securityModeState(securityMode),
 });
 profileContext.registerIpc();
@@ -105,8 +91,6 @@ skillCreatorService.registerIpc();
 skillHubClient.registerIpc();
 knowledgeService.registerIpc();
 sharedProjectService.registerIpc();
-publicationService.registerIpc();
-
 electron.app.on('before-quit', () => {
   void service.shutdown();
 });

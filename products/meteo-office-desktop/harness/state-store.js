@@ -5,8 +5,8 @@
   const Task = isNode ? require('./task-state-machine') : root.MeteoMateHarness.TaskStateMachine;
   const Artifact = isNode ? require('./artifact-registry') : root.MeteoMateHarness.ArtifactRegistry;
   const Evidence = isNode ? require('./evidence-ledger') : root.MeteoMateHarness.EvidenceLedger;
-  const PublicationState = isNode ? require('./publication-state') : root.MeteoMateHarness.PublicationState;
-  const api = factory(Shared, Project, Task, Artifact, Evidence, PublicationState);
+  const ExpertTeam = isNode ? require('./expert-team') : root.MeteoMateHarness.ExpertTeam;
+  const api = factory(Shared, Project, Task, Artifact, Evidence, ExpertTeam);
   if (isNode) module.exports = api;
   root.MeteoMateHarness = root.MeteoMateHarness || {};
   root.MeteoMateHarness.StateStore = api;
@@ -16,7 +16,7 @@
   Task,
   Artifact,
   Evidence,
-  PublicationState
+  ExpertTeam
 ) {
   'use strict';
 
@@ -29,6 +29,8 @@
     artifacts: 40,
     evidence: 200,
     harnessEvents: 200,
+    teamRuns: 20,
+    teamTimeline: 60,
   });
 
   function tail(value, limit) {
@@ -37,41 +39,35 @@
 
   function compactTaskForStorage(task = {}, limits = {}) {
     const configured = { ...DEFAULT_STORAGE_LIMITS, ...limits };
-    const signed = task.publication?.signoff?.approved === true;
-    const authoritativeEvidenceIds = new Set([
-      ...PublicationState.referencedEvidenceIds(PublicationState.analysisForTask(task)),
-      ...PublicationState.artifactEvidenceIds(
-        PublicationState.currentArtifacts(task.artifacts)
-      ),
-    ]);
     const recentEvidence = tail(task.evidence, configured.evidence);
     const retainedEvidenceIds = new Set(recentEvidence.map((record) => record?.id).filter(Boolean));
-    const evidence = (task.evidence || []).filter((record) =>
-      retainedEvidenceIds.has(record?.id) || authoritativeEvidenceIds.has(String(record?.id || ''))
-    );
+    const evidence = (task.evidence || []).filter((record) => retainedEvidenceIds.has(record?.id));
+    const { publication: _publication, publicationAnalysis: _publicationAnalysis, ...taskFields } = task;
+    const sourceTeamRuns = Array.isArray(task.teamRuns) ? [...task.teamRuns] : [];
+    if (task.teamRun && !sourceTeamRuns.some((run) => run?.id === task.teamRun.id)) {
+      sourceTeamRuns.push(task.teamRun);
+    }
+    const teamRuns = tail(sourceTeamRuns, configured.teamRuns).map((run) => ({
+      ...run,
+      timeline: tail(run?.timeline, configured.teamTimeline),
+      members: (Array.isArray(run?.members) ? run.members : []).map((member) => ({
+        ...member,
+        activities: tail(member?.activities, 6),
+        updates: tail(member?.updates, 16),
+      })),
+    }));
+    const teamRun = teamRuns.find((run) => run.id === task.teamRun?.id) || teamRuns.at(-1) || null;
     const compacted = {
-      ...task,
+      ...taskFields,
       messages: tail(task.messages, configured.messages),
       activities: tail(task.activities, configured.activities),
-      artifacts: signed ? [...(task.artifacts || [])] : tail(task.artifacts, configured.artifacts),
+      artifacts: tail(task.artifacts, configured.artifacts),
       evidence,
       harnessEvents: tail(task.harnessEvents, configured.harnessEvents),
+      teamRun,
+      teamRuns,
       pendingPermissions: [],
     };
-    if (
-      task.id
-      && task.publication
-      && !PublicationState.requestMatchesTask(task, PublicationState.requestForTask(compacted))
-    ) {
-      compacted.publication = {
-        ...task.publication,
-        signoff: null,
-        gate: null,
-        checkedAt: null,
-        error: null,
-        dirty: true,
-      };
-    }
     return compacted;
   }
 
@@ -83,9 +79,66 @@
     }));
   }
 
+  function interruptTeamRun(run) {
+    if (!run || typeof run !== 'object') return null;
+    const interrupted = ['running', 'synthesizing'].includes(run.status)
+      || ['dispatching', 'executing', 'members', 'synthesizing'].includes(run.phase);
+    const interruptedAt = interrupted ? Number(run.interruptedAt || Date.now()) : null;
+    const terminalAt = interruptedAt || Number(run.completedAt || run.updatedAt || Date.now());
+    const timeline = tail(run.timeline, DEFAULT_STORAGE_LIMITS.teamTimeline);
+    if (interrupted && !timeline.some((entry) => entry?.key === `run:${run.id}:interrupted`)) {
+      timeline.push({
+        id: `team-event-${run.id}-interrupted`,
+        key: `run:${run.id}:interrupted`,
+        type: 'completion',
+        memberId: null,
+        actor: 'MeteoMate',
+        title: '应用重启后协作已中断',
+        detail: '已保留重启前完成的成员结果和协作记录。',
+        status: 'interrupted',
+        at: interruptedAt,
+      });
+    }
+    const members = (Array.isArray(run.members) ? run.members : []).map((member) => ({
+      ...member,
+      status: ['pending', 'running'].includes(member.status) ? 'interrupted' : member.status,
+      completedAt: ['pending', 'running'].includes(member.status)
+        ? member.completedAt || terminalAt
+        : member.completedAt,
+      activities: tail(member.activities, 6),
+      updates: tail(member.updates, 16),
+    }));
+    const completedCount = members.filter((member) => member.status === 'completed').length;
+    const failedCount = members.filter((member) => ['failed', 'interrupted', 'cancelled'].includes(member.status)).length;
+    const inconsistentCompletion = run.status === 'completed' && failedCount > 0;
+    return {
+      ...run,
+      status: interrupted ? 'interrupted' : inconsistentCompletion ? (completedCount ? 'partial' : 'failed') : run.status,
+      phase: interrupted ? 'interrupted' : inconsistentCompletion ? 'completed' : run.phase,
+      completedAt: interrupted ? run.completedAt || interruptedAt : run.completedAt,
+      interruptedAt: interrupted ? interruptedAt : run.interruptedAt,
+      completedCount,
+      failedCount,
+      members,
+      timeline: tail(timeline, DEFAULT_STORAGE_LIMITS.teamTimeline),
+    };
+  }
+
+  function storedRuntimeFailureMessage(task, message, failure) {
+    const teamRuns = Array.isArray(task?.teamRuns) ? task.teamRuns : [];
+    const teamRun = teamRuns.find((run) => run?.id === message?.teamRunId)
+      || (task?.teamRun?.id === message?.teamRunId ? task.teamRun : null)
+      || task?.teamRun;
+    if (!teamRun) return failure.message;
+    const completedCount = (Array.isArray(teamRun.members) ? teamRun.members : [])
+      .filter((member) => member?.status === 'completed').length;
+    return `负责人汇总时遇到工具调用格式错误。已保留 ${completedCount} 位专家的完成结果，请重试本轮汇总。`;
+  }
+
   function normalizeMessage(message, task, planFactory, isLatestAssistant) {
     if (!message || typeof message !== 'object') return null;
     if (message.role !== 'assistant') return { ...message };
+    const runtimeOutputFailure = ExpertTeam.runtimeOutputFailure(message.text);
     const startedAt = message.startedAt || message.createdAt || task.createdAt || Date.now();
     const completed = message.status !== 'streaming' || task.status !== 'running';
     const completedAt =
@@ -98,11 +151,17 @@
     const defaultTitles = new Map(fallbackPlan.map((item) => [item.id, item.title]));
     return {
       ...message,
+      text: runtimeOutputFailure
+        ? storedRuntimeFailureMessage(task, message, runtimeOutputFailure)
+        : message.text,
       status: completed ? 'completed' : message.status,
       startedAt,
       completedAt,
       durationMs: message.durationMs ?? (completedAt ? Math.max(0, completedAt - startedAt) : null),
-      runStatus: message.runStatus || (task.status === 'failed' && isLatestAssistant ? 'failed' : completed ? 'completed' : 'running'),
+      runStatus: runtimeOutputFailure
+        ? 'failed'
+        : message.runStatus || (task.status === 'failed' && isLatestAssistant ? 'failed' : completed ? 'completed' : 'running'),
+      runtimeOutputFailure: runtimeOutputFailure || message.runtimeOutputFailure,
       processPlan: storedPlan.map((item) => ({
         ...item,
         title: item.title || defaultTitles.get(item.id) || item.id,
@@ -183,7 +242,6 @@
         .map((artifact) => [artifactFileName(artifact), artifact.path])
         .filter(([name]) => Boolean(name))
     );
-    let artifactReconciled = false;
     const artifacts = sourceArtifacts
       .filter((artifact) =>
         !isUnverifiedLegacyArtifact(artifact)
@@ -211,7 +269,6 @@
               originalUri: target,
             },
           };
-          artifactReconciled = true;
         }
         try {
           const lineage = normalizedArtifact?.lineage && typeof normalizedArtifact.lineage === 'object'
@@ -258,41 +315,28 @@
         return { ...record };
       }
     });
-    const teamRun = task?.teamRun && typeof task.teamRun === 'object'
-      ? {
-          ...task.teamRun,
-          status: ['running', 'synthesizing'].includes(task.teamRun.status)
-            ? 'interrupted'
-            : task.teamRun.status,
-          phase: ['dispatching', 'executing', 'members', 'synthesizing'].includes(task.teamRun.phase)
-            ? 'interrupted'
-            : task.teamRun.phase,
-          members: (Array.isArray(task.teamRun.members) ? task.teamRun.members : []).map((member) => ({
-            ...member,
-            status: ['pending', 'running'].includes(member.status) ? 'interrupted' : member.status,
-          })),
-        }
-      : null;
+    const sourceTeamRuns = Array.isArray(task?.teamRuns) ? task.teamRuns : [];
+    const teamRuns = sourceTeamRuns.map(interruptTeamRun).filter(Boolean);
+    const legacyTeamRun = interruptTeamRun(task?.teamRun);
+    if (legacyTeamRun && !teamRuns.some((run) => run.id === legacyTeamRun.id)) {
+      teamRuns.push(legacyTeamRun);
+    }
+    const teamRun = teamRuns.find((run) => run.id === task?.teamRun?.id) || teamRuns.at(-1) || null;
+    const latestAssistant = messagesWithArtifacts.find((message) => message.id === latestAssistantId);
+    const runtimeOutputFailed = Boolean(latestAssistant?.runtimeOutputFailure);
 
     return Task.normalizeTask({
       ...task,
-      status: task?.status === 'running' ? 'interrupted' : task?.status || 'draft',
+      status: runtimeOutputFailed
+        ? 'failed'
+        : task?.status === 'running' ? 'interrupted' : task?.status || 'draft',
       messages: messagesWithArtifacts,
       activities,
       artifacts,
       artifactIds: [...retainedArtifactIds],
       evidence,
       teamRun,
-      publication:
-        (artifacts.length < sourceArtifacts.length || artifactReconciled) && task?.publication
-          ? {
-              ...task.publication,
-              gate: null,
-              checkedAt: null,
-              error: null,
-              dirty: true,
-            }
-          : task?.publication,
+      teamRuns,
       plan: Array.isArray(task?.plan) && task.plan.length ? task.plan : clonePlan(planFactory),
       pendingPermissions: [],
     });

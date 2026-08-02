@@ -120,6 +120,58 @@ try {
   const docxInspection = invoke('docx_inspect', { sourcePath: docx.artifact.path });
   assert.ok(docxInspection.structure.paragraphs.some((paragraph) => paragraph.text.includes('强降水')));
   assert.equal(docxInspection.structure.tables[0].preview[1][2], '');
+  const selectionResolution = invoke('docx_resolve_selection', {
+    sourcePath: docx.artifact.path,
+    sourceHash: docx.artifact.contentHash,
+    selectedText: '今天夜间到明天白天有强降水',
+  });
+  assert.equal(selectionResolution.editable, true);
+  assert.match(selectionResolution.anchor.paragraphId, /^paragraph:\d+$/);
+  const selectionEditedDocx = invoke('docx_edit_selection', {
+    sourcePath: docx.artifact.path,
+    sourceHash: docx.artifact.contentHash,
+    selectedText: '今天夜间到明天白天有强降水',
+    replacementText: '24 日夜间到 25 日白天有中到大雨',
+    anchor: selectionResolution.anchor,
+  });
+  assert.equal(selectionEditedDocx.status, 'ready');
+  assert.notEqual(selectionEditedDocx.artifact.path, docx.artifact.path);
+  assert.ok(selectionEditedDocx.render.pageCount >= 1);
+  assert.equal(invoke('docx_inspect', {
+    sourcePath: docx.artifact.path,
+  }).structure.paragraphs.some((paragraph) => paragraph.text.includes('今天夜间')), true);
+  assert.equal(invoke('docx_inspect', {
+    sourcePath: selectionEditedDocx.artifact.path,
+  }).structure.paragraphs.some((paragraph) => paragraph.text.includes('24 日夜间')), true);
+  invokeFailure('docx_edit_selection', {
+    sourcePath: docx.artifact.path,
+    sourceHash: docx.artifact.contentHash,
+    selectedText: '今天夜间到明天白天有强降水',
+    replacementText: '不应写入',
+    anchor: { ...selectionResolution.anchor, paragraphIndex: 999 },
+  }, /ANCHOR_CHANGED/);
+  const duplicateSelectionDocx = invoke('docx_create', {
+    outputPath: 'artifacts/duplicate-selection.docx',
+    spec: {
+      blocks: [
+        { type: 'paragraph', text: '重复的天气结论。' },
+        { type: 'paragraph', text: '重复的天气结论。' },
+      ],
+    },
+  });
+  const duplicateResolution = invoke('docx_resolve_selection', {
+    sourcePath: duplicateSelectionDocx.artifact.path,
+    sourceHash: duplicateSelectionDocx.artifact.contentHash,
+    selectedText: '重复的天气结论',
+  });
+  assert.equal(duplicateResolution.editable, false);
+  assert.equal(duplicateResolution.status, 'reference_only');
+  assert.match(duplicateResolution.reason, /出现多次/);
+  invokeFailure('docx_resolve_selection', {
+    sourcePath: docx.artifact.path,
+    sourceHash: '0'.repeat(64),
+    selectedText: '今天夜间到明天白天有强降水',
+  }, /SOURCE_CHANGED/);
   const editedDocx = invoke('docx_edit', {
     sourcePath: docx.artifact.path,
     sourceHash: docx.artifact.contentHash,

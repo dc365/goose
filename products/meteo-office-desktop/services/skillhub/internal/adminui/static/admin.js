@@ -12,6 +12,7 @@ const state = {
   collections: [],
   recommendationRules: [],
   governance: null,
+  modelCatalog: null,
   view: 'skills',
   audit: [],
   policies: null,
@@ -45,6 +46,9 @@ const actionLabels = {
   'policy.role.reset': '重置角色策略',
   'policy.user.update': '更新用户策略',
   'policy.user.reset': '重置用户策略',
+  'model.provider.put': '保存模型提供商',
+  'model.provider.delete': '删除模型提供商',
+  'model.provider.verify': '记录模型验证',
   'expert.create': '创建专家',
   'expert.update': '更新专家',
   'expert.review.submit': '提交专家审核',
@@ -79,6 +83,7 @@ const elements = {
   operationsView: document.getElementById('operations-view'),
   governanceView: document.getElementById('governance-view'),
   usersView: document.getElementById('users-view'),
+  modelCatalogView: document.getElementById('model-catalog-view'),
   policiesView: document.getElementById('policies-view'),
   auditView: document.getElementById('audit-view'),
   skillsBody: document.getElementById('skills-body'),
@@ -98,6 +103,8 @@ const elements = {
   versionDistributionEmpty: document.getElementById('version-distribution-empty'),
   usersBody: document.getElementById('users-body'),
   usersEmpty: document.getElementById('users-empty'),
+  modelCatalogList: document.getElementById('model-catalog-list'),
+  modelCatalogEmpty: document.getElementById('model-catalog-empty'),
   policiesBody: document.getElementById('policies-body'),
   policiesEmpty: document.getElementById('policies-empty'),
   auditBody: document.getElementById('audit-body'),
@@ -199,6 +206,7 @@ function showLogin(message = '') {
   state.collections = [];
   state.recommendationRules = [];
   state.governance = null;
+  state.modelCatalog = null;
   state.policies = null;
   elements.adminShell.hidden = true;
   elements.loginShell.hidden = false;
@@ -2148,7 +2156,7 @@ function buildUserForm(user = null) {
   const form = element('form', 'drawer-form');
   form.noValidate = true;
   form.innerHTML = `
-    <label class="field"><span>用户名</span><input name="username" autocomplete="off" pattern="[a-z0-9][a-z0-9._-]{2,63}" required /></label>
+    <label class="field"><span>用户名</span><input name="username" autocomplete="off" pattern="[a-z0-9][-a-z0-9._]{2,63}" required /></label>
     <label class="field"><span>显示名称</span><input name="displayName" autocomplete="off" required /></label>
     <div class="field-row">
       <label class="field"><span>角色</span><select name="role"><option value="viewer">使用者</option><option value="publisher">Skill 发布者</option><option value="admin">管理员</option></select></label>
@@ -2353,9 +2361,336 @@ function passwordPanel(password) {
   return panel;
 }
 
+async function loadModelCatalog({ render = true } = {}) {
+  try {
+    state.modelCatalog = await api('/v1/admin/model-providers');
+    if (render) renderModelCatalog();
+    return state.modelCatalog;
+  } catch (error) {
+    toast(error.message, true);
+    return null;
+  }
+}
+
+function modelCatalogProviders() {
+  return Object.values(state.modelCatalog?.providers || {}).sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'));
+}
+
+function filteredModelCatalogProviders() {
+  const query = document.getElementById('model-catalog-search').value.trim().toLowerCase();
+  const status = document.getElementById('model-catalog-status-filter').value;
+  return modelCatalogProviders().filter((provider) => {
+    const searchable = [provider.id, provider.name, provider.description, provider.baseUrl, ...(provider.models || []).flatMap((model) => [model.id, model.name])]
+      .join(' ').toLowerCase();
+    const statusMatches = !status
+      || (status === 'enabled' && provider.enabled)
+      || (status === 'disabled' && !provider.enabled)
+      || (status === 'verified' && provider.verification?.status === 'verified')
+      || (status === 'untested' && provider.verification?.status !== 'verified');
+    return statusMatches && (!query || searchable.includes(query));
+  });
+}
+
+function renderModelCatalog() {
+  if (!state.modelCatalog) return;
+  const providers = modelCatalogProviders();
+  const enabledProviders = providers.filter((provider) => provider.enabled);
+  const models = enabledProviders.flatMap((provider) => (provider.models || []).filter((model) => model.enabled));
+  setText('model-catalog-metric-revision', state.modelCatalog.revision || 0);
+  setText('model-catalog-metric-providers', enabledProviders.length);
+  setText('model-catalog-metric-models', models.length);
+  setText('model-catalog-metric-verified', models.filter((model) => model.verification?.status === 'verified').length);
+  const filtered = filteredModelCatalogProviders();
+  elements.modelCatalogList.replaceChildren(...filtered.map(modelProviderCard));
+  elements.modelCatalogEmpty.hidden = filtered.length > 0;
+}
+
+function modelProviderCard(provider) {
+  const card = element('article', `model-provider-card ${provider.enabled ? '' : 'disabled'}`.trim());
+  const header = element('header', 'model-provider-card-header');
+  const identity = element('div', 'model-provider-identity');
+  identity.append(textElement('span', initial(provider.name), 'model-provider-mark'));
+  const copy = element('div');
+  const title = element('div', 'model-provider-title');
+  title.append(textElement('h3', provider.name), pill(provider.enabled ? '已启用' : '已停用', provider.enabled ? 'model-enabled' : 'model-disabled'));
+  if (provider.verification?.status === 'verified') title.append(pill('已验证', 'model-verified'));
+  copy.append(title, textElement('p', provider.description || provider.id));
+  identity.append(copy);
+  const actions = element('div', 'model-provider-card-actions');
+  const verify = textElement('button', '登记验证', 'button quiet');
+  verify.type = 'button';
+  verify.addEventListener('click', () => openModelVerification(provider));
+  const edit = textElement('button', '编辑', 'button quiet');
+  edit.type = 'button';
+  edit.addEventListener('click', () => openModelProviderEditor(provider));
+  actions.append(verify, edit);
+  header.append(identity, actions);
+
+  const flow = element('div', 'model-provider-flow');
+  flow.append(
+    modelProviderFlowStep('01 · 传输', `${provider.presetMode === 'volcengine-ark' ? '火山方舟' : 'OpenAI 兼容'} · ${provider.protocol === 'responses' ? 'Responses' : 'Chat Completions'}`, provider.baseUrl),
+    modelProviderFlowStep('02 · 凭据', modelProviderCredentialLabel(provider), provider.credentialMode === 'secret_ref' ? provider.secretRef : provider.requiresAuth ? '密钥留在用户设备' : '仅适用于可信内网地址'),
+    modelProviderFlowStep('03 · 验证', modelVerificationLabel(provider.verification), provider.verification?.checkedAt ? formatDate(provider.verification.checkedAt) : '尚无验证记录'),
+  );
+
+  const models = element('section', 'model-provider-models');
+  const modelHeading = element('div', 'model-provider-models-heading');
+  modelHeading.append(textElement('strong', '模型目录'), textElement('span', `${provider.models?.length || 0} 个`));
+  models.append(modelHeading);
+  for (const model of provider.models || []) models.append(modelCatalogRow(model));
+
+  const footer = element('footer', 'model-provider-card-footer');
+  footer.append(textElement('code', provider.id), textElement('span', `r${provider.revision || 1} · ${provider.endpointPath ? `/${provider.endpointPath}` : '自动请求路径'}`));
+  const remove = textElement('button', '删除提供商');
+  remove.type = 'button';
+  remove.addEventListener('click', () => deleteModelProvider(provider));
+  footer.append(remove);
+  card.append(header, flow, models, footer);
+  return card;
+}
+
+function modelProviderFlowStep(label, value, detail) {
+  const step = element('div');
+  step.append(textElement('span', label), textElement('strong', value), textElement('small', detail));
+  return step;
+}
+
+function modelProviderCredentialLabel(provider) {
+  if (!provider.requiresAuth) return '无需认证';
+  if (provider.credentialMode === 'secret_ref') return provider.secretRef ? '密钥引用已登记' : '缺少密钥引用';
+  return '用户本机密钥';
+}
+
+function modelVerificationLabel(verification) {
+  if (verification?.status === 'verified') return '验证通过';
+  if (verification?.status === 'failed') return '验证失败';
+  return '等待验证';
+}
+
+function modelCatalogRow(model) {
+  const row = element('div', `model-catalog-row ${model.enabled ? '' : 'disabled'}`.trim());
+  const copy = element('div');
+  copy.append(textElement('strong', model.name || model.id), textElement('code', model.id));
+  const capabilities = element('div', 'model-catalog-capabilities');
+  const labels = [model.toolCall ? '工具调用' : '', model.imageInput ? '图片输入' : '', model.reasoning ? '推理' : ''].filter(Boolean);
+  for (const label of labels.length ? labels : ['基础对话']) capabilities.append(textElement('span', label));
+  const limits = textElement('span', `输入 ${model.contextLimit ? compactNumber(model.contextLimit) : '默认'} · 输出 ${model.maxOutputTokens ? compactNumber(model.maxOutputTokens) : '默认'}`, 'model-catalog-limits');
+  const status = pill(modelVerificationLabel(model.verification), model.verification?.status === 'verified' ? 'model-verified' : model.verification?.status === 'failed' ? 'model-failed' : 'model-untested');
+  row.append(copy, capabilities, limits, status);
+  return row;
+}
+
+function compactNumber(value) {
+  const number = Number(value || 0);
+  return number >= 1000 ? `${Math.round(number / 100) / 10}K` : String(number || 0);
+}
+
+function buildModelProviderForm(provider = null) {
+  const form = element('form', 'drawer-form model-provider-form');
+  form.noValidate = true;
+  form.innerHTML = `
+    <div class="model-provider-form-section"><h4>目录标识</h4><p>Provider ID 必须与桌面 Goose 中的自定义提供商 ID 一致，才能应用托管连接。</p>
+      <label class="field"><span>Provider ID</span><input name="id" pattern="[a-z0-9][-a-z0-9._]{0,63}" required /></label>
+      <label class="field"><span>显示名称</span><input name="name" maxlength="80" required /></label>
+      <label class="field"><span>说明</span><textarea name="description" maxlength="500"></textarea></label>
+      <label class="model-provider-toggle"><input name="enabled" type="checkbox" /><span><strong>启用提供商</strong><small>停用后不会下发给桌面端。</small></span></label>
+    </div>
+    <div class="model-provider-form-section"><h4>传输配置</h4><p>Base URL 与请求路径分开保存，避免重复拼接 /v1 或 /api/v3。</p>
+      <div class="field-row"><label class="field"><span>提供商类型</span><select name="presetMode"><option value="openai-compatible">OpenAI 兼容</option><option value="volcengine-ark">火山方舟</option></select></label><label class="field"><span>API 协议</span><select name="protocol"><option value="chat_completions">Chat Completions</option><option value="responses">Responses</option></select></label></div>
+      <label class="field"><span>Base URL</span><input name="baseUrl" type="url" inputmode="url" required /></label>
+      <div class="field-row"><label class="field"><span>请求路径（可选）</span><input name="endpointPath" placeholder="api/v3/responses" /></label><label class="field"><span>流式输出</span><select name="streamingMode"><option value="auto">自动</option><option value="on">开启</option><option value="off">关闭</option></select></label></div>
+      <div class="model-provider-route-preview"><span>实际地址</span><code data-model-provider-endpoint>填写 Base URL 后显示</code></div>
+    </div>
+    <div class="model-provider-form-section"><h4>凭据边界</h4><p>这里不接受 API Key。secretRef 只用于部署侧解析，不会返回普通用户接口。</p>
+      <label class="field"><span>凭据模式</span><select name="credentialMode"><option value="local">用户本机密钥</option><option value="secret_ref">服务端密钥引用</option><option value="none">无需认证</option></select></label>
+      <label class="field" data-secret-ref><span>密钥引用</span><input name="secretRef" placeholder="vault://meteomate/provider-key" autocomplete="off" /><small>仅允许 env://、vault://、secret://、k8s://。</small></label>
+    </div>
+    <div class="model-provider-form-section"><div class="model-provider-form-heading"><div><h4>模型</h4><p>声明实际可调用的模型 ID、能力和 Token 上限。</p></div><button class="button quiet" type="button" data-add-catalog-model>＋ 添加模型</button></div><div class="model-provider-form-models" data-catalog-models></div></div>
+    <div class="form-error" data-form-error role="alert" hidden></div>
+    <div class="drawer-actions"><button class="button quiet" type="button" data-cancel>取消</button><button class="button primary" type="submit">保存提供商</button></div>`;
+  form.elements.id.value = provider?.id || '';
+  form.elements.id.disabled = Boolean(provider);
+  form.elements.name.value = provider?.name || '';
+  form.elements.description.value = provider?.description || '';
+  form.elements.enabled.checked = provider ? provider.enabled : true;
+  form.elements.presetMode.value = provider?.presetMode || 'openai-compatible';
+  form.elements.protocol.value = provider?.protocol || 'chat_completions';
+  form.elements.baseUrl.value = provider?.baseUrl || '';
+  form.elements.endpointPath.value = provider?.endpointPath || '';
+  form.elements.streamingMode.value = provider?.streamingMode || 'auto';
+  form.elements.credentialMode.value = provider?.credentialMode || 'local';
+  form.elements.secretRef.value = provider?.secretRef || '';
+  for (const model of provider?.models || [{ enabled: true, toolCall: true }]) appendCatalogModelRow(form, model);
+  form.querySelector('[data-add-catalog-model]').addEventListener('click', () => appendCatalogModelRow(form, { enabled: true, toolCall: true }));
+  form.querySelector('[data-cancel]').addEventListener('click', closeDrawer);
+  for (const control of [form.elements.baseUrl, form.elements.endpointPath, form.elements.protocol]) control.addEventListener('input', () => refreshCatalogEndpoint(form));
+  form.elements.credentialMode.addEventListener('change', () => refreshCatalogCredentialMode(form));
+  refreshCatalogEndpoint(form);
+  refreshCatalogCredentialMode(form);
+  return form;
+}
+
+function appendCatalogModelRow(form, model = {}) {
+  const row = element('div', 'model-provider-form-model');
+  row.dataset.catalogModel = '';
+  row.innerHTML = `
+    <div class="model-provider-form-model-head"><strong>模型条目</strong><button type="button" data-remove-catalog-model>移除</button></div>
+    <div class="field-row"><label class="field"><span>模型 ID</span><input name="modelId" required maxlength="160" /></label><label class="field"><span>显示名称</span><input name="modelName" maxlength="100" /></label></div>
+    <div class="model-provider-capability-checks"><label><input name="modelEnabled" type="checkbox" />启用</label><label><input name="toolCall" type="checkbox" />工具调用</label><label><input name="imageInput" type="checkbox" />图片输入</label><label><input name="reasoning" type="checkbox" />推理</label></div>
+    <div class="field-row"><label class="field"><span>最大输入 Token</span><input name="contextLimit" type="number" min="0" step="1" /></label><label class="field"><span>最大输出 Token</span><input name="maxOutputTokens" type="number" min="0" step="1" /></label></div>`;
+  row.querySelector('[name="modelId"]').value = model.id || '';
+  row.querySelector('[name="modelName"]').value = model.name || '';
+  row.querySelector('[name="modelEnabled"]').checked = model.enabled !== false;
+  row.querySelector('[name="toolCall"]').checked = Boolean(model.toolCall);
+  row.querySelector('[name="imageInput"]').checked = Boolean(model.imageInput);
+  row.querySelector('[name="reasoning"]').checked = Boolean(model.reasoning);
+  row.querySelector('[name="contextLimit"]').value = model.contextLimit || '';
+  row.querySelector('[name="maxOutputTokens"]').value = model.maxOutputTokens || '';
+  row.querySelector('[data-remove-catalog-model]').addEventListener('click', () => {
+    if (form.querySelectorAll('[data-catalog-model]').length === 1) return setInlineFormError(form, '提供商至少需要一个模型');
+    row.remove();
+  });
+  form.querySelector('[data-catalog-models]').append(row);
+}
+
+function refreshCatalogCredentialMode(form) {
+  const secretMode = form.elements.credentialMode.value === 'secret_ref';
+  form.querySelector('[data-secret-ref]').hidden = !secretMode;
+  form.elements.secretRef.required = secretMode;
+}
+
+function refreshCatalogEndpoint(form) {
+  const target = form.querySelector('[data-model-provider-endpoint]');
+  try {
+    const base = new URL(form.elements.baseUrl.value);
+    const explicit = form.elements.endpointPath.value.trim().replace(/^\/+/, '');
+    if (explicit) {
+      target.textContent = `${base.origin}/${explicit}`;
+      return;
+    }
+    const suffix = form.elements.protocol.value === 'responses' ? 'responses' : 'chat/completions';
+    target.textContent = `${base.toString().replace(/\/$/, '')}/${suffix}`;
+  } catch {
+    target.textContent = '填写 Base URL 后显示';
+  }
+}
+
+function readModelProviderForm(form) {
+  const credentialMode = form.elements.credentialMode.value;
+  const models = [...form.querySelectorAll('[data-catalog-model]')].map((row) => ({
+    id: row.querySelector('[name="modelId"]').value.trim(),
+    name: row.querySelector('[name="modelName"]').value.trim(),
+    enabled: row.querySelector('[name="modelEnabled"]').checked,
+    toolCall: row.querySelector('[name="toolCall"]').checked,
+    imageInput: row.querySelector('[name="imageInput"]').checked,
+    reasoning: row.querySelector('[name="reasoning"]').checked,
+    contextLimit: Number(row.querySelector('[name="contextLimit"]').value || 0),
+    maxOutputTokens: Number(row.querySelector('[name="maxOutputTokens"]').value || 0),
+  }));
+  if (models.some((model) => !model.id)) throw new Error('每个模型都必须填写模型 ID');
+  if (new Set(models.map((model) => model.id)).size !== models.length) throw new Error('模型 ID 不能重复');
+  return {
+    id: form.elements.id.value.trim(),
+    body: {
+      name: form.elements.name.value.trim(),
+      description: form.elements.description.value.trim(),
+      enabled: form.elements.enabled.checked,
+      presetMode: form.elements.presetMode.value,
+      protocol: form.elements.protocol.value,
+      streamingMode: form.elements.streamingMode.value,
+      baseUrl: form.elements.baseUrl.value.trim(),
+      endpointPath: form.elements.endpointPath.value.trim(),
+      requiresAuth: credentialMode !== 'none',
+      credentialMode,
+      secretRef: credentialMode === 'secret_ref' ? form.elements.secretRef.value.trim() : '',
+      models,
+    },
+  };
+}
+
+function openModelProviderEditor(provider = null) {
+  openDrawer(provider ? provider.name : '添加模型提供商', provider ? '编辑组织模型目录' : '新建组织模型连接');
+  const form = buildModelProviderForm(provider);
+  elements.drawerContent.append(form);
+  form.querySelector(provider ? '[name="name"]' : '[name="id"]')?.focus();
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    setInlineFormError(form, '');
+    setSubmitting(form, true, '正在保存…');
+    try {
+      const input = readModelProviderForm(form);
+      await api(`/v1/admin/model-providers/${encodeURIComponent(input.id)}`, { method: 'PUT', body: input.body });
+      await loadModelCatalog();
+      closeDrawer();
+      toast('模型提供商已保存');
+    } catch (error) {
+      setInlineFormError(form, error.message);
+      setSubmitting(form, false);
+    }
+  });
+}
+
+async function deleteModelProvider(provider) {
+  if (!window.confirm(`删除模型提供商“${provider.name}”？被策略引用时服务端会拒绝删除。`)) return;
+  try {
+    await api(`/v1/admin/model-providers/${encodeURIComponent(provider.id)}`, { method: 'DELETE' });
+    await loadModelCatalog();
+    toast('模型提供商已删除');
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+function openModelVerification(provider) {
+  openDrawer(provider.name, '登记最近一次连接验证');
+  const form = element('form', 'drawer-form model-verification-form');
+  form.noValidate = true;
+  form.innerHTML = `
+    <div class="drawer-note"><strong>只登记真实测试结果</strong><span>这里不会发起模型请求。请先在桌面端完成连接测试，再把结果记录到组织目录。</span></div>
+    <label class="field"><span>验证模型</span><select name="modelId"></select></label>
+    <label class="field"><span>结果</span><select name="status"><option value="verified">验证通过</option><option value="failed">验证失败</option></select></label>
+    <fieldset class="model-verification-checks"><legend>通过的检查</legend><label><input type="checkbox" name="check" value="text" checked />文本响应</label><label><input type="checkbox" name="check" value="streaming" />流式输出</label><label><input type="checkbox" name="check" value="tool_call" />工具调用</label><label><input type="checkbox" name="check" value="image_input" />图片输入</label><label><input type="checkbox" name="check" value="reasoning" />推理模式</label></fieldset>
+    <label class="field"><span>验证说明</span><textarea name="message" maxlength="500" placeholder="例如：Responses 非流式、文本与工具调用通过"></textarea></label>
+    <div class="form-error" data-form-error role="alert" hidden></div>
+    <div class="drawer-actions"><button class="button quiet" type="button" data-cancel>取消</button><button class="button primary" type="submit">保存验证记录</button></div>`;
+  for (const model of provider.models || []) {
+    const option = document.createElement('option');
+    option.value = model.id;
+    option.textContent = `${model.name || model.id} · ${model.id}`;
+    form.elements.modelId.append(option);
+  }
+  form.querySelector('[data-cancel]').addEventListener('click', closeDrawer);
+  elements.drawerContent.append(form);
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    setSubmitting(form, true, '正在保存…');
+    setInlineFormError(form, '');
+    try {
+      const status = form.elements.status.value;
+      const passed = new Set([...form.querySelectorAll('[name="check"]:checked')].map((input) => input.value));
+      const checks = [...form.querySelectorAll('[name="check"]')].map((input) => ({
+        id: input.value,
+        status: passed.has(input.value) ? 'passed' : status === 'failed' && input.value === 'text' ? 'failed' : 'skipped',
+      }));
+      await api(`/v1/admin/model-providers/${encodeURIComponent(provider.id)}/verification`, {
+        method: 'POST',
+        body: { modelId: form.elements.modelId.value, status, message: form.elements.message.value.trim(), checks },
+      });
+      await loadModelCatalog();
+      closeDrawer();
+      toast('模型验证记录已更新');
+    } catch (error) {
+      setInlineFormError(form, error.message);
+      setSubmitting(form, false);
+    }
+  });
+}
+
 const policyFieldDefinitions = [
-  { key: 'defaultModel', label: '默认模型', type: 'text', help: '使用 provider/model 格式。留空表示沿用桌面端已配置模型。' },
-  { key: 'allowedModels', label: '允许使用的模型', type: 'list', help: '每行一个 provider/model。留空表示不限制。' },
+  { key: 'defaultModel', label: '默认模型', type: 'model-select', help: '从组织模型目录选择。留空表示沿用桌面端已配置模型。' },
+  { key: 'allowedModels', label: '允许使用的模型', type: 'model-list', help: '从组织目录勾选。全部不选表示不额外限制。' },
+  { key: 'allowedProviderIds', label: '允许使用的提供商', type: 'provider-list', help: '从组织目录勾选。全部不选表示不额外限制。' },
+  { key: 'requireVerifiedModels', label: '只允许已验证模型', type: 'boolean', help: '启用后，桌面端会隐藏并拒绝运行尚未登记验证通过的模型。' },
   { key: 'defaultSkillIds', label: '默认安装的 Skill', type: 'list', help: '每行一个 Skill ID。登录后同步可信的已发布版本或产品内置版本。' },
   { key: 'allowedSkillIds', label: '允许使用的 Skill', type: 'list', help: '每行一个 Skill ID。留空表示不限制，默认 Skill 必须包含在此范围中。' },
   { key: 'allowedConnectorIds', label: '允许使用的 Connector', type: 'list', help: '每行一个 Connector ID。留空表示不限制。' },
@@ -2367,7 +2702,12 @@ const policyFieldDefinitions = [
 
 async function loadPolicies() {
   try {
-    state.policies = await api('/v1/admin/policies');
+    const [policies, modelCatalog] = await Promise.all([
+      api('/v1/admin/policies'),
+      api('/v1/admin/model-providers'),
+    ]);
+    state.policies = policies;
+    state.modelCatalog = modelCatalog;
     renderPolicies();
   } catch (error) {
     toast(error.message, true);
@@ -2406,6 +2746,8 @@ function policyEffectiveFor(row) {
     applyPolicyPatch(settings, state.policies?.users?.[row.id]);
   }
   settings.allowedModels ||= [];
+  settings.allowedProviderIds ||= [];
+  settings.requireVerifiedModels = Boolean(settings.requireVerifiedModels);
   settings.defaultSkillIds ||= [];
   settings.allowedSkillIds ||= [];
   settings.allowedConnectorIds ||= [];
@@ -2421,7 +2763,7 @@ function policyEffectiveFor(row) {
 
 function emptyPolicySettings() {
   return {
-    defaultModel: '', allowedModels: [], defaultSkillIds: [], allowedSkillIds: [], allowedConnectorIds: [],
+    defaultModel: '', allowedModels: [], allowedProviderIds: [], requireVerifiedModels: false, defaultSkillIds: [], allowedSkillIds: [], allowedConnectorIds: [],
     defaultPermissionProfileId: '', allowedPermissionProfileIds: [], autoCompactThreshold: 0.8, skillPublishMode: 'publisher_direct',
   };
 }
@@ -2513,11 +2855,9 @@ function buildPolicyForm(row) {
     const field = element('label', 'field');
     field.append(textElement('span', definition.label));
     const control = policyControl(definition);
-    control.name = definition.key;
+    control.setAttribute('name', definition.key);
     const value = overridden ? patch[definition.key] : effective[definition.key];
-    control.value = definition.type === 'percent'
-      ? Math.round(Number(value || 0.8) * 100)
-      : Array.isArray(value) ? value.join('\n') : value || '';
+    setPolicyControlValue(control, definition, value);
     field.append(control);
     wrapper.append(field, textElement('small', definition.help));
     setPolicyFieldEnabled(wrapper, overridden);
@@ -2549,6 +2889,50 @@ function buildPolicyForm(row) {
 }
 
 function policyControl(definition) {
+  if (definition.type === 'model-select') {
+    const select = document.createElement('select');
+    select.append(new Option('产品默认', ''));
+    for (const provider of modelCatalogProviders().filter((item) => item.enabled)) {
+      const group = document.createElement('optgroup');
+      group.label = provider.name;
+      for (const model of provider.models || []) {
+        if (!model.enabled) continue;
+        group.append(new Option(`${model.name || model.id} · ${modelVerificationLabel(model.verification)}`, `${provider.id}/${model.id}`));
+      }
+      select.append(group);
+    }
+    return select;
+  }
+  if (definition.type === 'model-list' || definition.type === 'provider-list') {
+    const picker = element('div', 'policy-catalog-picker');
+    picker.dataset.policyPicker = definition.type;
+    const items = definition.type === 'provider-list'
+      ? modelCatalogProviders().filter((provider) => provider.enabled).map((provider) => ({
+          value: provider.id, label: provider.name, detail: `${provider.models?.filter((model) => model.enabled).length || 0} 个模型`, verified: provider.verification?.status === 'verified',
+        }))
+      : modelCatalogProviders().filter((provider) => provider.enabled).flatMap((provider) => (provider.models || []).filter((model) => model.enabled).map((model) => ({
+          value: `${provider.id}/${model.id}`, label: model.name || model.id, detail: provider.name, verified: model.verification?.status === 'verified',
+        })));
+    if (!items.length) picker.append(textElement('p', '模型目录为空，请先登记提供商和模型。', 'policy-catalog-empty'));
+    for (const item of items) {
+      const label = element('label', 'policy-catalog-option');
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.value = item.value;
+      const copy = element('span');
+      copy.append(textElement('strong', item.label), textElement('small', item.detail));
+      label.append(checkbox, copy, pill(item.verified ? '已验证' : '待验证', item.verified ? 'model-verified' : 'model-untested'));
+      picker.append(label);
+    }
+    return picker;
+  }
+  if (definition.type === 'boolean') {
+    const label = element('label', 'policy-boolean-control');
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    label.append(checkbox, textElement('span', '启用这项约束'));
+    return label;
+  }
   if (definition.type === 'publish-mode') {
     const select = document.createElement('select');
     select.innerHTML = '<option value="publisher_direct">发布者直接发布</option><option value="admin_approval">管理员审核后发布</option>';
@@ -2575,10 +2959,24 @@ function policyControl(definition) {
   return input;
 }
 
+function setPolicyControlValue(control, definition, value) {
+  if (definition.type === 'boolean') {
+    control.querySelector('input').checked = Boolean(value);
+    return;
+  }
+  if (definition.type === 'model-list' || definition.type === 'provider-list') {
+    const selected = new Set(Array.isArray(value) ? value : []);
+    control.querySelectorAll('input[type="checkbox"]').forEach((checkbox) => { checkbox.checked = selected.has(checkbox.value); });
+    return;
+  }
+  control.value = definition.type === 'percent'
+    ? Math.round(Number(value || 0.8) * 100)
+    : Array.isArray(value) ? value.join('\n') : value || '';
+}
+
 function setPolicyFieldEnabled(wrapper, enabled) {
   wrapper.classList.toggle('inherited', !enabled);
-  const control = wrapper.querySelector('[name]');
-  if (control) control.disabled = !enabled;
+  wrapper.querySelector('.field')?.querySelectorAll('input, select, textarea, button').forEach((control) => { control.disabled = !enabled; });
 }
 
 function policyEffectivePreview(settings) {
@@ -2589,6 +2987,8 @@ function policyEffectivePreview(settings) {
     ['默认空间', 'personal:<userId>'],
     ['默认模型', settings.defaultModel || '产品默认'],
     ['允许模型', settings.allowedModels?.length ? settings.allowedModels.join('、') : '不限制'],
+    ['允许提供商', settings.allowedProviderIds?.length ? settings.allowedProviderIds.join('、') : '不限制'],
+    ['验证要求', settings.requireVerifiedModels ? '仅已验证模型' : '不强制'],
     ['默认 Skill', settings.defaultSkillIds?.length ? settings.defaultSkillIds.join('、') : '无'],
     ['允许 Skill', settings.allowedSkillIds?.length ? settings.allowedSkillIds.join('、') : '不限制'],
     ['允许 Connector', settings.allowedConnectorIds?.length ? settings.allowedConnectorIds.join('、') : '不限制'],
@@ -2613,13 +3013,18 @@ function readPolicyForm(form, organization) {
     if (!wrapper) continue;
     const overridden = organization || wrapper.querySelector('[data-policy-override]')?.checked;
     if (!overridden) continue;
-    const raw = wrapper.querySelector('[name]').value;
+    const control = wrapper.querySelector('[name]');
+    const raw = control?.value || '';
     if (definition.type === 'percent') {
       const percent = Number(raw);
       if (!Number.isFinite(percent) || percent < 50 || percent > 95) {
         throw new Error('自动压缩阈值必须在 50% 到 95% 之间');
       }
       output[definition.key] = percent / 100;
+    } else if (definition.type === 'boolean') {
+      output[definition.key] = control.querySelector('input').checked;
+    } else if (definition.type === 'model-list' || definition.type === 'provider-list') {
+      output[definition.key] = [...control.querySelectorAll('input[type="checkbox"]:checked')].map((checkbox) => checkbox.value);
     } else {
       output[definition.key] = definition.type === 'list' || definition.type === 'permission-list'
         ? [...new Set(raw.split(/[\n,]+/).map((item) => item.trim()).filter(Boolean))]
@@ -2629,6 +3034,13 @@ function readPolicyForm(form, organization) {
   if (output.allowedSkillIds?.length) {
     const missing = (output.defaultSkillIds || []).filter((skillId) => !output.allowedSkillIds.includes(skillId));
     if (missing.length) throw new Error(`默认 Skill 必须包含在允许范围中：${missing.join('、')}`);
+  }
+  if (output.allowedModels?.length && output.defaultModel && !output.allowedModels.includes(output.defaultModel)) {
+    throw new Error('默认模型必须包含在允许模型中');
+  }
+  if (output.allowedProviderIds?.length && output.defaultModel) {
+    const providerId = output.defaultModel.split('/', 1)[0];
+    if (!output.allowedProviderIds.includes(providerId)) throw new Error('默认模型所属提供商必须包含在允许提供商中');
   }
   return output;
 }
@@ -2710,6 +3122,7 @@ function switchView(view) {
   elements.operationsView.hidden = view !== 'operations';
   elements.governanceView.hidden = view !== 'governance';
   elements.usersView.hidden = view !== 'users';
+  elements.modelCatalogView.hidden = view !== 'model-catalog';
   elements.policiesView.hidden = view !== 'policies';
   elements.auditView.hidden = view !== 'audit';
   document.querySelectorAll('[data-view]').forEach((button) => button.classList.toggle('active', button.dataset.view === view));
@@ -2719,6 +3132,7 @@ function switchView(view) {
     operations: ['分发与排序', '内容运营'],
     governance: ['安装、升级与审核', '安装治理'],
     users: ['账户与权限', '用户管理'],
+    'model-catalog': ['连接、能力与验证', '模型目录'],
     policies: ['空间与组织策略', '策略下发'],
     audit: ['安全与追溯', '审计记录'],
   }[view];
@@ -2728,6 +3142,7 @@ function switchView(view) {
   if (view === 'experts') state.experts.length ? renderExperts() : loadExperts();
   if (view === 'operations') state.collections.length || state.recommendationRules.length ? renderOperations() : loadOperations();
   if (view === 'governance') state.governance ? renderGovernance() : loadGovernance();
+  if (view === 'model-catalog') state.modelCatalog ? renderModelCatalog() : loadModelCatalog();
   if (view === 'policies') state.policies ? renderPolicies() : loadPolicies();
   if (view === 'audit') loadAudit();
 }
@@ -2813,6 +3228,8 @@ document.getElementById('refresh-governance-button').addEventListener('click', l
 document.getElementById('recommendation-simulator-form').addEventListener('submit', runRecommendationSimulation);
 document.getElementById('create-user-button').addEventListener('click', openCreateUser);
 document.getElementById('refresh-users-button').addEventListener('click', loadUsers);
+document.getElementById('create-model-provider-button').addEventListener('click', () => openModelProviderEditor());
+document.getElementById('refresh-model-catalog-button').addEventListener('click', loadModelCatalog);
 document.getElementById('refresh-policies-button').addEventListener('click', loadPolicies);
 document.getElementById('refresh-audit-button').addEventListener('click', loadAudit);
 document.getElementById('skill-search').addEventListener('input', renderSkills);
@@ -2828,6 +3245,8 @@ document.getElementById('governance-upgrade-filter').addEventListener('change', 
 document.getElementById('user-search').addEventListener('input', renderUsers);
 document.getElementById('role-filter').addEventListener('change', renderUsers);
 document.getElementById('status-filter').addEventListener('change', renderUsers);
+document.getElementById('model-catalog-search').addEventListener('input', renderModelCatalog);
+document.getElementById('model-catalog-status-filter').addEventListener('change', renderModelCatalog);
 document.getElementById('policy-search').addEventListener('input', renderPolicies);
 document.getElementById('policy-scope-filter').addEventListener('change', renderPolicies);
 document.getElementById('audit-action-filter').addEventListener('change', loadAudit);

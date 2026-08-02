@@ -23,6 +23,13 @@
     return Math.min(64, Math.max(4, Math.round(parsed)));
   }
 
+  function promptRequiresArtifact(value) {
+    const prompt = String(value || '').trim();
+    if (!prompt) return false;
+    return /(?:生成|创建|制作|导出|整理成|写成).{0,18}(?:文档|文件|报告|预报稿|专题稿|材料|Word|DOCX|PDF|PPTX?|Excel|XLSX)/i.test(prompt)
+      || /(?:create|generate|export|produce|write).{0,40}(?:document|file|report|docx|pdf|pptx?|xlsx)/i.test(prompt);
+  }
+
   function compileCompletionContract(context = {}) {
     const expectedOutputs = Shared.deepClone(context.task?.expectedOutputs || []);
     const capabilities = context.capabilities || {};
@@ -40,7 +47,7 @@
       if (!output || typeof output !== 'object') return false;
       const kind = String(output.kind || output.type || output.delivery || '').toLowerCase();
       return ['artifact', 'file', 'document', 'attachment'].includes(kind);
-    });
+    }) || promptRequiresArtifact(context.task?.prompt);
     const body = {
       version: 1,
       required,
@@ -133,6 +140,8 @@
         '你正在执行一个通用 Agent 任务循环。根据用户目标、会话上下文、已选技能和可用工具持续推进任务。',
         '计划、进度说明、准备执行或“接下来将做什么”都不是最终结果，不得因此结束任务。',
         '只有目标已经实际达成并有可核验依据时，才以 completed 提交 final_output。',
+        '用户要求生成文档、报告或其他文件时，文件本身就是交付结果；必须在当前任务内调用可用成果物工具完成创建和校验，并直接交付，不得只返回正文、文件名、计划或要求用户再次追问。',
+        'artifacts 只能列出本轮工具实际返回且已经验证的成果；URI 必须逐字采用工具结果，禁止拼接、补全或猜测绝对路径。创建或校验失败时不得使用 completed。',
         '需要用户补充信息时使用 blocked；已有可交付结果但仍有缺口时使用 partial；不可恢复错误使用 failed。',
         '不得虚构工具调用、数据、文件、链接或成果。最终状态必须与实际工具结果一致。',
         expected,
@@ -396,6 +405,7 @@
     compileTaskContext,
     runtimeEnvelope,
     compileCompletionContract,
+    promptRequiresArtifact,
     completionJsonSchema,
     completionRecipe,
     parseCompletionEnvelope,

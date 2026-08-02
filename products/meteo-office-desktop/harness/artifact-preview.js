@@ -65,6 +65,7 @@
       title,
       extension: extension.toUpperCase() || (artifactKind(artifact) === 'web' ? 'WEB' : 'FILE'),
       kind: artifactKind(artifact),
+      pageCount: Number(artifact.metadata?.render?.pageCount) || null,
       target,
       surfaceTarget,
       workspace: context.workspace || '',

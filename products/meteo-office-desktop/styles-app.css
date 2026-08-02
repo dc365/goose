@@ -256,12 +256,15 @@
 }
 
 .sidebar {
-  padding: 0 12px 12px;
+  --sidebar-nav-height: 36px;
+  --sidebar-account-height: 44px;
+  overflow: hidden;
+  padding: 0 8px 6px;
 }
 
 .brand-row {
-  min-height: 58px;
-  padding: 14px 10px 10px;
+  min-height: 44px;
+  padding: 4px;
 }
 
 .brand-lockup {
@@ -275,12 +278,281 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 17px;
+  font-size: 15px;
 }
 
 .brand-lockup span {
   white-space: nowrap;
+  font-size: 9px;
+}
+
+.sidebar-sections {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  overflow-x: hidden;
+  overflow-y: auto;
+  margin-top: 12px;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.sidebar-sections .sidebar-section {
+  flex: 0 0 auto;
+  margin-top: 0;
+}
+
+.sidebar-sections .sidebar-section + .sidebar-section {
+  margin-top: 8px;
+}
+
+.sidebar-sections .workspace-section {
+  overflow: visible;
+}
+
+.sidebar-task-section .sidebar-list {
+  gap: 0;
+}
+
+.sidebar-section-title {
+  width: 100%;
+  min-height: 24px;
+  align-items: center;
+  background: transparent;
+  padding: 0 8px 4px;
+  font-size: 11px;
+  text-align: left;
+}
+
+.primary-nav {
+  gap: 0;
+}
+
+.nav-item {
+  min-height: var(--sidebar-nav-height);
+  gap: 8px;
+  font-size: 13px;
+}
+
+.nav-item > .icon {
+  width: 17px;
+  height: 17px;
+}
+
+.workspace-row {
+  gap: 6px;
+  padding: 4px 6px;
+}
+
+.sidebar-task {
+  position: relative;
+  display: flex;
+  min-height: 28px;
+  align-items: center;
+  border-radius: 7px;
+  background: transparent;
+}
+
+.sidebar-task-main {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  min-height: 28px;
+  grid-template-columns: 7px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 5px;
+  border-radius: inherit;
+  background: transparent;
+  padding: 0 4px;
+  color: inherit;
+  text-align: left;
+}
+
+.sidebar-task-main strong {
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-task-main time {
+  color: var(--muted-2);
+  font-size: 8.5px;
+  font-variant-numeric: tabular-nums;
+  transition: opacity 100ms ease;
+}
+
+.sidebar-task .task-status {
+  width: 7px;
+  height: 7px;
+}
+
+.sidebar-task-more {
+  position: absolute;
+  z-index: 2;
+  top: 50%;
+  right: 2px;
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: inherit;
+  color: var(--muted);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%);
+  transition: opacity 100ms ease;
+}
+
+.sidebar-task-rename button {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+}
+
+.sidebar-task-more .icon,
+.sidebar-task-rename .icon {
+  width: 14px;
+  height: 14px;
+}
+
+.sidebar-task:hover .sidebar-task-more,
+.sidebar-task:focus-within .sidebar-task-more,
+.sidebar-task-more.active {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.sidebar-task:hover .sidebar-task-main time,
+.sidebar-task:focus-within .sidebar-task-main time {
+  opacity: 0;
+}
+
+.sidebar-task-more:hover,
+.sidebar-task-more:focus-visible,
+.sidebar-task-rename button:hover,
+.sidebar-task-rename button:focus-visible {
+  background: rgba(31, 36, 46, 0.07);
+  color: var(--text);
+  outline: 0;
+}
+
+.sidebar-task-menu {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% - 2px);
+  right: 2px;
+  display: grid;
+  width: 112px;
+  gap: 2px;
+  border: 1px solid rgba(31, 36, 46, 0.1);
+  border-radius: 8px;
+  background: #fff;
+  padding: 4px;
+  box-shadow: 0 8px 24px rgba(31, 36, 46, 0.14);
+}
+
+.sidebar-task-menu.above {
+  top: auto;
+  bottom: calc(100% - 2px);
+}
+
+.sidebar-task-menu button {
+  display: flex;
+  min-height: 30px;
+  align-items: center;
+  gap: 8px;
+  border-radius: 6px;
+  background: transparent;
+  padding: 0 8px;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 400;
+  text-align: left;
+}
+
+.sidebar-task-menu button:hover,
+.sidebar-task-menu button:focus-visible {
+  background: rgba(31, 36, 46, 0.06);
+  outline: 0;
+}
+
+.sidebar-task-menu button.danger {
+  color: var(--danger);
+}
+
+.sidebar-task-menu button.danger:hover,
+.sidebar-task-menu button.danger:focus-visible {
+  background: var(--danger-soft);
+}
+
+.sidebar-task-menu .icon {
+  width: 14px;
+  height: 14px;
+}
+
+.sidebar-task-rename {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) 24px 24px;
+  gap: 4px;
+  padding: 0 4px 0 6px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.sidebar-task-rename input {
+  width: 100%;
+  min-width: 0;
+  height: 24px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: #fff;
+  padding: 0 7px;
+  font-size: 11px;
+  outline: 0;
+}
+
+.sidebar-task-rename input:focus {
+  border-color: #8fa8e5;
+  box-shadow: 0 0 0 2px rgba(75, 117, 242, 0.1);
+}
+
+.workspace-row > span:nth-child(2) {
+  gap: 2px;
+}
+
+.workspace-row strong {
+  font-size: 12px;
+}
+
+.workspace-row small {
   font-size: 10px;
+}
+
+.sidebar-section-title:hover,
+.sidebar-section-title:focus-visible {
+  color: var(--muted);
+  outline: 0;
+}
+
+.sidebar-section-chevron {
+  transition: transform 140ms ease;
+}
+
+.sidebar-section.collapsed .sidebar-section-chevron {
+  transform: rotate(-90deg);
+}
+
+.sidebar-section.collapsed .sidebar-list {
+  display: none;
 }
 
 .topbar,
@@ -363,24 +635,24 @@
 }
 
 .sidebar-collapsed .sidebar {
-  padding-right: 10px;
-  padding-left: 10px;
+  padding-right: 8px;
+  padding-left: 8px;
 }
 
 .sidebar-collapsed .brand-row,
-.sidebar-collapsed .sidebar-section {
+.sidebar-collapsed .sidebar-sections {
   display: none;
 }
 
 .sidebar-collapsed .primary-nav {
   align-items: center;
-  gap: 7px;
-  padding-top: 10px;
+  gap: 2px;
+  padding-top: 6px;
 }
 
 .sidebar-collapsed .nav-item {
-  width: 44px;
-  min-height: 44px;
+  width: 36px;
+  min-height: 36px;
   justify-content: center;
   gap: 0;
   padding: 0;
@@ -410,8 +682,8 @@
   }
 
   .sidebar {
-    padding-right: 10px;
-    padding-left: 10px;
+    padding-right: 8px;
+    padding-left: 8px;
   }
 
   .window-titlebar {
@@ -426,13 +698,13 @@
 
   .primary-nav {
     align-items: center;
-    gap: 7px;
-    padding-top: 10px;
+    gap: 2px;
+    padding-top: 6px;
   }
 
   .nav-item {
-    width: 44px;
-    min-height: 44px;
+    width: 36px;
+    min-height: 36px;
     justify-content: center;
     gap: 0;
     padding: 0;

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self' data: blob:; worker-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>成果物预览</title>
+    <link rel="stylesheet" href="node_modules/pdfjs-dist/web/pdf_viewer.css" />
+    <link rel="stylesheet" href="artifact-preview.css" />
+  </head>
+  <body>
+    <div id="preview-container" role="main" aria-label="文档页面">
+      <div id="pdf-viewer" class="pdfViewer"></div>
+    </div>
+    <button id="ask-selection" type="button" hidden>
+      <span>问 MeteoMate</span>
+      <kbd>⌘I</kbd>
+    </button>
+    <section id="preview-empty" aria-live="polite">
+      <span class="preview-empty-mark">M</span>
+      <strong>正在准备文档</strong>
+      <p>加载完成后，可选择任意段落并追问 MeteoMate。</p>
+    </section>
+    <script type="module" src="artifact-preview-renderer.mjs"></script>
+  </body>
+</html>

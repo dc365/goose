@@ -33,6 +33,10 @@ func (s *Server) updateOrganizationPolicy(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
 		return
 	}
+	if err := s.validatePolicySettingsAgainstCatalog(input); err != nil {
+		writeError(w, http.StatusBadRequest, "policy_catalog_mismatch", err.Error())
+		return
+	}
 	state, err := s.policies.SetOrganization(input)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "policy_update_failed", err.Error())
@@ -50,6 +54,12 @@ func (s *Server) updateRolePolicy(w http.ResponseWriter, r *http.Request) {
 	var input policy.Patch
 	if err := decodeJSON(w, r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+	effective := s.policies.Snapshot().Organization
+	applyModelPolicyPatch(&effective, input)
+	if err := s.validatePolicySettingsAgainstCatalog(effective); err != nil {
+		writeError(w, http.StatusBadRequest, "policy_catalog_mismatch", err.Error())
 		return
 	}
 	state, err := s.policies.SetRole(role, input)
@@ -80,13 +90,20 @@ func (s *Server) updateUserPolicy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	userID := strings.TrimSpace(r.PathValue("id"))
-	if _, ok := s.auth.Accounts().Get(userID); !ok {
+	user, ok := s.auth.Accounts().Get(userID)
+	if !ok {
 		writeError(w, http.StatusNotFound, "user_not_found", "用户不存在")
 		return
 	}
 	var input policy.Patch
 	if err := decodeJSON(w, r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+	effective := s.policies.Effective("", user.Role).Settings
+	applyModelPolicyPatch(&effective, input)
+	if err := s.validatePolicySettingsAgainstCatalog(effective); err != nil {
+		writeError(w, http.StatusBadRequest, "policy_catalog_mismatch", err.Error())
 		return
 	}
 	state, err := s.policies.SetUser(userID, input)

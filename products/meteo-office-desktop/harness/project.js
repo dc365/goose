@@ -19,7 +19,12 @@
     return Object.fromEntries(
       Object.entries(source)
         .filter(([connectorId, toolNames]) => allowed.has(connectorId) && Array.isArray(toolNames))
-        .map(([connectorId, toolNames]) => [connectorId, Shared.uniqueStrings(toolNames)])
+        .map(([connectorId, toolNames]) => [
+          connectorId,
+          connectorId === 'office-artifacts' && root.MeteoMateOfficeConnector?.upgradeToolSelection
+            ? root.MeteoMateOfficeConnector.upgradeToolSelection(toolNames)
+            : Shared.uniqueStrings(toolNames),
+        ])
     );
   }
 

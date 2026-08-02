@@ -52,7 +52,6 @@
   function semanticRecord(record = {}) {
     const metadata = Shared.deepClone(record.metadata || {});
     delete metadata.responseId;
-    delete metadata.publicationAttestation;
     const semantic = {
       ...record,
       metadata,

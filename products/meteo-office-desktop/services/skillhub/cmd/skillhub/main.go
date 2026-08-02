@@ -15,6 +15,7 @@ import (
 
 	"github.com/dc365/goose/products/meteo-office-desktop/services/skillhub/internal/api"
 	"github.com/dc365/goose/products/meteo-office-desktop/services/skillhub/internal/auth"
+	"github.com/dc365/goose/products/meteo-office-desktop/services/skillhub/internal/modelcatalog"
 	"github.com/dc365/goose/products/meteo-office-desktop/services/skillhub/internal/policy"
 	"github.com/dc365/goose/products/meteo-office-desktop/services/skillhub/internal/store"
 	"github.com/dc365/goose/products/meteo-office-desktop/services/skillhub/internal/trust"
@@ -43,6 +44,8 @@ func main() {
 	fatalIf(err, "open refresh session store")
 	policies, err := policy.Open(filepath.Join(root, "policy"))
 	fatalIf(err, "open organization policy store")
+	models, err := modelcatalog.Open(filepath.Join(root, "models"))
+	fatalIf(err, "open organization model catalog")
 	bootstrapUsername := strings.TrimSpace(os.Getenv("METEOMATE_SKILLHUB_BOOTSTRAP_USERNAME"))
 	bootstrapPassword := os.Getenv("METEOMATE_SKILLHUB_BOOTSTRAP_PASSWORD")
 	if accounts.Count() == 0 && bootstrapUsername != "" && bootstrapPassword != "" {
@@ -59,7 +62,7 @@ func main() {
 	signer, err := trust.OpenOrCreate(filepath.Join(root, "trust"))
 	fatalIf(err, "open signing key")
 	server, err := api.New(api.Config{
-		Store: dataStore, Signer: signer, Authenticator: auth.NewWithRefreshStore(tokens, accounts, 30*time.Minute, refreshSessions), Policies: policies, Logger: logger,
+		Store: dataStore, Signer: signer, Authenticator: auth.NewWithRefreshStore(tokens, accounts, 30*time.Minute, refreshSessions), Policies: policies, ModelCatalog: models, Logger: logger,
 	})
 	fatalIf(err, "create API server")
 	if *seedDir != "" {

@@ -6,7 +6,7 @@ const path = require('node:path');
 const SecurityMode = require('./security-mode.cjs');
 
 const DEFAULT_BASE_URL = 'http://127.0.0.1:8088';
-const PROFILE_VERSION = 2;
+const PROFILE_VERSION = 3;
 const DEFAULT_DESKTOP_PREFERENCES = Object.freeze({
   sendOnEnter: true,
   showExecutionProcess: true,
@@ -25,9 +25,12 @@ function unrestrictedPolicy(user = {}) {
     orgId: user.orgId || '',
     defaultSpaceId: user.defaultSpaceId || (user.id ? `personal:${user.id}` : ''),
     profileBindingId: user.id ? `user:${user.id}` : '',
+    modelCatalog: normalizeManagedModelCatalog(null),
     policy: {
       defaultModel: '',
       allowedModels: [],
+      allowedProviderIds: [],
+      requireVerifiedModels: false,
       defaultSkillIds: [],
       allowedConnectorIds: [],
       defaultPermissionProfileId: '',
@@ -50,9 +53,12 @@ function normalizePolicyContext(value, user = {}) {
     orgId: String(input.orgId || fallback.orgId),
     defaultSpaceId: String(input.defaultSpaceId || fallback.defaultSpaceId),
     profileBindingId: String(input.profileBindingId || fallback.profileBindingId),
+    modelCatalog: normalizeManagedModelCatalog(input.modelCatalog),
     policy: {
       defaultModel: String(policy.defaultModel || ''),
       allowedModels: Array.isArray(policy.allowedModels) ? policy.allowedModels.map(String) : [],
+      allowedProviderIds: Array.isArray(policy.allowedProviderIds) ? policy.allowedProviderIds.map(String) : [],
+      requireVerifiedModels: Boolean(policy.requireVerifiedModels),
       defaultSkillIds: Array.isArray(policy.defaultSkillIds) ? policy.defaultSkillIds.map(String) : [],
       allowedConnectorIds: Array.isArray(policy.allowedConnectorIds) ? policy.allowedConnectorIds.map(String) : [],
       defaultPermissionProfileId: String(policy.defaultPermissionProfileId || ''),
@@ -62,6 +68,68 @@ function normalizePolicyContext(value, user = {}) {
       revision: Number(policy.revision || 0),
       updatedAt: policy.updatedAt || null,
     },
+  };
+}
+
+function normalizeManagedVerification(value = {}) {
+  const input = value && typeof value === 'object' ? value : {};
+  const status = ['verified', 'failed'].includes(input.status) ? input.status : 'untested';
+  return {
+    status,
+    verifiedAt: String(input.checkedAt || input.verifiedAt || ''),
+    checkedBy: String(input.checkedBy || ''),
+    message: String(input.message || ''),
+    tests: (Array.isArray(input.checks) ? input.checks : input.tests || []).map((check) => ({
+      id: String(check?.id || ''),
+      label: ({ text: '文本响应', streaming: '流式输出', tool_call: '工具调用', image_input: '图片输入', reasoning: '推理模式' })[check?.id] || String(check?.label || check?.id || ''),
+      status: ['passed', 'failed', 'skipped'].includes(check?.status) ? check.status : 'skipped',
+      message: String(check?.message || ''),
+    })).filter((check) => check.id),
+  };
+}
+
+function normalizeManagedModelCatalog(value) {
+  const input = value && typeof value === 'object' ? value : {};
+  const providers = Array.isArray(input.providers) ? input.providers.map((provider) => ({
+    id: String(provider?.id || ''),
+    name: String(provider?.name || provider?.id || ''),
+    description: String(provider?.description || ''),
+    enabled: provider?.enabled !== false,
+    presetMode: ['volcengine-ark', 'openai-compatible'].includes(provider?.presetMode)
+      ? provider.presetMode
+      : 'openai-compatible',
+    protocol: ['chat_completions', 'responses'].includes(provider?.protocol)
+      ? provider.protocol
+      : 'chat_completions',
+    streamingMode: ['auto', 'on', 'off'].includes(provider?.streamingMode)
+      ? provider.streamingMode
+      : 'auto',
+    baseUrl: String(provider?.baseUrl || ''),
+    endpointPath: String(provider?.endpointPath || '').replace(/^\/+|\/+$/g, ''),
+    requiresAuth: provider?.requiresAuth !== false,
+    credentialMode: ['none', 'local', 'secret_ref'].includes(provider?.credentialMode)
+      ? provider.credentialMode
+      : 'local',
+    credentialConfigured: Boolean(provider?.credentialConfigured),
+    verification: normalizeManagedVerification(provider?.verification),
+    models: (Array.isArray(provider?.models) ? provider.models : []).map((model) => ({
+      id: String(model?.id || ''),
+      name: String(model?.name || model?.id || ''),
+      enabled: model?.enabled !== false,
+      toolCall: Boolean(model?.toolCall),
+      imageInput: Boolean(model?.imageInput),
+      reasoning: Boolean(model?.reasoning),
+      contextLimit: Math.max(0, Number(model?.contextLimit || 0)) || null,
+      maxOutputTokens: Math.max(0, Number(model?.maxOutputTokens || 0)) || null,
+      verification: normalizeManagedVerification(model?.verification),
+    })).filter((model) => model.id),
+  })).filter((provider) => provider.id) : [];
+  return {
+    apiVersion: String(input.apiVersion || 'meteomate.ai/v1'),
+    kind: String(input.kind || 'OrganizationModelCatalog'),
+    revision: Math.max(0, Number(input.revision || 0)),
+    providers,
+    updatedAt: input.updatedAt || null,
   };
 }
 
@@ -94,6 +162,46 @@ function parseModelRef(value) {
   const separator = text.indexOf('/');
   if (separator <= 0 || separator === text.length - 1) return null;
   return { providerId: text.slice(0, separator), modelId: text.slice(separator + 1) };
+}
+
+function normalizeCustomProviderMetadata(value = {}) {
+  const input = value && typeof value === 'object' ? value : {};
+  const verification = input.verification && typeof input.verification === 'object'
+    ? {
+        status: ['verified', 'failed'].includes(input.verification.status)
+          ? input.verification.status
+          : 'untested',
+        verifiedAt: String(input.verification.verifiedAt || ''),
+        durationMs: Math.max(0, Number(input.verification.durationMs || 0)),
+        endpointUrl: String(input.verification.endpointUrl || ''),
+        protocol: ['chat_completions', 'responses'].includes(input.verification.protocol)
+          ? input.verification.protocol
+          : '',
+        message: String(input.verification.message || ''),
+        tests: Array.isArray(input.verification.tests)
+          ? input.verification.tests.map((test) => ({
+              id: String(test?.id || ''),
+              label: String(test?.label || ''),
+              status: ['passed', 'failed', 'skipped'].includes(test?.status) ? test.status : 'skipped',
+              message: String(test?.message || ''),
+            })).filter((test) => test.id)
+          : [],
+      }
+    : null;
+  return {
+    managedProviderId: String(input.managedProviderId || '').trim(),
+    presetMode: ['auto', 'volcengine-ark', 'openai-compatible'].includes(input.presetMode)
+      ? input.presetMode
+      : 'auto',
+    protocolMode: ['auto', 'chat_completions', 'responses'].includes(input.protocolMode)
+      ? input.protocolMode
+      : 'auto',
+    streamingMode: ['auto', 'on', 'off'].includes(input.streamingMode)
+      ? input.streamingMode
+      : 'auto',
+    endpointPathOverride: String(input.endpointPathOverride || '').trim().replace(/^\/+|\/+$/g, ''),
+    verification,
+  };
 }
 
 function normalizeBaseURL(value) {
@@ -345,6 +453,24 @@ function createProfileContext({
     throw new Error(`策略读取失败（${policyResponse.status}）`);
   }
 
+  async function fetchModelCatalog(baseUrl, token) {
+    const response = await fetchImpl(`${baseUrl}/v1/me/model-catalog`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (response.ok) return response.json();
+    if (response.status === 404) return null;
+    throw new Error(`模型目录读取失败（${response.status}）`);
+  }
+
+  async function fetchManagementContext(baseUrl, token) {
+    const [policyContext, modelCatalog] = await Promise.all([
+      fetchPolicy(baseUrl, token),
+      fetchModelCatalog(baseUrl, token),
+    ]);
+    return { ...(policyContext || {}), modelCatalog };
+  }
+
   async function revokeRemote(baseUrl, sessionToken, refreshToken = '') {
     try {
       await fetchImpl(`${baseUrl}/v1/auth/logout`, {
@@ -409,7 +535,7 @@ function createProfileContext({
     await rejectSupersededSession(generation, baseUrl, payload);
     let policyContext = null;
     try {
-      policyContext = await fetchPolicy(baseUrl, payload.sessionToken);
+      policyContext = await fetchManagementContext(baseUrl, payload.sessionToken);
     } catch (error) {
       await revokeRemote(baseUrl, payload.sessionToken, payload.refreshToken);
       throw new Error(`无法读取当前用户的组织策略：${error.message}`);
@@ -472,7 +598,7 @@ function createProfileContext({
         try { credentialStore.clear(); } catch {}
         notice = `${error.message}，本次关闭后需要重新登录`;
       }
-      const policyContext = await fetchPolicy(baseUrl, payload.sessionToken);
+      const policyContext = await fetchManagementContext(baseUrl, payload.sessionToken);
       await rejectSupersededSession(generation, baseUrl, payload);
       return activate({
         baseUrl,
@@ -688,9 +814,14 @@ function createProfileContext({
     const modelId = String(input.modelId || '').trim();
     if (!providerId) throw new Error('请选择可用的 Provider');
     const policy = currentPolicyContext().policy;
-    const selected = modelRef(providerId, modelId);
+    const providerMetadata = customProviderMetadata(providerId);
+    const policyProviderId = providerMetadata.managedProviderId || providerId;
+    const selected = modelRef(policyProviderId, modelId);
     if (policy.allowedModels.length && (!selected || !policy.allowedModels.includes(selected))) {
       throw new Error('所选模型不在管理员允许范围内');
+    }
+    if (policy.allowedProviderIds.length && !policy.allowedProviderIds.includes(policyProviderId)) {
+      throw new Error('所选提供商不在管理员允许范围内');
     }
     const preferences = loadPreferences();
     preferences.apiVersion = 'meteomate.ai/v1';
@@ -733,6 +864,35 @@ function createProfileContext({
     return customModels[modelRef(provider, modelId)];
   }
 
+  function customProviderMetadata(providerId) {
+    const provider = String(providerId || '').trim();
+    const customProviders = loadPreferences().customProviders;
+    return normalizeCustomProviderMetadata(
+      customProviders && typeof customProviders === 'object' ? customProviders[provider] : {}
+    );
+  }
+
+  function saveCustomProviderMetadata(providerId, input = {}) {
+    if (!active?.profileKey) throw new Error('请先登录再保存模型设置');
+    const provider = String(providerId || '').trim();
+    if (!provider) throw new Error('提供商配置缺少 Provider ID');
+    const preferences = loadPreferences();
+    const customProviders = preferences.customProviders && typeof preferences.customProviders === 'object'
+      ? { ...preferences.customProviders }
+      : {};
+    customProviders[provider] = normalizeCustomProviderMetadata({
+      ...(customProviders[provider] || {}),
+      ...input,
+    });
+    preferences.apiVersion = 'meteomate.ai/v1';
+    preferences.kind = 'DesktopUserPreferences';
+    preferences.version = 1;
+    preferences.customProviders = customProviders;
+    preferences.updatedAt = new Date().toISOString();
+    atomicWrite(currentPaths().preferences, preferences);
+    return customProviders[provider];
+  }
+
   function deleteCustomModelMetadata(providerId, modelId) {
     if (!active?.profileKey) return;
     const provider = String(providerId || '').trim();
@@ -756,33 +916,113 @@ function createProfileContext({
         Object.entries(preferences.customModels).filter(([key]) => !key.startsWith(`${provider}/`))
       );
     }
+    if (preferences.customProviders && typeof preferences.customProviders === 'object') {
+      delete preferences.customProviders[provider];
+    }
     if (preferences.model?.providerId === provider) preferences.model = { providerId: '', modelId: '' };
     preferences.updatedAt = new Date().toISOString();
     atomicWrite(currentPaths().preferences, preferences);
   }
 
+  function managedProviderMetadata(providerId, managedProviderId = '') {
+    const localProviderId = String(providerId || '').trim();
+    const organizationProviderId = String(managedProviderId || '').trim()
+      || customProviderMetadata(localProviderId).managedProviderId
+      || localProviderId;
+    const provider = currentPolicyContext().modelCatalog.providers.find((entry) => entry.id === organizationProviderId);
+    if (!provider) return null;
+    return {
+      organizationManaged: true,
+      organizationProviderId: provider.id,
+      displayName: provider.name,
+      description: provider.description,
+      apiUrl: provider.baseUrl,
+      requiresAuth: provider.requiresAuth,
+      presetMode: provider.presetMode,
+      protocolMode: provider.protocol,
+      streamingMode: provider.streamingMode,
+      endpointPathOverride: provider.endpointPath,
+      verification: provider.verification,
+      credentialMode: provider.credentialMode,
+      credentialConfigured: provider.credentialConfigured,
+      models: provider.models.map((model) => ({ ...model })),
+    };
+  }
+
+  function managedProviderEntries() {
+    return currentPolicyContext().modelCatalog.providers
+      .map((provider) => managedProviderMetadata(provider.id, provider.id))
+      .filter(Boolean);
+  }
+
   function filterModelSettings(settings = {}) {
     const policy = currentPolicyContext().policy;
     const allowed = new Set(policy.allowedModels || []);
-    const customModels = loadPreferences().customModels || {};
+    const allowedProviders = new Set(policy.allowedProviderIds || []);
+    const catalog = currentPolicyContext().modelCatalog;
+    const managedProviders = new Map((catalog.providers || []).map((provider) => [provider.id, provider]));
+    const catalogManaged = managedProviders.size > 0;
+    const preferences = loadPreferences();
+    const customModels = preferences.customModels || {};
+    const customProviders = preferences.customProviders || {};
     const providers = (settings.providers || [])
-      .map((provider) => ({
-        ...provider,
-        models: (provider.models || [])
-          .filter((model) => !allowed.size || allowed.has(modelRef(provider.id, model.id)))
-          .map((model) => {
-            const metadata = customModels[modelRef(provider.id, model.id)] || {};
-            return {
-              ...model,
-              ...metadata,
-              name: metadata.name || model.name || model.id,
-            };
-          }),
-      }))
-      .filter((provider) => !allowed.size || provider.models.length > 0);
-    const available = new Set();
+      .map((provider) => {
+        const providerMetadata = normalizeCustomProviderMetadata(customProviders[provider.id]);
+        const organizationProviderId = provider.organizationProviderId
+          || providerMetadata.managedProviderId
+          || provider.id;
+        const managedProvider = managedProviders.get(organizationProviderId) || null;
+        const managedModels = new Map((managedProvider?.models || []).map((model) => [model.id, model]));
+        return {
+          ...provider,
+          ...providerMetadata,
+          ...(managedProvider ? {
+            name: managedProvider.name,
+            description: managedProvider.description,
+            organizationManaged: true,
+            organizationProviderId: managedProvider.id,
+            credentialMode: managedProvider.credentialMode,
+            credentialConfigured: managedProvider.credentialConfigured,
+            organizationConnection: {
+              baseUrl: managedProvider.baseUrl,
+              endpointPath: managedProvider.endpointPath,
+              protocol: managedProvider.protocol,
+              streamingMode: managedProvider.streamingMode,
+            },
+            verification: managedProvider.verification,
+          } : {}),
+          models: (provider.models || [])
+            .filter((model) => {
+              const managedModel = managedModels.get(model.id);
+              if (allowedProviders.size && !allowedProviders.has(organizationProviderId)) return false;
+              if (catalogManaged && (!managedProvider || !managedModel || !managedModel.enabled)) return false;
+              if (allowed.size && !allowed.has(modelRef(organizationProviderId, model.id))) return false;
+              if (policy.requireVerifiedModels && managedModel?.verification?.status !== 'verified') return false;
+              return true;
+            })
+            .map((model) => {
+              const metadata = customModels[modelRef(provider.id, model.id)] || {};
+              const managedModel = managedModels.get(model.id) || null;
+              return {
+                ...model,
+                ...metadata,
+                ...(managedModel || {}),
+                name: managedModel?.name || metadata.name || model.name || model.id,
+                organizationManaged: Boolean(managedModel),
+              };
+            }),
+        };
+      })
+      .filter((provider) => provider.models.length > 0);
+    const available = new Map();
     for (const provider of providers) {
-      for (const model of provider.models || []) available.add(modelRef(provider.id, model.id));
+      if (provider.localProviderAvailable === false || !provider.configured) continue;
+      const organizationProviderId = provider.organizationProviderId || provider.id;
+      for (const model of provider.models || []) {
+        const localReference = modelRef(provider.id, model.id);
+        available.set(localReference, localReference);
+        available.set(modelRef(organizationProviderId, model.id), localReference);
+      }
     }
     const preference = loadPreferences().model || {};
     const candidates = [
@@ -790,9 +1030,9 @@ function createProfileContext({
       policy.defaultModel,
       modelRef(settings.providerId, settings.modelId),
     ].filter(Boolean);
-    let selected = candidates.find((candidate) => available.has(candidate)) || '';
+    let selected = candidates.map((candidate) => available.get(candidate)).find(Boolean) || '';
     if (!selected) {
-      const firstProvider = providers[0];
+      const firstProvider = providers.find((provider) => provider.localProviderAvailable !== false && provider.configured);
       selected = firstProvider?.models?.[0] ? modelRef(firstProvider.id, firstProvider.models[0].id) : '';
     }
     const parsed = parseModelRef(selected);
@@ -805,9 +1045,19 @@ function createProfileContext({
         revision: policy.revision || 0,
         defaultModel: policy.defaultModel || '',
         allowedModels: [...(policy.allowedModels || [])],
+        allowedProviderIds: [...(policy.allowedProviderIds || [])],
+        requireVerifiedModels: Boolean(policy.requireVerifiedModels),
         managedDefault: Boolean(policy.defaultModel),
-        restricted: allowed.size > 0,
+        restricted: allowed.size > 0 || allowedProviders.size > 0 || catalogManaged,
         autoCompactThreshold: policy.autoCompactThreshold,
+        catalogRevision: catalog.revision || 0,
+        catalogProviderCount: catalog.providers.length,
+        catalogModelCount: catalog.providers.reduce((total, provider) => total + provider.models.length, 0),
+        unavailableProviderIds: catalog.providers
+          .filter((provider) => !providers.some((local) => (
+            local.organizationProviderId || local.id
+          ) === provider.id && local.localProviderAvailable !== false))
+          .map((provider) => provider.id),
       },
     };
   }
@@ -818,12 +1068,29 @@ function createProfileContext({
     if (!next.providerId && !next.modelId && policy.defaultModel) {
       const selected = parseModelRef(policy.defaultModel);
       if (selected) {
-        next.providerId = selected.providerId;
+        const customProviders = loadPreferences().customProviders || {};
+        next.providerId = Object.entries(customProviders)
+          .find(([, metadata]) => normalizeCustomProviderMetadata(metadata).managedProviderId === selected.providerId)?.[0]
+          || selected.providerId;
         next.modelId = selected.modelId;
       }
     }
-    if (policy.allowedModels.length && next.providerId && next.modelId && !policy.allowedModels.includes(modelRef(next.providerId, next.modelId))) {
+    const providerMetadata = customProviderMetadata(next.providerId);
+    const organizationProviderId = providerMetadata.managedProviderId || next.providerId;
+    if (policy.allowedModels.length && next.providerId && next.modelId && !policy.allowedModels.includes(modelRef(organizationProviderId, next.modelId))) {
       throw new Error('当前模型不在管理员允许范围内，请重新选择');
+    }
+    if (policy.allowedProviderIds.length && next.providerId && !policy.allowedProviderIds.includes(organizationProviderId)) {
+      throw new Error('当前提供商不在管理员允许范围内，请重新选择');
+    }
+    const catalog = currentPolicyContext().modelCatalog;
+    if (catalog.providers.length && next.providerId && next.modelId) {
+      const provider = catalog.providers.find((entry) => entry.id === organizationProviderId && entry.enabled);
+      const model = provider?.models.find((entry) => entry.id === next.modelId && entry.enabled);
+      if (!model) throw new Error('当前模型未在组织目录登记或已经停用');
+      if (policy.requireVerifiedModels && model.verification.status !== 'verified') {
+        throw new Error('组织策略只允许使用已验证模型');
+      }
     }
     const permissionProfileID = String(
       next.permissionProfileId
@@ -877,6 +1144,10 @@ function createProfileContext({
     desktopPreferences,
     saveDesktopPreferences,
     saveModelPreference,
+    customProviderMetadata,
+    managedProviderMetadata,
+    managedProviderEntries,
+    saveCustomProviderMetadata,
     saveCustomModelMetadata,
     deleteCustomModelMetadata,
     deleteCustomProviderMetadata,
@@ -898,7 +1169,9 @@ module.exports = {
   normalizeBaseURL,
   profileKey,
   normalizePolicyContext,
+  normalizeManagedModelCatalog,
   normalizeDesktopPreferences,
+  normalizeCustomProviderMetadata,
   modelRef,
   parseModelRef,
 };

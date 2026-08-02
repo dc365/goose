@@ -40,7 +40,12 @@ function normalizeToolSelections(value, connectorIds = []) {
   return Object.fromEntries(
     Object.entries(source)
       .filter(([connectorId, toolNames]) => allowed.has(connectorId) && Array.isArray(toolNames))
-      .map(([connectorId, toolNames]) => [connectorId, [...new Set(toolNames.map(String).filter(Boolean))]])
+      .map(([connectorId, toolNames]) => [
+        connectorId,
+        connectorId === 'office-artifacts'
+          ? window.MeteoMateOfficeConnector.upgradeToolSelection(toolNames)
+          : [...new Set(toolNames.map(String).filter(Boolean))],
+      ])
   );
 }
 
@@ -243,6 +248,7 @@ const PROFILE_MIGRATION_BACKUP_KEY = 'meteomate-desktop-state-profile-migration-
 const initialState = {
   view: 'catalog',
   sidebarCollapsed: false,
+  collapsedSidebarSections: [],
   catalogTab: 'experts',
   category: '全部',
   search: '',
@@ -270,6 +276,7 @@ const initialState = {
   draftToolSelections: {},
   draftCapabilityMode: 'inherit',
   draftFileReferences: [],
+  draftArtifactSelections: [],
   draftPermissionProfileId: null,
   draftProviderId: null,
   draftModelId: null,
@@ -317,6 +324,7 @@ const settingsDialog = {
   providerDraft: null,
   modelDraft: null,
   pendingProvider: null,
+  providerTest: { status: 'idle', result: null },
 };
 const desktopSettings = {
   status: 'idle',
@@ -351,12 +359,18 @@ const catalogUI = {
   detailExpertId: null,
 };
 const teamUI = {
+  collapsed: false,
   expanded: false,
   selectedMemberId: null,
+  expandedResultIds: new Set(),
 };
 const messageUI = {
   editingTaskId: null,
   editingMessageId: null,
+};
+const sidebarTaskUI = {
+  editingTaskId: null,
+  menuTaskId: null,
 };
 const previewUI = {
   open: false,
@@ -365,14 +379,6 @@ const previewUI = {
   tabs: [],
   width: 560,
   surfaceStates: {},
-};
-const publicationUI = {
-  open: false,
-  taskId: null,
-  busy: '',
-  busyTargetId: null,
-  error: '',
-  qcWaiverReasons: {},
 };
 const automationUI = {
   tab: 'schedules',
@@ -398,6 +404,8 @@ function effectiveOrganizationPolicy() {
   return accountSession.policyContext?.policy || {
     defaultModel: '',
     allowedModels: [],
+    allowedProviderIds: [],
+    requireVerifiedModels: false,
     defaultSkillIds: [],
     allowedConnectorIds: [],
     defaultPermissionProfileId: '',
@@ -867,6 +875,28 @@ function escapeHtml(value) {
     .replaceAll("'", '&#039;');
 }
 
+function artifactPathLabel(value) {
+  const target = String(value || '').trim();
+  if (!target || /^https?:\/\//i.test(target)) return '';
+  if (!/^file:/i.test(target)) return target;
+  try {
+    const parsed = new URL(target);
+    const decoded = decodeURIComponent(parsed.pathname);
+    return window.meteoDesktop?.platform === 'win32' && /^\/[A-Za-z]:/.test(decoded)
+      ? decoded.slice(1)
+      : decoded;
+  } catch {
+    return target;
+  }
+}
+
+function artifactPathAttributes(value) {
+  const target = String(value || '').trim();
+  const label = artifactPathLabel(target);
+  if (!label) return '';
+  return `data-artifact-path="${escapeHtml(target)}" data-artifact-path-label="${escapeHtml(label)}" aria-description="文件位置：${escapeHtml(label)}"`;
+}
+
 function renderMarkdown(value) {
   const source = String(value || '');
   if (!window.marked?.parse || !window.DOMPurify?.sanitize) {
@@ -1010,6 +1040,7 @@ function icon(name) {
     refresh: '<svg viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 9A7 7 0 0 1 18 6l2 2M18 15a7 7 0 0 1-11.9 3L4 16"/></svg>',
     copy: '<svg viewBox="0 0 24 24"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>',
     edit: '<svg viewBox="0 0 24 24"><path d="m14 5 5 5M4 20l3.5-.7L19 7.8a2 2 0 0 0-2.8-2.8L4.7 16.5 4 20Z"/></svg>',
+    trash: '<svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5"/></svg>',
     thumbUp: '<svg viewBox="0 0 24 24"><path d="M7 10v10H3V10h4Zm0 9h10.2a2 2 0 0 0 1.9-1.4l1.7-5.3A2 2 0 0 0 18.9 10H14l.7-3.2A2.7 2.7 0 0 0 12 3.5L7 10v9Z"/></svg>',
     thumbDown: '<svg viewBox="0 0 24 24"><path d="M7 14V4H3v10h4Zm0-9h10.2a2 2 0 0 1 1.9 1.4l1.7 5.3a2 2 0 0 1-1.9 2.3H14l.7 3.2A2.7 2.7 0 0 1 12 20.5L7 14V5Z"/></svg>',
     close: '<svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg>',
@@ -1093,6 +1124,12 @@ function restoreInteractionSnapshot(snapshot) {
   return scrollRestored;
 }
 
+function scrollTeamProcessFeeds() {
+  document.querySelectorAll('[data-team-process-feed][data-follow-output="true"]').forEach((feed) => {
+    feed.scrollTop = feed.scrollHeight;
+  });
+}
+
 function render() {
   window.clearInterval(responseElapsedTimer);
   responseElapsedTimer = null;
@@ -1130,6 +1167,7 @@ function render() {
     if (scroll && !scrollRestored) {
       scroll.scrollTop = getActiveTask()?.messages?.length ? scroll.scrollHeight : 0;
     }
+    scrollTeamProcessFeeds();
     updateLiveResponseDurations();
     if (document.querySelector('[data-live-duration]')) {
       responseElapsedTimer = window.setInterval(updateLiveResponseDurations, 250);
@@ -1193,6 +1231,7 @@ function renderWindowTitlebar() {
     : '';
   let navigation = '';
   let actions = '';
+  let previewToggle = '';
 
   if (state.view === 'projects') {
     title = '项目';
@@ -1246,28 +1285,27 @@ function renderWindowTitlebar() {
     titleIcon = 'more';
   }
 
-  if (taskMode && task) {
-    actions = [
-      task.artifacts?.length
-        ? `<button class="titlebar-action ${previewUI.open && previewUI.taskId === task.id ? 'active' : ''}" data-preview-latest>${icon('file')} 预览成果 <span>${task.artifacts.length}</span></button>`
-        : '',
-      `<button class="titlebar-action ${publicationUI.open && publicationUI.taskId === task.id ? 'active' : ''}" data-publication-toggle>${icon('shield')} 发布审核</button>`,
-    ].join('');
+  if (taskMode && task?.artifacts?.length) {
+    actions = `<button class="titlebar-action ${previewUI.open && previewUI.taskId === task.id ? 'active' : ''}" data-preview-latest>${icon('file')} 预览成果 <span>${task.artifacts.length}</span></button>`;
   } else if (assistantMode && task?.artifacts?.length) {
     actions = `<button class="titlebar-action ${previewUI.open && previewUI.taskId === task.id ? 'active' : ''}" data-preview-latest>${icon('file')} 预览成果 <span>${task.artifacts.length}</span></button>`;
+  }
+  if (task?.artifacts?.length) {
+    const previewOpen = previewUI.open && previewUI.taskId === task.id;
+    previewToggle = `<button class="titlebar-button titlebar-preview-toggle ${previewOpen ? 'active' : ''}" type="button" data-preview-panel-toggle aria-label="${previewOpen ? '收起预览区' : '展开预览区'}" title="${previewOpen ? '收起预览区' : '展开预览区'}" aria-expanded="${previewOpen}">${icon('sidebar')}</button>`;
   }
 
   return `
     <header class="window-titlebar ${state.sidebarCollapsed ? 'sidebar-collapsed' : ''}" aria-label="MeteoMate 窗口标题栏">
       <div class="window-titlebar-sidebar">
-        <button class="titlebar-button titlebar-toggle" id="sidebar-toggle" type="button" aria-label="${state.sidebarCollapsed ? '展开侧栏' : '收起侧栏'}" title="${state.sidebarCollapsed ? '展开侧栏' : '收起侧栏'}" aria-expanded="${!state.sidebarCollapsed}">${icon('sidebar')}</button>
+        <button class="titlebar-button titlebar-toggle" id="sidebar-toggle" type="button" data-sidebar-toggle aria-label="${state.sidebarCollapsed ? '展开侧栏' : '收起侧栏'}" title="${state.sidebarCollapsed ? '展开侧栏' : '收起侧栏'}" aria-expanded="${!state.sidebarCollapsed}">${icon('sidebar')}</button>
         <button class="titlebar-button titlebar-search" id="sidebar-search" type="button" aria-label="搜索专家、技能和工具" title="搜索专家、技能和工具">${icon('search')}</button>
       </div>
       <div class="window-titlebar-main">
         ${backButton}
         ${navigation}
         ${title ? `<div class="window-titlebar-page-title">${icon(titleIcon)}<strong>${escapeHtml(title)}</strong></div>` : ''}
-        <div class="window-titlebar-actions">${actions}</div>
+        <div class="window-titlebar-actions">${actions}${previewToggle}</div>
       </div>
       ${renderWindowControls()}
     </header>`;
@@ -1342,6 +1380,11 @@ function renderSidebar() {
   const taskHistory = state.tasks.filter((task) => task.kind !== 'assistant');
   const recentTasks = taskHistory.slice(0, 7);
   const recentProjects = state.projects.slice(0, 4);
+  const collapsedSections = new Set(
+    Array.isArray(state.collapsedSidebarSections) ? state.collapsedSidebarSections : []
+  );
+  const tasksCollapsed = collapsedSections.has('tasks');
+  const workspacesCollapsed = collapsedSections.has('workspaces');
   return `
     <aside class="sidebar" aria-label="主导航">
       <div class="brand-row">
@@ -1358,26 +1401,28 @@ function renderSidebar() {
         ${navItem('catalog', 'expert', '专家 · 技能 · 工具', state.view === 'catalog')}
         ${navItem('automation', 'automation', '自动化', state.view === 'automation')}
       </nav>
-      <section class="sidebar-section">
-        <div class="sidebar-section-title"><span>任务 (${taskHistory.length})</span><span class="sidebar-section-chevron">${icon('down')}</span></div>
-        <div class="sidebar-list">
-          ${
-            recentTasks.length
-              ? recentTasks.map(renderSidebarTask).join('')
-              : '<div class="sidebar-empty">还没有任务</div>'
-          }
-        </div>
-      </section>
-      <section class="sidebar-section workspace-section">
-        <div class="sidebar-section-title"><span>空间 (${state.projects.length})</span><span class="sidebar-section-chevron">${icon('down')}</span></div>
-        <div class="sidebar-list">
-          ${
-            recentProjects.length
-              ? recentProjects.map(renderSidebarProject).join('')
-              : `<button class="workspace-row empty-workspace" data-action="add-project">${icon('plus')}<span>添加项目</span></button>`
-          }
-        </div>
-      </section>
+      <div class="sidebar-sections">
+        <section class="sidebar-section sidebar-task-section ${tasksCollapsed ? 'collapsed' : ''}">
+          <button class="sidebar-section-title" type="button" data-sidebar-section-toggle="tasks" aria-expanded="${!tasksCollapsed}"><span>任务 (${taskHistory.length})</span><span class="sidebar-section-chevron">${icon('down')}</span></button>
+          <div class="sidebar-list">
+            ${
+              recentTasks.length
+                ? recentTasks.map(renderSidebarTask).join('')
+                : '<div class="sidebar-empty">还没有任务</div>'
+            }
+          </div>
+        </section>
+        <section class="sidebar-section workspace-section ${workspacesCollapsed ? 'collapsed' : ''}">
+          <button class="sidebar-section-title" type="button" data-sidebar-section-toggle="workspaces" aria-expanded="${!workspacesCollapsed}"><span>空间 (${state.projects.length})</span><span class="sidebar-section-chevron">${icon('down')}</span></button>
+          <div class="sidebar-list">
+            ${
+              recentProjects.length
+                ? recentProjects.map(renderSidebarProject).join('')
+                : `<button class="workspace-row empty-workspace" data-action="add-project">${icon('plus')}<span>添加项目</span></button>`
+            }
+          </div>
+        </section>
+      </div>
       ${renderSidebarAccount()}
     </aside>
   `;
@@ -1409,15 +1454,38 @@ function navItem(view, iconName, label, active) {
   return `<button class="nav-item ${active ? 'active' : ''}" data-nav="${view}" aria-label="${label}" title="${label}">${icon(iconName)}<span>${label}</span></button>`;
 }
 
-function renderSidebarTask(task) {
+function renderSidebarTask(task, index, tasks) {
+  const taskId = escapeHtml(task.id);
+  const title = escapeHtml(task.title);
+  const time = formatTime(task.updatedAt || task.createdAt);
+  const description = `${task.title} · ${task.expertName} · ${time}`;
+  const menuOpen = sidebarTaskUI.menuTaskId === task.id;
+  const menuAbove = Array.isArray(tasks) && tasks.length >= 5 && index >= tasks.length - 2;
+  if (sidebarTaskUI.editingTaskId === task.id) {
+    return `
+      <form class="sidebar-task sidebar-task-rename" data-sidebar-task-rename-form="${taskId}">
+        <span class="task-status ${task.status || 'draft'}"></span>
+        <input type="text" value="${title}" maxlength="120" aria-label="重命名任务" autocomplete="off" />
+        <button type="submit" aria-label="保存任务名称" title="保存">${icon('check')}</button>
+        <button type="button" data-sidebar-task-rename-cancel aria-label="取消重命名" title="取消">${icon('close')}</button>
+      </form>
+    `;
+  }
   return `
-    <button class="sidebar-task ${state.activeTaskId === task.id ? 'active' : ''}" data-task-id="${task.id}">
-      <span class="task-status ${task.status || 'draft'}"></span>
-      <span class="task-copy">
-        <strong>${escapeHtml(task.title)}</strong>
-        <small>${escapeHtml(task.expertName)} · ${formatTime(task.updatedAt || task.createdAt)}</small>
-      </span>
-    </button>
+    <div class="sidebar-task ${state.activeTaskId === task.id ? 'active' : ''}">
+      <button class="sidebar-task-main" type="button" data-task-id="${taskId}" title="${escapeHtml(description)}">
+        <span class="task-status ${task.status || 'draft'}"></span>
+        <strong>${title}</strong>
+        <time>${escapeHtml(time)}</time>
+      </button>
+      <button class="sidebar-task-more ${menuOpen ? 'active' : ''}" type="button" data-sidebar-task-menu="${taskId}" aria-haspopup="menu" aria-expanded="${menuOpen}" aria-label="打开 ${title} 的任务菜单" title="更多操作">${icon('more')}</button>
+      ${menuOpen ? `
+        <div class="sidebar-task-menu ${menuAbove ? 'above' : ''}" role="menu" aria-label="${title} 的任务操作">
+          <button type="button" role="menuitem" data-sidebar-task-rename="${taskId}">${icon('edit')}<span>重命名</span></button>
+          <button class="danger" type="button" role="menuitem" data-sidebar-task-delete="${taskId}">${icon('trash')}<span>删除</span></button>
+        </div>
+      ` : ''}
+    </div>
   `;
 }
 
@@ -1713,7 +1781,9 @@ function renderCapabilityCard(item, tab) {
 function teamMemberStatusText(status) {
   return {
     pending: '待分派',
+    waiting: '等待',
     running: '执行中',
+    in_progress: '执行中',
     completed: '已完成',
     failed: '失败',
     blocked: '上游受阻',
@@ -1735,6 +1805,230 @@ function renderTeamStatusIndicator(status) {
   return `<span class="team-status-indicator ${escapeHtml(status || 'pending')}" aria-hidden="true">${icon(iconName)}</span>`;
 }
 
+function teamRunForMessage(task, message) {
+  const runs = Array.isArray(task?.teamRuns) ? task.teamRuns : [];
+  if (message?.teamRunId) {
+    const linked = runs.find((run) => run?.id === message.teamRunId);
+    if (linked) return linked;
+    if (task?.teamRun?.id === message.teamRunId) return task.teamRun;
+  }
+  if (task?.teamRun?.responseId === message?.id) return task.teamRun;
+  return runs.find((run) => run?.responseId === message?.id) || null;
+}
+
+function teamRunStatusText(run) {
+  if (run?.phase === 'synthesizing') return '负责人汇总中';
+  return {
+    running: '专家协作中',
+    completed: '协作已完成',
+    partial: '已交付可用部分',
+    failed: '协作未完成',
+    cancelled: '协作已停止',
+    interrupted: '协作已中断',
+  }[run?.status] || '专家协作中';
+}
+
+function teamPhaseStepState(run, index) {
+  const phaseIndex = {
+    dispatching: 0,
+    executing: 1,
+    members: 1,
+    synthesizing: 2,
+    completed: 3,
+  }[run?.phase] ?? (['partial', 'completed'].includes(run?.status) ? 3 : 1);
+  if (phaseIndex > index) return 'completed';
+  if (phaseIndex === index && ['running', 'synthesizing'].includes(run?.status)) return 'running';
+  if (['failed', 'cancelled', 'interrupted'].includes(run?.status) && phaseIndex === index) return run.status;
+  return 'pending';
+}
+
+function teamMemberHasEnteredRun(member) {
+  if (!member || typeof member !== 'object') return false;
+  return Boolean(
+    member.activatedAt
+    || member.startedAt
+    || member.sessionId
+    || member.summary
+    || member.detail
+    || member.activities?.length
+    || member.updates?.length
+    || ['running', 'completed', 'failed', 'blocked'].includes(member.status)
+  );
+}
+
+function teamProcessFeedEntries(member) {
+  const terminalStatus = ['completed', 'failed', 'blocked', 'cancelled', 'interrupted'].includes(member?.status)
+    ? member.status
+    : null;
+  const activeStatuses = new Set(['streaming', 'running', 'pending', 'in_progress']);
+  const normalizedStatus = (entry) => (
+    terminalStatus && activeStatuses.has(entry?.status)
+      ? { ...entry, status: terminalStatus }
+      : entry
+  );
+  const stored = Array.isArray(member?.updates)
+    ? member.updates.filter((entry) => entry && typeof entry === 'object' && String(entry.text || '').trim())
+    : [];
+  if (stored.length) {
+    if (!terminalStatus) return stored.slice(-16).map(normalizedStatus);
+    const terminalMessage = terminalStatus === 'completed'
+      ? '已完成阶段分析并提交交接结果。'
+      : '阶段分析已结束，保留已完成的过程记录。';
+    const normalized = [];
+    stored.forEach((entry) => {
+      if (entry.source !== 'message') {
+        normalized.push(normalizedStatus(entry));
+        return;
+      }
+      if (normalized.some((candidate) => candidate.id === 'drafting-handoff')) return;
+      normalized.push(normalizedStatus({
+        ...entry,
+        id: 'drafting-handoff',
+        source: 'status',
+        text: terminalMessage,
+      }));
+    });
+    return normalized.slice(-16);
+  }
+  const fallback = [];
+  if (member?.detail) {
+    fallback.push({
+      id: 'legacy-detail',
+      source: member.detailSource || 'status',
+      text: member.detail,
+      status: member.status === 'running' ? 'streaming' : member.status,
+      createdAt: member.detailUpdatedAt || member.startedAt || 0,
+    });
+  }
+  (Array.isArray(member?.activities) ? member.activities : []).forEach((activity) => fallback.push({
+    id: `legacy-activity:${activity.id || activity.title}`,
+    source: 'activity',
+    text: activity.title || '工具执行',
+    toolName: activity.toolName || null,
+    status: activity.status || 'running',
+    createdAt: activity.createdAt || activity.updatedAt || 0,
+  }));
+  return fallback
+    .sort((left, right) => Number(left.createdAt || 0) - Number(right.createdAt || 0))
+    .slice(-16)
+    .map(normalizedStatus);
+}
+
+function renderTeamProcessFeedEntry(entry, member) {
+  const source = entry.source || 'status';
+  if (source === 'activity') {
+    return `<div class="team-process-feed-entry activity ${escapeHtml(entry.status || 'running')}">${icon('tool')}<span>${escapeHtml(entry.text || entry.toolName || '工具执行')}</span><small>${escapeHtml(teamMemberStatusText(entry.status))}</small></div>`;
+  }
+  const text = String(entry.text || '').trim();
+  if (!text) return '';
+  const streaming = member.status === 'running' && entry.status === 'streaming';
+  return `<div class="team-process-feed-entry ${escapeHtml(source)} ${streaming ? 'streaming' : ''}"><span class="team-process-feed-marker" aria-hidden="true"></span>${source === 'message' ? `<div class="team-process-feed-markdown markdown-body">${renderMarkdown(text)}</div>` : `<p>${escapeHtml(text)}</p>`}</div>`;
+}
+
+function renderTeamHandoffResult(member, run) {
+  const result = String(member?.summary || '').trim();
+  if (!result) return '';
+  const resultId = `${run.id}:${member.id}`;
+  const expanded = teamUI.expandedResultIds.has(resultId);
+  const longResult = result.length > 480 || result.split(/\r?\n/).length > 8;
+  return `
+    <section class="team-handoff-result ${expanded ? 'expanded' : ''}">
+      <header>
+        <span>${icon('check')}<strong>交接结果</strong></span>
+        ${longResult ? `<button type="button" data-team-result-toggle="${escapeHtml(resultId)}" aria-expanded="${expanded}" aria-label="${expanded ? '收起' : '展开'}${escapeHtml(member.name)}的完整交接结果"><span>${expanded ? '收起' : '展开'}</span>${icon('down')}</button>` : ''}
+      </header>
+      <div class="team-handoff-markdown markdown-body ${longResult && !expanded ? 'clamped' : ''}">${renderMarkdown(result)}</div>
+    </section>`;
+}
+
+function renderTeamProcessMember(member, run, memberNames) {
+  const dependencyNames = (member.dependsOn || []).map((id) => memberNames.get(id) || id);
+  const waitingDetail = member.status === 'pending' && dependencyNames.length
+    ? `等待 ${dependencyNames.join('、')} 的交接结果`
+    : member.status === 'pending'
+      ? '等待交付负责人分派'
+      : '';
+  const statusLabel = member.status === 'pending' && dependencyNames.length
+    ? '等待依赖'
+    : teamMemberStatusText(member.status);
+  const feedEntries = teamProcessFeedEntries(member);
+  const update = member.error || (!feedEntries.length ? waitingDetail : '');
+  const updateLabel = member.error
+    ? '阻塞原因'
+    : member.status === 'pending'
+          ? '当前状态'
+          : '当前进展';
+  const selected = teamUI.selectedMemberId === member.id && run.id === getActiveTask()?.teamRun?.id;
+  const duration = member.startedAt
+    ? formatDuration(Math.max(0, Number(member.completedAt || Date.now()) - Number(member.startedAt)))
+    : '';
+  return `
+    <article
+      class="team-process-member ${escapeHtml(member.status || 'pending')} ${selected ? 'selected' : ''}"
+      data-team-process-member="${escapeHtml(member.id)}"
+      data-team-run-id="${escapeHtml(run.id)}"
+      tabindex="-1"
+    >
+      <span class="avatar avatar-${member.avatar.codePointAt(0) % 6}">${escapeHtml(member.avatar)}</span>
+      <div class="team-process-member-copy">
+        <header>
+          <span><strong>${escapeHtml(member.name)}</strong><small role="status" aria-live="polite">${escapeHtml(statusLabel)}${duration ? ` · ${escapeHtml(duration)}` : ''}</small></span>
+          ${renderTeamStatusIndicator(member.status)}
+        </header>
+        <p class="team-process-objective">${escapeHtml(member.objective || '完成分配的专业分析并向负责人交接。')}</p>
+        ${feedEntries.length ? `<div class="team-process-feed" data-team-process-feed data-follow-output="${member.status === 'running'}" role="list" aria-label="${escapeHtml(`${member.name}过程更新`)}">${feedEntries.map((entry) => renderTeamProcessFeedEntry(entry, member)).join('')}</div>` : ''}
+        ${renderTeamHandoffResult(member, run)}
+        ${update ? `<div class="team-process-update ${member.error ? 'failed' : ''}"><b>${escapeHtml(updateLabel)}</b><span>${escapeHtml(truncate(update, 360))}</span></div>` : ''}
+      </div>
+    </article>`;
+}
+
+function renderTeamRunProcess(message, run) {
+  const members = Array.isArray(run?.members) ? run.members : [];
+  const visibleMembers = members.filter(teamMemberHasEnteredRun);
+  const completed = members.filter((member) => member.status === 'completed').length;
+  const issueCount = members.filter((member) => ['failed', 'blocked', 'cancelled', 'interrupted'].includes(member.status)).length;
+  const active = ['running', 'synthesizing'].includes(run?.status);
+  const memberNames = new Map(members.map((member) => [member.id, member.name]));
+  const duration = Math.max(0, Number(run.completedAt || Date.now()) - Number(run.startedAt || message.startedAt || Date.now()));
+  const steps = ['任务分派', '专家执行', '负责人汇总'];
+  const leadStatus = run.phase === 'synthesizing'
+    ? 'running'
+    : ['completed', 'partial'].includes(run.status)
+      ? 'completed'
+      : ['failed', 'cancelled', 'interrupted'].includes(run.status)
+        ? run.status
+        : 'pending';
+  const leadDetail = run.phase === 'synthesizing'
+    ? `正在整合 ${completed} 位专家的交接结果`
+    : ['completed', 'partial'].includes(run.status)
+      ? issueCount
+        ? `已基于 ${completed} 份可用结果完成交付，${issueCount} 位成员异常`
+        : `已整合 ${completed} 位专家的交接结果`
+      : '将在成员完成后统一校验并交付';
+  return `
+    <details class="team-run-process ${escapeHtml(run.status || 'running')}" data-team-run-process="${escapeHtml(run.id)}" ${active ? 'open' : ''}>
+      <summary role="status" aria-live="polite">
+        <span class="team-run-summary-copy"><strong>${escapeHtml(teamRunStatusText(run))}</strong><small>${completed} / ${members.length} 位完成${issueCount ? ` · ${issueCount} 位异常` : ''}</small></span>
+        <span class="team-run-summary-meta"><em ${active ? 'data-live-duration' : ''} data-started-at="${run.startedAt || ''}">${formatDuration(duration)}</em>${icon('down')}</span>
+      </summary>
+      <div class="team-run-process-panel">
+        <ol class="team-phase-rail" aria-label="专家团协作阶段">
+          ${steps.map((label, index) => `<li class="${teamPhaseStepState(run, index)}"><span>${index + 1}</span><strong>${label}</strong></li>`).join('')}
+        </ol>
+        ${visibleMembers.length ? `
+          <div class="team-process-heading" aria-label="成员进展，展示任务状态、可核验操作和交接结果，不展示模型内部思维链" title="不展示模型内部思维链"><strong>成员进展</strong><small>${active ? `${visibleMembers.length} 位已入场 · 其余成员按需调度` : `${completed} 位完成${issueCount ? ` · ${issueCount} 位异常` : ''}`}</small></div>
+          <div class="team-process-members">${visibleMembers.map((member) => renderTeamProcessMember(member, run, memberNames)).join('')}</div>
+        ` : ''}
+        <article class="team-process-lead ${escapeHtml(leadStatus)}">
+          <span class="avatar">责</span>
+          <div><strong>交付负责人</strong><small>${escapeHtml(leadDetail)}</small></div>
+          ${renderTeamStatusIndicator(leadStatus)}
+        </article>
+      </div>
+    </details>`;
+}
+
 function renderTeamCollaborationBar(task, expert) {
   if (expert?.kind !== 'team') return '';
   const definition = task
@@ -1742,9 +2036,10 @@ function renderTeamCollaborationBar(task, expert) {
     : teamDefinitionForExpert(expert);
   if (!definition) return '';
   const run = task?.teamRun || window.MeteoMateHarness.ExpertTeam.createRunState(definition);
-  const selectedMemberId = teamUI.selectedMemberId || run.members[0]?.id;
-  const selectedMember = run.members.find((member) => member.id === selectedMemberId) || run.members[0];
-  const memberNames = new Map(run.members.map((member) => [member.id, member.name]));
+  const visibleMembers = run.members.filter(teamMemberHasEnteredRun);
+  const selectedMemberId = teamUI.selectedMemberId || visibleMembers[0]?.id;
+  const terminal = ['completed', 'partial', 'failed', 'cancelled', 'interrupted'].includes(run.status);
+  const collapsed = teamUI.collapsed || (terminal && !teamUI.expanded);
   const leadStatus = ['completed', 'partial'].includes(run.status)
     ? 'completed'
     : ['failed', 'cancelled', 'interrupted'].includes(run.status)
@@ -1758,50 +2053,49 @@ function renderTeamCollaborationBar(task, expert) {
     ? '正在汇总交付'
     : run.phase === 'executing'
       ? '正在协调成员'
-      : ['completed', 'partial'].includes(run.status)
-        ? '负责人 · 已交付'
-        : '负责人 · 统一交付';
+      : run.status === 'partial'
+        ? '已交付可用部分'
+        : run.status === 'completed'
+          ? '负责人 · 已交付'
+          : '负责人 · 统一交付';
+  const compactMembers = [
+    { id: 'lead', name: '交付负责人', avatar: expert.avatar },
+    ...visibleMembers,
+  ];
 
   return `
     <section class="team-collaboration" aria-label="${escapeHtml(definition.name)}协作状态">
-      <div class="team-chip-row">
-        <button type="button" class="team-chip team-lead-chip ${leadStatus}" data-team-toggle aria-expanded="${teamUI.expanded}">
-          <span class="avatar avatar-${expert.avatar.codePointAt(0) % 6}">${escapeHtml(expert.avatar)}</span>
-          <span class="team-chip-copy"><strong>交付负责人</strong><small>${escapeHtml(leadDetail)}</small></span>
-          ${renderTeamStatusIndicator(leadStatus)}
-        </button>
-        ${run.members.map((member) => `
-          <button
-            type="button"
-            class="team-chip team-member-chip ${escapeHtml(member.status)} ${selectedMember?.id === member.id && teamUI.expanded ? 'selected' : ''}"
-            data-team-member-id="${escapeHtml(member.id)}"
-            aria-pressed="${selectedMember?.id === member.id && teamUI.expanded}"
-            title="${escapeHtml(member.objective || member.name)}"
-          >
-            <span class="avatar avatar-${member.avatar.codePointAt(0) % 6}">${escapeHtml(member.avatar)}</span>
-            <span class="team-chip-copy"><strong>${escapeHtml(member.name)}</strong><small>${escapeHtml(teamMemberStatusText(member.status))}</small></span>
-            ${renderTeamStatusIndicator(member.status)}
-          </button>
-        `).join('')}
-        <button type="button" class="team-expand-button ${teamUI.expanded ? 'expanded' : ''}" data-team-toggle aria-label="${teamUI.expanded ? '收起' : '展开'}专家团详情" aria-expanded="${teamUI.expanded}">
+      <div class="team-chip-row ${collapsed ? 'collapsed' : ''}">
+        ${collapsed ? `
+          <div class="team-avatar-stack" role="group" aria-label="${escapeHtml(`${definition.name}，${compactMembers.length} 位成员`)}">
+            ${compactMembers.map((member) => `<span class="avatar avatar-${member.avatar.codePointAt(0) % 6}" title="${escapeHtml(member.name)}">${escapeHtml(member.avatar)}</span>`).join('')}
+          </div>
+        ` : `
+          <div class="team-chip team-lead-chip ${leadStatus}">
+            <span class="avatar avatar-${expert.avatar.codePointAt(0) % 6}">${escapeHtml(expert.avatar)}</span>
+            <span class="team-chip-copy"><strong>交付负责人</strong><small>${escapeHtml(leadDetail)}</small></span>
+            ${renderTeamStatusIndicator(leadStatus)}
+          </div>
+          ${visibleMembers.map((member) => `
+            <button
+              type="button"
+              class="team-chip team-member-chip ${escapeHtml(member.status)} ${selectedMemberId === member.id && teamUI.expanded ? 'selected' : ''}"
+              data-team-member-id="${escapeHtml(member.id)}"
+              data-team-run-id="${escapeHtml(run.id)}"
+              aria-label="定位到${escapeHtml(member.name)}的协作过程"
+              aria-pressed="${selectedMemberId === member.id && teamUI.expanded}"
+              title="${escapeHtml(member.objective || member.name)}"
+            >
+              <span class="avatar avatar-${member.avatar.codePointAt(0) % 6}">${escapeHtml(member.avatar)}</span>
+              <span class="team-chip-copy"><strong>${escapeHtml(member.name)}</strong><small>${escapeHtml(teamMemberStatusText(member.status))}</small></span>
+              ${renderTeamStatusIndicator(member.status)}
+            </button>
+          `).join('')}
+        `}
+        ${visibleMembers.length ? `<button type="button" class="team-expand-button ${collapsed ? 'collapsed' : ''}" data-team-collapse aria-label="${collapsed ? '展开' : '收起'}专家团成员" aria-expanded="${!collapsed}">
           ${icon('down')}
-        </button>
+        </button>` : ''}
       </div>
-      ${teamUI.expanded && selectedMember ? `
-        <article class="team-member-detail">
-          <header>
-            <span class="avatar avatar-${selectedMember.avatar.codePointAt(0) % 6}">${escapeHtml(selectedMember.avatar)}</span>
-            <span><strong>${escapeHtml(selectedMember.name)}</strong><small>${escapeHtml(teamMemberStatusText(selectedMember.status))}${selectedMember.sessionId ? ` · 独立会话 ${escapeHtml(String(selectedMember.sessionId).slice(0, 8))}` : ''}</small></span>
-            ${renderTeamStatusIndicator(selectedMember.status)}
-          </header>
-          <p>${escapeHtml(selectedMember.objective || '完成分配的专业分析并向负责人交接。')}</p>
-          ${selectedMember.dependsOn?.length ? `<div class="team-dependencies"><span>等待交接</span>${selectedMember.dependsOn.map((id) => `<b>${escapeHtml(memberNames.get(id) || id)}</b>`).join('')}</div>` : ''}
-          ${selectedMember.detail ? `<div class="team-member-update"><span>当前进展</span><p>${escapeHtml(truncate(selectedMember.detail, 300))}</p></div>` : ''}
-          ${selectedMember.summary ? `<div class="team-member-update completed"><span>交接摘要</span><p>${escapeHtml(truncate(selectedMember.summary, 520))}</p></div>` : ''}
-          ${selectedMember.error ? `<div class="team-member-update failed"><span>阻塞原因</span><p>${escapeHtml(truncate(selectedMember.error, 360))}</p></div>` : ''}
-          ${selectedMember.activities?.length ? `<div class="team-member-activities">${selectedMember.activities.slice(-3).map((activity) => `<span>${icon('tool')}<b>${escapeHtml(activity.title || '工具执行')}</b><small>${escapeHtml(teamMemberStatusText(activity.status))}</small></span>`).join('')}</div>` : ''}
-        </article>
-      ` : ''}
     </section>
   `;
 }
@@ -1824,6 +2118,18 @@ function renderArtifactPreviewPanel(task) {
   const address = surfaceState.address || activeTab.surfaceTarget || activeTab.target;
   const loading = Boolean(surfaceState.loading);
   const error = surfaceState.error || '';
+  const previewKind = surfaceState.kind || activeTab.kind;
+  const documentMode = ['document', 'office'].includes(previewKind);
+  const pageCount = surfaceState.pageCount || activeTab.pageCount;
+  const documentDetail = loading
+    ? activeTab.extension === 'PDF'
+      ? '正在加载页面…'
+      : `正在将 ${activeTab.extension} 转换为只读预览…`
+    : [
+        pageCount ? `${pageCount} 页` : '只读预览',
+        surfaceState.imageBacked ? '高保真' : '',
+        surfaceState.cached ? '已缓存' : '',
+      ].filter(Boolean).join(' · ');
   return `
     <aside class="artifact-preview-panel" aria-label="成果物预览区">
       <div
@@ -1842,11 +2148,12 @@ function renderArtifactPreviewPanel(task) {
           ${tabs.map((tab) => `
             <div class="artifact-preview-tab ${tab.id === activeTab.id ? 'active' : ''}">
               <button
+                class="artifact-path-target"
                 type="button"
                 role="tab"
                 aria-selected="${tab.id === activeTab.id}"
                 data-preview-tab="${escapeHtml(tab.id)}"
-                title="${escapeHtml(tab.title)}"
+                ${artifactPathAttributes(tab.target)}
               >
                 <span class="artifact-preview-tab-type">${escapeHtml(tab.extension)}</span>
                 <strong>${escapeHtml(tab.title)}</strong>
@@ -1855,19 +2162,25 @@ function renderArtifactPreviewPanel(task) {
             </div>
           `).join('')}
         </div>
-        <button type="button" class="artifact-preview-panel-close" data-preview-panel-close aria-label="收起预览区" title="收起预览区">${icon('sidebar')}</button>
       </header>
-      <div class="artifact-preview-toolbar">
-        <div class="artifact-preview-navigation" role="group" aria-label="预览导航">
-          <button type="button" data-preview-navigate="back" aria-label="后退" title="后退" ${surfaceState.canGoBack ? '' : 'disabled'}>${icon('back')}</button>
-          <button type="button" data-preview-navigate="forward" aria-label="前进" title="前进" ${surfaceState.canGoForward ? '' : 'disabled'}>${icon('chevron')}</button>
-        </div>
-        <form class="artifact-preview-address" id="artifact-preview-address-form">
-          <span>${escapeHtml(activeTab.kind === 'web' ? 'WEB' : activeTab.extension)}</span>
-          <input id="artifact-preview-address-input" value="${escapeHtml(address)}" aria-label="预览地址" autocomplete="off" spellcheck="false" />
-        </form>
-        <button type="button" class="${loading ? 'loading' : ''}" data-preview-navigate="${loading ? 'stop' : 'reload'}" aria-label="${loading ? '停止加载' : '刷新'}" title="${loading ? '停止加载' : '刷新'}">${loading ? icon('close') : icon('refresh')}</button>
-        <button type="button" data-preview-open-external aria-label="在外部打开" title="在外部打开">${icon('external')}</button>
+      <div class="artifact-preview-toolbar ${documentMode ? 'document-mode' : ''}">
+        ${documentMode ? `
+          <div class="artifact-preview-document-info artifact-path-target" ${artifactPathAttributes(activeTab.target)}>
+            <span>${escapeHtml(activeTab.extension)}</span>
+            <div><strong>${escapeHtml(activeTab.title)}</strong><small id="artifact-preview-document-detail">${escapeHtml(documentDetail)}</small></div>
+          </div>
+        ` : `
+          <div class="artifact-preview-navigation" role="group" aria-label="预览导航">
+            <button type="button" data-preview-navigate="back" aria-label="后退" title="后退" ${surfaceState.canGoBack ? '' : 'disabled'}>${icon('back')}</button>
+            <button type="button" data-preview-navigate="forward" aria-label="前进" title="前进" ${surfaceState.canGoForward ? '' : 'disabled'}>${icon('chevron')}</button>
+          </div>
+          <form class="artifact-preview-address" id="artifact-preview-address-form">
+            <span>${escapeHtml(activeTab.kind === 'web' ? 'WEB' : activeTab.extension)}</span>
+            <input id="artifact-preview-address-input" value="${escapeHtml(address)}" aria-label="预览地址" autocomplete="off" spellcheck="false" />
+          </form>
+        `}
+        <button type="button" class="${loading ? 'loading' : ''}" data-preview-navigate="${loading ? 'stop' : 'reload'}" aria-label="${loading ? '停止加载' : '刷新'}" title="${loading ? '停止加载' : '刷新'}" ${loading && !surfaceState.id ? 'disabled' : ''}>${loading ? icon('close') : icon('refresh')}</button>
+        <button type="button" class="${documentMode ? 'artifact-preview-open-button' : ''}" data-preview-open-external aria-label="使用系统应用打开" title="使用系统应用打开">${icon('external')}${documentMode ? '<span>打开</span>' : ''}</button>
       </div>
       <div class="artifact-preview-surface-shell">
         <div
@@ -1876,326 +2189,21 @@ function renderArtifactPreviewPanel(task) {
           role="tabpanel"
           aria-label="${escapeHtml(activeTab.title)}预览"
           data-preview-id="${escapeHtml(activeTab.id)}"
+          data-preview-original-target="${escapeHtml(activeTab.target)}"
           data-preview-target="${escapeHtml(activeTab.surfaceTarget)}"
           data-preview-workspace="${escapeHtml(activeTab.workspace)}"
+          data-preview-task-id="${escapeHtml(activeTab.taskId || task.id)}"
+          data-preview-artifact-id="${escapeHtml(activeTab.artifactId || '')}"
         ></div>
-        <div class="artifact-preview-surface-status ${error ? 'error' : ''}" id="artifact-preview-surface-status" ${error ? '' : 'hidden'}>
+        <div class="artifact-preview-surface-status ${error ? 'error' : loading ? 'loading' : ''}" id="artifact-preview-surface-status" ${error || loading ? '' : 'hidden'}>
           ${icon(error ? 'warning' : 'file')}
           <strong>${error ? '暂时无法预览' : '正在准备预览'}</strong>
-          <p>${escapeHtml(error || 'MeteoMate 正在打开成果物。')}</p>
+          <p>${escapeHtml(error || documentDetail || 'MeteoMate 正在打开成果物。')}</p>
           ${error ? '<button type="button" data-preview-open-external>使用外部应用打开</button>' : ''}
         </div>
       </div>
     </aside>
   `;
-}
-
-function publicationGateForTask(task) {
-  const api = window.MeteoMateHarness.PublicationState;
-  const publication = task?.publication || {};
-  try {
-    if (!publication.dirty && api.cachedRequestMatchesTask(task) && publication.gate) {
-      return publication.gate;
-    }
-    return api.evaluate(task, null);
-  } catch (error) {
-    return {
-      ready: false,
-      blockers: [error?.message || String(error)],
-      warnings: [],
-      checkedAt: null,
-    };
-  }
-}
-
-function publicationQcReasonKey(taskId, evidenceId) {
-  return `${String(taskId || '')}:${String(evidenceId || '')}`;
-}
-
-function publicationEvidenceLabel(record = {}) {
-  const subject = record.variable || record.evidenceType || record.id || '';
-  const station = record.metadata?.stationName || record.metadata?.stationId || '';
-  return [subject, station].filter(Boolean).join(' · ');
-}
-
-function renderPublicationQcReview(task, publication, gate, checked) {
-  const qcPolicy = window.MeteoMateHarness.QcPolicy;
-  const qc = gate?.qc || {};
-  const findings = Array.isArray(qc.findings) ? qc.findings : [];
-  const evidenceById = new Map(
-    (Array.isArray(task.evidence) ? task.evidence : [])
-      .map((record) => [String(record?.id || ''), record])
-  );
-  const statusCounts = qc.statusCounts || {};
-  const statusItems = qcPolicy.STATUSES
-    .map((status) => ({ status, count: Number(statusCounts[status]) || 0 }))
-    .filter((item) => item.count > 0);
-  const activeWaiverIds = new Set(
-    Array.isArray(qc.activeWaiverIds) ? qc.activeWaiverIds.map(String) : []
-  );
-  const activeWaivers = (Array.isArray(publication.qcWaivers) ? publication.qcWaivers : [])
-    .filter((waiver) => activeWaiverIds.has(String(waiver?.id || '')));
-  const pendingFindings = findings.filter((finding) => finding?.waivable && !finding.waiverId);
-  const hardBlockerCount = findings.filter((finding) => !finding?.valid && !finding?.waivable).length;
-  const policyVersion = String(qc.policyVersion || gate?.policy?.qcPolicyVersion || qcPolicy.POLICY_VERSION);
-  const shortPolicyVersion = policyVersion.split('/').pop() || policyVersion;
-
-  const activeWaiverMarkup = activeWaivers.length
-    ? activeWaivers.map((waiver) => {
-        const record = evidenceById.get(String(waiver.evidenceId || '')) || {};
-        const busy = publicationUI.busy === 'revoke-qc-waiver'
-          && publicationUI.busyTargetId === waiver.id;
-        return `
-          <article class="publication-qc-waiver">
-            <header>
-              <span><strong>${escapeHtml(publicationEvidenceLabel(record) || waiver.evidenceId)}</strong><small>${escapeHtml(waiver.evidenceId || '')}</small></span>
-              <em>有效豁免</em>
-            </header>
-            <p>${escapeHtml(waiver.reason || '未提供豁免理由')}</p>
-            <small>${escapeHtml([
-              waiver.reviewerName || waiver.reviewerId || '未知复核人',
-              waiver.approvedAt ? `批准 ${formatDateTime(waiver.approvedAt)}` : '',
-              waiver.expiresAt ? `到期 ${formatDateTime(waiver.expiresAt)}` : '',
-            ].filter(Boolean).join(' · '))}</small>
-            <button
-              type="button"
-              class="publication-danger-button"
-              data-publication-revoke-qc-waiver="${escapeHtml(waiver.id)}"
-              ${!checked || publicationUI.busy ? 'disabled' : ''}
-            >${busy ? '撤销中…' : '撤销豁免'}</button>
-          </article>`;
-      }).join('')
-    : '<p class="publication-qc-empty">当前没有活跃的 QC 豁免。</p>';
-
-  const pendingWaiverMarkup = pendingFindings.length
-    ? pendingFindings.map((finding) => {
-        const evidenceId = String(finding.evidenceId || '');
-        const record = evidenceById.get(evidenceId) || {};
-        const reason = publicationUI.qcWaiverReasons[
-          publicationQcReasonKey(task.id, evidenceId)
-        ] || '';
-        const busy = publicationUI.busy === 'waive-qc'
-          && publicationUI.busyTargetId === evidenceId;
-        return `
-          <article class="publication-qc-waiver-editor">
-            <header>
-              <span><strong>${escapeHtml(publicationEvidenceLabel(record) || evidenceId)}</strong><small>${escapeHtml(evidenceId)}</small></span>
-              <em>QC ${escapeHtml(qcPolicy.labelForStatus(finding.qcStatus))}</em>
-            </header>
-            <label>
-              <span>人工豁免理由</span>
-              <textarea
-                data-publication-qc-waiver-reason="${escapeHtml(evidenceId)}"
-                minlength="8"
-                maxlength="1000"
-                placeholder="说明已核查的资料、判断依据和接受风险的原因，至少 8 个字符"
-                ${publicationUI.busy ? 'disabled' : ''}
-              >${escapeHtml(reason)}</textarea>
-            </label>
-            <button
-              type="button"
-              class="publication-waiver-button"
-              data-publication-waive-qc="${escapeHtml(evidenceId)}"
-              ${!checked || publicationUI.busy ? 'disabled' : ''}
-            >${busy ? '创建中…' : '创建豁免记录'}</button>
-            ${checked ? '' : '<small class="publication-qc-hint">先运行发布检查，确认当前 Evidence 与成果物未发生变化。</small>'}
-          </article>`;
-      }).join('')
-    : `<p class="publication-qc-empty">${
-        hardBlockerCount
-          ? '当前 QC 问题不可人工豁免，请先修复资料质量或策略版本。'
-          : '当前引用的 Evidence 不需要新增人工豁免。'
-      }</p>`;
-
-  return `
-    <section class="publication-qc-review" aria-labelledby="publication-qc-title">
-      <div class="publication-section-title">
-        <strong id="publication-qc-title">QC 审核</strong>
-        <small title="${escapeHtml(policyVersion)}">策略 ${escapeHtml(shortPolicyVersion)}</small>
-      </div>
-      <div class="publication-qc-counts" role="list" aria-label="QC 状态汇总">
-        ${statusItems.length
-          ? statusItems.map(({ status, count }) => `
-              <span class="publication-qc-count ${escapeHtml(status)}" role="listitem">
-                <em>${escapeHtml(qcPolicy.labelForStatus(status))}</em>
-                <strong>${count}</strong>
-              </span>`).join('')
-          : '<p>暂无 QC 记录</p>'}
-      </div>
-      <div class="publication-qc-subsection">
-        <div class="publication-qc-subtitle"><strong>活跃豁免</strong><span>${activeWaivers.length}</span></div>
-        ${activeWaiverMarkup}
-      </div>
-      <div class="publication-qc-subsection">
-        <div class="publication-qc-subtitle"><strong>待人工复核</strong><span>${pendingFindings.length}</span></div>
-        ${pendingWaiverMarkup}
-      </div>
-    </section>`;
-}
-
-function renderPublicationEvidence(record) {
-  const metadata = record.metadata || {};
-  const qcPolicy = window.MeteoMateHarness.QcPolicy;
-  const qc = qcPolicy.normalizeEvidenceQc(record);
-  const value = record.value == null
-    ? '无数值'
-    : `${typeof record.value === 'object' ? JSON.stringify(record.value) : record.value}${record.unit ? ` ${record.unit}` : ''}`;
-  const algorithm = record.algorithm
-    ? `${record.algorithm.name || record.algorithm.id || '算法'}${record.algorithm.version ? ` ${record.algorithm.version}` : ''}`
-    : '';
-  const flags = [
-    metadata.synthetic === true ? { label: '构造数据', className: '' } : null,
-    metadata.classification ? { label: String(metadata.classification), className: '' } : null,
-    record.expiresAt && new Date(record.expiresAt).getTime() <= Date.now()
-      ? { label: '已过期', className: '' }
-      : null,
-    {
-      label: `QC ${qcPolicy.labelForStatus(qc.qcStatus)}`,
-      className: `qc-${qc.qcStatus}`,
-      title: qc.qcVersion || '缺少 QC 策略版本',
-    },
-  ].filter(Boolean);
-  return `
-    <label class="publication-evidence-row">
-      <input type="checkbox" data-publication-new-evidence value="${escapeHtml(record.id)}" />
-      <span class="publication-evidence-main">
-        <strong>${escapeHtml(record.variable || record.evidenceType || record.id)}</strong>
-        <small>${escapeHtml(value)}</small>
-      </span>
-      <span class="publication-evidence-source">
-        <strong>${escapeHtml(record.source || '未知来源')}</strong>
-        <small>${escapeHtml([
-          record.sourceVersion || '',
-          record.validTime ? formatDateTime(record.validTime) : '无有效时间',
-          algorithm,
-        ].filter(Boolean).join(' · '))}</small>
-      </span>
-      ${flags.length ? `<span class="publication-evidence-flags">${flags.map((flag) => `<em class="${escapeHtml(flag.className)}" title="${escapeHtml(flag.title || flag.label)}">${escapeHtml(flag.label)}</em>`).join('')}</span>` : ''}
-    </label>`;
-}
-
-function renderTaskPublicationPanel(task) {
-  if (!task || !publicationUI.open || publicationUI.taskId !== task.id) return '';
-  const api = window.MeteoMateHarness.PublicationState;
-  const analysis = api.analysisForTask(task);
-  const publication = task.publication || {};
-  const cacheCurrent = api.cachedRequestMatchesTask(task);
-  const stale = Boolean(publication.gate || publication.signoff) && !cacheCurrent;
-  const needsRecheck = publication.dirty || stale;
-  const gate = publicationGateForTask(task);
-  const checked = Boolean(publication.gate) && !publication.dirty && cacheCurrent;
-  const approved = checked && publication.signoff?.approved === true && gate.ready;
-  const signable = checked && !publication.signoff?.approved && api.signable(gate);
-  const status = publicationUI.busy
-    ? 'processing'
-    : publicationUI.error || publication.error
-      ? 'error'
-      : approved
-        ? 'approved'
-        : needsRecheck
-          ? 'dirty'
-          : signable
-            ? 'signable'
-            : 'blocked';
-  const statusText = {
-    processing: '正在处理',
-    error: '检查失败',
-    approved: '已签发',
-    dirty: '内容待复核',
-    signable: '可签发',
-    blocked: '未满足发布条件',
-  }[status];
-  const conclusions = analysis.conclusions || [];
-  const evidence = task.evidence || [];
-  const artifacts = api.currentArtifacts(task.artifacts);
-  const error = publicationUI.error || publication.error || '';
-  const reviewer = checked
-    ? publication.signoff?.reviewerName || publication.signoff?.reviewerId || ''
-    : '';
-
-  return `
-    <section class="publication-review-panel ${escapeHtml(status)}" id="publication-review-panel" aria-labelledby="publication-review-title">
-      <header class="publication-review-heading">
-        <div>
-          <span class="publication-review-icon">${icon('shield')}</span>
-          <span><strong id="publication-review-title">发布审核</strong><small>结构化结论、证据与成果物共同决定是否可签发</small></span>
-        </div>
-        <span class="publication-status ${escapeHtml(status)}">${escapeHtml(statusText)}</span>
-      </header>
-
-      <div class="publication-summary-grid">
-        <span><small>预报结论</small><strong>${conclusions.length}</strong></span>
-        <span><small>证据记录</small><strong>${evidence.length}</strong></span>
-        <span><small>成果物</small><strong>${artifacts.length}</strong></span>
-        <span><small>最近检查</small><strong>${checked && publication.checkedAt ? escapeHtml(formatDateTime(publication.checkedAt)) : '尚未检查'}</strong></span>
-      </div>
-
-      ${needsRecheck ? `<p class="publication-notice">${stale ? '缓存的发布审核结果与当前任务不匹配，当前显示本地预检查。请重新运行发布检查。' : '分析、证据或成果物已经变化，请重新运行发布检查。已有签发不会被静默复用。'}</p>` : ''}
-      ${error ? `<p class="publication-error" role="alert">${escapeHtml(error)}</p>` : ''}
-      ${reviewer ? `<p class="publication-signoff">签发人：<strong>${escapeHtml(reviewer)}</strong>${publication.signoff.signedAt || publication.signoff.approvedAt ? ` · ${escapeHtml(formatDateTime(publication.signoff.signedAt || publication.signoff.approvedAt))}` : ''}</p>` : ''}
-
-      <div class="publication-review-columns">
-        <section class="publication-editor">
-          <div class="publication-section-title"><strong>发布上下文</strong><small>使用明确的业务时间，不从对话文本猜测</small></div>
-          <div class="publication-context-fields">
-            <label><span>区域</span><input data-publication-region value="${escapeHtml(analysis.region || '')}" placeholder="例如：华南" /></label>
-            <label><span>发布时间</span><input data-publication-issue-time value="${escapeHtml(analysis.issueTime || '')}" placeholder="ISO 8601，例如 2026-07-30T08:00:00+08:00" /></label>
-            <label><span>有效时段</span><input data-publication-valid-period value="${escapeHtml(analysis.validPeriod || '')}" placeholder="例如：未来 24 小时或 ISO 时间区间" /></label>
-          </div>
-          <button type="button" class="publication-secondary-button" data-publication-save-context ${publicationUI.busy ? 'disabled' : ''}>保存发布上下文</button>
-
-          <div class="publication-section-title"><strong>预报结论</strong><small>每条结论必须引用至少一条 Evidence</small></div>
-          <div class="publication-conclusion-list">
-            ${conclusions.length
-              ? conclusions.map((conclusion, index) => `
-                  <article class="publication-conclusion">
-                    <span>${index + 1}</span>
-                    <div><strong>${escapeHtml(conclusion.text || '空结论')}</strong><small>Evidence：${escapeHtml((conclusion.evidenceIds || []).join('、') || '未引用')}</small></div>
-                    <button type="button" data-publication-remove-conclusion="${index}" aria-label="移除第 ${index + 1} 条结论" ${publicationUI.busy ? 'disabled' : ''}>${icon('close')}</button>
-                  </article>`).join('')
-              : '<p class="publication-empty">尚无结构化结论。MeteoMate 不会把助手自然语言自动当作可发布结论。</p>'}
-          </div>
-
-          <div class="publication-conclusion-editor">
-            <label><span>新增人工确认结论</span><textarea data-publication-new-conclusion placeholder="输入经业务确认的预报结论"></textarea></label>
-            <div class="publication-evidence-picker">
-              ${evidence.length
-                ? evidence.map(renderPublicationEvidence).join('')
-                : '<p class="publication-empty">当前任务没有 Evidence，暂不能新增可发布结论。</p>'}
-            </div>
-            <button type="button" class="publication-secondary-button" data-publication-add-conclusion ${!evidence.length || publicationUI.busy ? 'disabled' : ''}>添加结论并关联所选证据</button>
-          </div>
-        </section>
-
-        <aside class="publication-gate">
-          <div class="publication-section-title"><strong>门禁结果</strong><small>${checked ? '服务端校验结果' : '本地预检查，签发前需正式检查'}</small></div>
-          ${renderPublicationQcReview(task, publication, gate, checked)}
-          <div class="publication-gate-group blockers">
-            <span>阻塞项</span>
-            ${(gate.blockers || []).length
-              ? `<ul>${gate.blockers.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>`
-              : '<p>无阻塞项</p>'}
-          </div>
-          <div class="publication-gate-group warnings">
-            <span>提醒</span>
-            ${(gate.warnings || []).length
-              ? `<ul>${gate.warnings.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>`
-              : '<p>无提醒</p>'}
-          </div>
-          <div class="publication-artifact-list">
-            <span>成果物</span>
-            ${artifacts.length
-              ? artifacts.map((artifact) => `<button type="button" data-open-artifact="${escapeHtml(artifact.id || artifact.path || artifact.uri)}">${icon('file')}<span><strong>${escapeHtml(artifact.name || pathBaseName(artifact.path || artifact.uri))}</strong><small>${escapeHtml(artifact.contentHash ? `SHA-256 ${artifact.contentHash.slice(0, 12)}…` : '缺少内容摘要')}</small></span></button>`).join('')
-              : '<p>尚无可交付成果物</p>'}
-          </div>
-          <div class="publication-actions">
-            <button type="button" class="publication-secondary-button" data-publication-check ${publicationUI.busy ? 'disabled' : ''}>${publicationUI.busy === 'check' ? '检查中…' : '运行发布检查'}</button>
-            ${signable ? `<button type="button" class="publication-primary-button" data-publication-sign ${publicationUI.busy ? 'disabled' : ''}>${publicationUI.busy === 'sign' ? '签发中…' : '确认签发'}</button>` : ''}
-            ${checked && publication.signoff?.approved ? `<button type="button" class="publication-danger-button" data-publication-revoke ${publicationUI.busy ? 'disabled' : ''}>${publicationUI.busy === 'revoke' ? '撤销中…' : '撤销签发'}</button>` : ''}
-          </div>
-        </aside>
-      </div>
-    </section>`;
 }
 
 function renderTaskView({ assistantMode = false } = {}) {
@@ -2268,7 +2276,14 @@ function renderTaskView({ assistantMode = false } = {}) {
     : ['loading', 'idle'].includes(modelSettings.status)
       ? '读取模型中'
       : '尚未配置模型';
-  const promptPlaceholder = task?.sessionId
+  const selectedArtifactText = Boolean(
+    (Array.isArray(task?.queuedDraftArtifactSelections)
+      ? task.queuedDraftArtifactSelections
+      : task?.artifactSelections || []).length
+  );
+  const promptPlaceholder = selectedArtifactText
+    ? '说明希望如何修改或核对这段原文…'
+    : task?.sessionId
     ? '继续追问或补充资料，@ 引用文件，/ 调用技能与指令'
     : assistantMode
       ? '今天帮你做些什么？@ 引用对话文件，/ 调用技能与指令'
@@ -2288,7 +2303,6 @@ function renderTaskView({ assistantMode = false } = {}) {
                 ? renderNewTaskWelcome(expert)
                 : renderConversationWelcome(expert)
           }
-          ${assistantMode ? '' : renderTaskPublicationPanel(task)}
           ${
             pendingPermissions.length
               ? `<section class="inline-permission-stack">
@@ -2416,13 +2430,61 @@ function renderTaskDraftContext(expert, isNewTask) {
       ? activeTask.queuedDraftFileReferences
       : activeTask.fileReferences || []
     : state.draftFileReferences || [];
+  const artifactSelections = activeTask
+    ? Array.isArray(activeTask.queuedDraftArtifactSelections)
+      ? activeTask.queuedDraftArtifactSelections
+      : activeTask.artifactSelections || []
+    : state.draftArtifactSelections || [];
   return `
     <div class="composer-draft-context">
       ${expertLabel ? `<button type="button" class="composer-draft-chip" data-clear-task-expert aria-label="移除${escapeHtml(expertLabel)}"><span>${escapeHtml(expertLabel)}</span><b>×</b></button>` : ''}
       <div id="composer-capability-chips"></div>
       <div class="composer-reference-chips">${fileReferences.map((filePath) => `<button type="button" class="composer-draft-chip reference" data-remove-task-file="${escapeHtml(filePath)}" title="${escapeHtml(filePath)}" aria-label="移除文件${escapeHtml(filePath)}"><span>文件：${escapeHtml(pathBaseName(filePath))}</span><b>×</b></button>`).join('')}</div>
+      ${artifactSelections.length ? `<div class="composer-selection-references" aria-label="文档原文引用">${artifactSelections.map(renderComposerArtifactSelection).join('')}</div>` : ''}
     </div>
   `;
+}
+
+function artifactSelectionPageLabel(selection) {
+  const pages = [...new Set((selection?.pages || []).map(Number).filter((page) => Number.isInteger(page) && page > 0))]
+    .sort((left, right) => left - right);
+  if (!pages.length) return '文档选区';
+  return pages.length === 1 ? `第 ${pages[0]} 页` : `第 ${pages[0]}–${pages.at(-1)} 页`;
+}
+
+function artifactSelectionEditStatus(selection) {
+  if (selection?.editability === 'editable' && String(selection?.format || '').toUpperCase() === 'DOCX') {
+    return { label: '可精确修改', state: 'editable', title: selection.editReason || '已定位唯一正文段落' };
+  }
+  return { label: '仅供引用', state: 'reference-only', title: selection?.editReason || '当前选区不会直接写入原文件' };
+}
+
+function renderComposerArtifactSelection(selection) {
+  const editStatus = artifactSelectionEditStatus(selection);
+  return `
+    <article class="composer-selection-reference">
+      <button type="button" class="composer-selection-jump" data-artifact-selection-jump="${escapeHtml(selection.selectionId)}" title="返回原文位置">
+        <b>${escapeHtml(selection.number || 1)}</b>
+        <span><strong>${escapeHtml(selection.title || pathBaseName(selection.path || '文档'))}</strong><small>${escapeHtml(artifactSelectionPageLabel(selection))}<em data-state="${editStatus.state}" title="${escapeHtml(editStatus.title)}">${editStatus.label}</em></small></span>
+        <q>${escapeHtml(selection.quote || '')}</q>
+      </button>
+      <button type="button" class="composer-selection-remove" data-remove-artifact-selection="${escapeHtml(selection.selectionId)}" aria-label="移除此原文引用">×</button>
+    </article>
+  `;
+}
+
+function renderMessageArtifactSelections(selections) {
+  if (!Array.isArray(selections) || !selections.length) return '';
+  return `<div class="message-selection-references" aria-label="本轮引用的文档原文">${selections.map((selection) => {
+    const editStatus = artifactSelectionEditStatus(selection);
+    return `
+    <button type="button" data-artifact-selection-jump="${escapeHtml(selection.selectionId)}" title="返回原文位置">
+      <b>${escapeHtml(selection.number || 1)}</b>
+      <span><strong>${escapeHtml(selection.title || pathBaseName(selection.path || '文档'))}</strong><small>${escapeHtml(artifactSelectionPageLabel(selection))}<em data-state="${editStatus.state}" title="${escapeHtml(editStatus.title)}">${editStatus.label}</em></small></span>
+      <q>${escapeHtml(selection.quote || '')}</q>
+    </button>
+  `;
+  }).join('')}</div>`;
 }
 
 function renderComposerMoreMenu({ task, project, isRunning, assistantMode = false }) {
@@ -2541,7 +2603,7 @@ function renderMessage(message, task) {
                     ? '<i></i><i></i><i></i>'
                     : message.role === 'assistant'
                       ? `<div class="markdown-body">${renderMarkdown(message.text || '')}</div>${renderMessageArtifacts(message, task)}`
-                      : `<pre>${escapeHtml(message.text || '')}</pre>`
+                      : `<pre>${escapeHtml(message.text || '')}</pre>${renderMessageArtifactSelections(message.artifactSelections)}`
                 }
               </div>`
             : ''
@@ -2639,7 +2701,7 @@ function renderMessageArtifacts(message, task) {
   if (!images.length && !files.length) return '';
   return `<div class="message-artifact-gallery" aria-label="本次回答生成的成果物">
     ${images.map((artifact, index) => `
-      <button type="button" class="message-artifact-image" data-open-artifact="${escapeHtml(artifact.path || '')}" aria-label="打开${escapeHtml(artifact.name || `图件 ${index + 1}`)}">
+      <button type="button" class="message-artifact-image artifact-path-target" data-open-artifact="${escapeHtml(artifact.path || '')}" ${artifactPathAttributes(artifact.path || artifact.uri)} aria-label="打开${escapeHtml(artifact.name || `图件 ${index + 1}`)}">
         <img src="${escapeHtml(artifact.metadata.previewUri)}" alt="${escapeHtml(artifact.name || `图件 ${index + 1}`)}" loading="lazy" />
         <span><strong>图 ${index + 1}</strong><small>${escapeHtml(artifact.name || '浏览器截图')}</small></span>
       </button>
@@ -2671,11 +2733,12 @@ function renderOfficeArtifactCard(artifact) {
   const extension = String(artifact.name || '').split('.').pop()?.toUpperCase() || 'FILE';
   const render = artifact.metadata?.render || {};
   const detail = [
+    artifact.metadata?.selectionEdit ? '原文修改' : '',
     render.pageCount ? `${render.pageCount} 页` : '',
     artifactSizeLabel(artifact.sizeBytes),
   ].filter(Boolean).join(' · ');
   return `
-    <button type="button" class="message-office-artifact" data-open-artifact="${escapeHtml(artifact.path || '')}" aria-label="打开${escapeHtml(artifact.name || 'Office 成果物')}">
+    <button type="button" class="message-office-artifact artifact-path-target" data-open-artifact="${escapeHtml(artifact.path || '')}" ${artifactPathAttributes(artifact.path || artifact.uri)} aria-label="预览${escapeHtml(artifact.name || 'Office 成果物')}">
       ${render.thumbnailUri ? `<img src="${escapeHtml(render.thumbnailUri)}" alt="" loading="lazy" />` : `<span class="message-office-artifact-icon">${escapeHtml(extension)}</span>`}
       <span class="message-office-artifact-copy">
         <strong>${escapeHtml(artifact.name || 'Office 成果物')}</strong>
@@ -2687,6 +2750,8 @@ function renderOfficeArtifactCard(artifact) {
 }
 
 function renderResponseStatusOnly(message, task, responsePhase) {
+  const teamRun = teamRunForMessage(task, message);
+  if (teamRun) return renderTeamRunProcess(message, teamRun);
   if (message.status !== 'streaming') return '';
   if (task?.contextState?.phase === 'compacting') return renderResponseAwaiting(message, task, 'compacting');
   return responsePhase === 'responding' ? '' : renderResponseAwaiting(message, task, responsePhase);
@@ -2705,7 +2770,7 @@ function resolveResponsePhase(message, task) {
 
 function responseAwaitingState(message, task, responsePhase) {
   const progress = message?.runtimeProgress || {};
-  const activeTeamRun = task?.teamRun;
+  const activeTeamRun = teamRunForMessage(task, message) || task?.teamRun;
   if (
     activeTeamRun
     && ['running', 'synthesizing'].includes(activeTeamRun.status)
@@ -2785,6 +2850,8 @@ function renderResponseAwaiting(message, task, responsePhase) {
 }
 
 function renderResponseProcess(message, task) {
+  const teamRun = teamRunForMessage(task, message);
+  if (teamRun) return renderTeamRunProcess(message, teamRun);
   const activities = (task?.activities || []).filter(
     (activity) => activity.responseId === message.id && activity.type !== 'info'
   );
@@ -2935,10 +3002,10 @@ function renderPermissionCard(permission) {
 function renderArtifact(artifact) {
   const status = artifactStatusLabel(artifact.status);
   const detail = artifact.metadata?.source === 'office-artifacts'
-    ? [artifact.type || '文件', status, artifactSizeLabel(artifact.sizeBytes)].filter(Boolean).join(' · ')
+    ? [artifact.metadata?.selectionEdit ? '原文修改' : artifact.type || '文件', status, artifactSizeLabel(artifact.sizeBytes)].filter(Boolean).join(' · ')
     : artifact.type || '文件';
   return `
-    <button class="artifact-item" ${artifact.path ? `data-open-artifact="${escapeHtml(artifact.path)}"` : 'disabled'}>
+    <button class="artifact-item artifact-path-target" ${artifact.path ? `data-open-artifact="${escapeHtml(artifact.path)}" ${artifactPathAttributes(artifact.path || artifact.uri)}` : 'disabled'}>
       <span>${icon('file')}</span>
       <span><strong>${escapeHtml(artifact.name)}</strong><small>${escapeHtml(detail)}</small></span>
     </button>
@@ -3677,6 +3744,8 @@ function renderAccountServiceSettings() {
   const skillHub = window.MeteoMateCapabilityCenter?.skillHub?.state;
   const connected = skillHub?.status === 'ready';
   const runtimeReady = state.runtime?.state === 'ready';
+  const organizationCatalog = accountSession.policyContext?.modelCatalog || { revision: 0, providers: [] };
+  const organizationModelCount = organizationCatalog.providers.reduce((total, provider) => total + (provider.models?.length || 0), 0);
   return `
     <div class="general-settings-stack settings-preference-stack">
       <section class="settings-section-block account-settings-profile">
@@ -3690,6 +3759,7 @@ function renderAccountServiceSettings() {
           <div><dt>本地执行服务</dt><dd class="settings-service-state ${runtimeReady ? 'ready' : ''}"><i></i>${runtimeReady ? '可用' : state.runtime?.state === 'starting' ? '启动中' : '受限模式'}</dd></div>
           <div><dt>SkillHub</dt><dd class="settings-service-state ${connected ? 'ready' : ''}"><i></i>${connected ? '已连接' : accountSession.status === 'offline' ? '离线不可用' : '未连接'}</dd></div>
           <div><dt>策略版本</dt><dd>r${Number(policy.revision || 0)}</dd></div>
+          <div><dt>模型目录</dt><dd>r${Number(organizationCatalog.revision || 0)} · ${organizationModelCount} 个模型</dd></div>
           <div><dt>可用模型</dt><dd>${policy.allowedModels?.length ? `${policy.allowedModels.length} 个` : '不限制'}</dd></div>
           <div><dt>可用审批策略</dt><dd>${policy.allowedPermissionProfileIds?.length ? `${policy.allowedPermissionProfileIds.length} 种` : '不限制'}</dd></div>
         </dl>
@@ -3761,33 +3831,98 @@ function renderModelCapabilities(model) {
   return capabilities.length ? capabilities.map((label) => `<span>${label}</span>`).join('') : '<span>基础对话</span>';
 }
 
+function providerPresetLabel(value) {
+  return value === 'volcengine-ark' ? '火山方舟' : 'OpenAI 兼容';
+}
+
+function providerProtocolLabel(value) {
+  return value === 'responses' ? 'Responses' : 'Chat Completions';
+}
+
+function providerStreamingLabel(provider) {
+  if (provider.streamingMode === 'on') return '开启 · 手动';
+  if (provider.streamingMode === 'off') return '关闭 · 手动';
+  return provider.supportsStreaming === false ? '关闭 · 自动' : '开启 · 自动';
+}
+
+function renderProviderVerification(verification, { emptyText = '尚未验证' } = {}) {
+  if (!verification || !['verified', 'failed'].includes(verification.status)) {
+    return `<div class="provider-verification-state untested"><span></span><div><strong>${emptyText}</strong><small>测试会检查文本响应、流式输出及已声明的模型能力。</small></div></div>`;
+  }
+  const verified = verification.status === 'verified';
+  const tests = (verification.tests || []).map((test) => `
+    <span class="provider-test-pill ${escapeHtml(test.status)}" title="${escapeHtml(test.message || '')}">
+      ${escapeHtml(test.label)} · ${test.status === 'passed' ? '通过' : test.status === 'failed' ? '失败' : '跳过'}
+    </span>`).join('');
+  return `
+    <div class="provider-verification-state ${verified ? 'verified' : 'failed'}">
+      <span></span>
+      <div><strong>${verified ? '连接验证通过' : '连接验证失败'}</strong><small>${escapeHtml(verification.message || '')}${verification.verifiedAt ? ` · ${formatDateTime(verification.verifiedAt)}` : ''}</small></div>
+    </div>
+    ${tests ? `<div class="provider-test-pills">${tests}</div>` : ''}`;
+}
+
+function renderConnectionChoice(name, value, choices, help, disabled = false) {
+  return `
+    <fieldset class="connection-choice-field ${disabled ? 'managed' : ''}" ${disabled ? 'disabled' : ''}>
+      <legend>${escapeHtml(name)}</legend>
+      <div class="connection-choice-options">${choices.map((choice) => `
+        <label><input type="radio" name="${escapeHtml(choice.group)}" value="${escapeHtml(choice.value)}" ${choice.value === value ? 'checked' : ''} /><span>${escapeHtml(choice.label)}</span></label>`).join('')}</div>
+      <small>${escapeHtml(help)}</small>
+    </fieldset>`;
+}
+
 function renderProviderOverview(provider) {
   const currentProvider = modelSettings.providerId === provider.id;
+  const protocolLabel = providerProtocolLabel(provider.protocol);
+  const providerLabel = providerPresetLabel(provider.providerPreset);
+  const managed = Boolean(provider.organizationManaged);
+  const credentialLabel = !provider.requiresAuth
+    ? '无需密钥'
+    : provider.credentialMode === 'secret_ref'
+      ? provider.credentialConfigured ? '单位引用已登记 · 本机仍需密钥' : '单位引用缺失 · 本机仍需密钥'
+      : provider.apiKeySet ? '本机密钥已保存' : '需要本机密钥';
   return `
     <div class="provider-overview">
       <header class="provider-overview-header">
         <div class="provider-title-mark">${escapeHtml(provider.name.slice(0, 1).toUpperCase())}</div>
-        <div><div class="provider-title-row"><h2>${escapeHtml(provider.name)}</h2><span>OpenAI Compatible</span></div><p>${escapeHtml(provider.apiUrl || '尚未配置服务地址')}</p></div>
-        <button class="secondary-action" type="button" data-edit-provider="${escapeHtml(provider.id)}">编辑连接</button>
+        <div><div class="provider-title-row"><h2>${escapeHtml(provider.name)}</h2>${managed ? '<span class="organization-provider-badge">组织管理</span>' : ''}<span>${escapeHtml(providerLabel)} · ${escapeHtml(protocolLabel)}</span></div><p>${escapeHtml(provider.apiUrl || '尚未配置服务地址')}</p></div>
+        <button class="secondary-action" type="button" data-edit-provider="${escapeHtml(provider.id)}">${managed ? '本机凭据' : '编辑连接'}</button>
       </header>
+      ${managed ? '<div class="organization-provider-note"><strong>连接参数由组织目录下发</strong><span>本机只保留 API Key；协议、地址、模型能力和验证状态会随目录修订同步。</span></div>' : ''}
       <dl class="provider-connection-summary">
-        <div><dt>API Key</dt><dd>${provider.apiKeySet ? '已安全保存' : '未设置'}</dd></div>
-        <div><dt>请求路径</dt><dd>/${escapeHtml(provider.basePath || 'v1/chat/completions')}</dd></div>
-        <div><dt>流式输出</dt><dd>${provider.supportsStreaming === false ? '关闭' : '开启'}</dd></div>
+        <div><dt>凭据</dt><dd>${escapeHtml(credentialLabel)}</dd></div>
+        <div><dt>API 协议</dt><dd>${escapeHtml(protocolLabel)}${provider.protocolMode === 'auto' ? ' · 自动' : ''}</dd></div>
+        <div class="provider-endpoint-summary"><dt>实际请求地址</dt><dd title="${escapeHtml(provider.endpointUrl || '')}">${escapeHtml(provider.endpointUrl || `/${provider.basePath || 'v1/chat/completions'}`)}</dd></div>
+        <div><dt>流式输出</dt><dd>${escapeHtml(providerStreamingLabel(provider))}</dd></div>
       </dl>
+      <section class="provider-verification-card">${renderProviderVerification(provider.verification)}</section>
       <section class="provider-models-section">
-        <div class="settings-block-heading"><div><h3>模型</h3><p>能力信息由你手动声明，MeteoMate 不会猜测模型能力。</p></div><button class="primary-button small-button" type="button" data-add-model="${escapeHtml(provider.id)}">${icon('plus')} 添加模型</button></div>
+        <div class="settings-block-heading"><div><h3>模型</h3><p>${managed ? '模型及能力由组织目录统一维护。' : '能力先按服务商文档声明；连接测试会验证协议与已声明能力。'}</p></div>${managed ? '' : `<button class="primary-button small-button" type="button" data-add-model="${escapeHtml(provider.id)}">${icon('plus')} 添加模型</button>`}</div>
         ${provider.models.length ? `<div class="configured-model-list">${provider.models.map((model) => `
           <article class="configured-model-row ${currentProvider && modelSettings.modelId === model.id ? 'default' : ''}">
             <div class="configured-model-main"><div><strong>${escapeHtml(model.name || model.id)}</strong>${model.name && model.name !== model.id ? `<code>${escapeHtml(model.id)}</code>` : ''}</div><div class="model-capability-pills">${renderModelCapabilities(model)}</div></div>
             <div class="configured-model-limits"><span>输入 ${formatModelLimit(model.contextLimit)}</span><span>输出 ${formatModelLimit(model.maxOutputTokens)}</span></div>
             <div class="configured-model-actions">
-              ${currentProvider && modelSettings.modelId === model.id ? '<span class="default-model-label">默认</span>' : `<button type="button" data-default-model="${escapeHtml(model.id)}" data-provider-id="${escapeHtml(provider.id)}">设为默认</button>`}
-              <button type="button" data-edit-model="${escapeHtml(model.id)}" data-provider-id="${escapeHtml(provider.id)}">编辑</button>
+              ${provider.localProviderAvailable === false
+                ? '<span class="managed-model-label">先配置凭据</span>'
+                : currentProvider && modelSettings.modelId === model.id
+                  ? '<span class="default-model-label">默认</span>'
+                  : `<button type="button" data-default-model="${escapeHtml(model.id)}" data-provider-id="${escapeHtml(provider.id)}">设为默认</button>`}
+              ${managed ? '<span class="managed-model-label">目录托管</span>' : `<button type="button" data-edit-model="${escapeHtml(model.id)}" data-provider-id="${escapeHtml(provider.id)}">编辑</button>
+              <button
+                class="configured-model-delete"
+                type="button"
+                data-delete-model="${escapeHtml(model.id)}"
+                data-provider-id="${escapeHtml(provider.id)}"
+                aria-label="删除模型 ${escapeHtml(model.name || model.id)}"
+                title="${provider.models.length === 1 ? '提供商至少需要保留一个模型' : '删除模型'}"
+                ${provider.models.length === 1 ? 'disabled' : ''}
+              >删除</button>`}
             </div>
           </article>`).join('')}</div>` : `<div class="models-empty-inline"><p>还没有模型。添加服务端实际接受的模型 ID 后，才能在任务中使用。</p><button type="button" data-add-model="${escapeHtml(provider.id)}">添加第一个模型</button></div>`}
       </section>
-      <footer class="provider-danger-row"><span>删除后，此提供商及其模型将不再可用。</span><button type="button" data-delete-provider="${escapeHtml(provider.id)}">删除提供商</button></footer>
+      ${managed ? '' : `<footer class="provider-danger-row"><span>删除后，此提供商及其模型将不再可用。</span><button type="button" data-delete-provider="${escapeHtml(provider.id)}">删除提供商</button></footer>`}
     </div>
   `;
 }
@@ -3795,18 +3930,49 @@ function renderProviderOverview(provider) {
 function renderProviderForm() {
   const draft = settingsDialog.providerDraft;
   const editing = Boolean(draft.id);
+  const managed = Boolean(draft.organizationManaged);
+  const verification = settingsDialog.providerTest.result || draft.verification;
   return `
     <form class="settings-editor-form" id="provider-editor-form" novalidate>
-      <div class="settings-editor-heading"><button type="button" data-settings-editor-back>${icon('back')}</button><div><h2>${editing ? '编辑提供商' : '添加提供商'}</h2><p>当前只支持 OpenAI Chat Completions 协议。</p></div></div>
+      <div class="settings-editor-heading"><button type="button" data-settings-editor-back>${icon('back')}</button><div><h2>${managed ? '配置本机凭据' : editing ? '编辑提供商' : '添加提供商'}</h2><p>${managed ? draft.localProviderAvailable === false ? '首次保存会在当前用户的 Goose 目录创建受管连接，并只在本机保存 API Key。' : '组织目录锁定连接和模型信息；此处只管理当前电脑使用的 API Key。' : '连接信息与 API 协议分别配置，自动模式会优先采用服务商官方路径。'}</p></div></div>
       ${modelSettings.error ? `<div class="settings-feedback error" role="alert">${escapeHtml(modelSettings.error)}</div>` : ''}
       <div class="settings-editor-fields">
-        <label class="settings-field"><span>提供商名称</span><input id="provider-display-name" value="${escapeHtml(draft.displayName || '')}" placeholder="例如：单位模型网关" required maxlength="60" /></label>
-        <label class="settings-field"><span>Base URL</span><input id="provider-api-url" value="${escapeHtml(draft.apiUrl || '')}" placeholder="https://api.example.com/v1" required inputmode="url" /><small>填写到服务的版本路径即可，例如 /v1 或 /api/v3；MeteoMate 会追加 /chat/completions。</small></label>
+        ${managed ? '<div class="organization-provider-note"><strong>组织目录已接管</strong><span>修改目录请前往 MeteoMate 管理后台；桌面不会读取或保存服务端 secretRef。</span></div>' : ''}
+        <label class="settings-field"><span>提供商名称</span><input id="provider-display-name" value="${escapeHtml(draft.displayName || '')}" placeholder="例如：单位模型网关" required maxlength="60" ${managed ? 'disabled' : ''} /></label>
+        ${renderConnectionChoice('提供商类型', draft.presetMode || 'auto', [
+          { group: 'provider-preset-mode', value: 'auto', label: '自动识别' },
+          { group: 'provider-preset-mode', value: 'volcengine-ark', label: '火山方舟' },
+          { group: 'provider-preset-mode', value: 'openai-compatible', label: '通用兼容' },
+        ], '预设只决定默认协议与兼容策略，不改变你的服务地址。', managed)}
+        <label class="settings-field"><span>Base URL</span><input id="provider-api-url" value="${escapeHtml(draft.apiUrl || '')}" placeholder="https://api.example.com/v1" required inputmode="url" ${managed ? 'disabled' : ''} /><small>填写服务根地址及版本路径，例如 /v1 或 /api/v3；最终地址会在下方完整展示。</small></label>
+        ${renderConnectionChoice('API 协议', draft.protocolMode || 'auto', [
+          { group: 'provider-protocol-mode', value: 'auto', label: '自动' },
+          { group: 'provider-protocol-mode', value: 'chat_completions', label: 'Chat Completions' },
+          { group: 'provider-protocol-mode', value: 'responses', label: 'Responses' },
+        ], 'Agent、工具调用和豆包 Seed 2.x 建议使用 Responses；旧网关可继续使用 Chat Completions。', managed)}
+        ${renderConnectionChoice('流式输出', draft.streamingMode || 'auto', [
+          { group: 'provider-streaming-mode', value: 'auto', label: '自动' },
+          { group: 'provider-streaming-mode', value: 'on', label: '开启' },
+          { group: 'provider-streaming-mode', value: 'off', label: '关闭' },
+        ], '自动模式会按提供商兼容性选择；手动设置始终优先。', managed)}
+        <div class="provider-route-preview" aria-live="polite">
+          <span>${icon('model')}</span>
+          <div><small id="provider-resolved-transport">${escapeHtml(providerPresetLabel(draft.providerPreset))} · ${escapeHtml(providerProtocolLabel(draft.protocol))}</small><strong id="provider-effective-endpoint">${escapeHtml(draft.endpointUrl || '输入 Base URL 后显示实际请求地址')}</strong></div>
+          <em id="provider-resolved-streaming">${draft.supportsStreaming === false ? '非流式' : '流式'}</em>
+        </div>
         <label class="settings-field"><span>API Key <em>可选</em></span><input id="provider-api-key" type="password" placeholder="${editing && draft.apiKeySet ? '已保存，留空表示不修改' : 'sk-…'}" autocomplete="new-password" /><small>密钥由 Goose 的安全配置存储管理，不写入页面状态。</small></label>
-        <label class="settings-checkbox-row"><input id="provider-no-auth" type="checkbox" ${draft.requiresAuth === false ? 'checked' : ''} /><span><strong>此地址无需 API Key</strong><small>适用于本机 vLLM、LocalAI 等可信服务。</small></span></label>
-        <div class="protocol-fixed-row"><span>${icon('model')}</span><div><strong>OpenAI Chat Completions</strong><small>请求路径会根据 Base URL 自动推导</small></div><span>当前协议</span></div>
+        <label class="settings-checkbox-row"><input id="provider-no-auth" type="checkbox" ${draft.requiresAuth === false ? 'checked' : ''} ${managed ? 'disabled' : ''} /><span><strong>此地址无需 API Key</strong><small>适用于本机 vLLM、LocalAI 等可信服务。</small></span></label>
+        <details class="provider-advanced-settings" ${draft.endpointPathOverride ? 'open' : ''}>
+          <summary>高级设置</summary>
+          <label class="settings-field"><span>自定义请求路径 <em>可选</em></span><input id="provider-endpoint-path" value="${escapeHtml(draft.endpointPathOverride || '')}" placeholder="例如：gateway/v1/responses" ${managed ? 'disabled' : ''} /><small>仅在网关路径无法自动推导时填写；不要包含域名和查询参数。</small></label>
+        </details>
+        <section class="provider-test-card">
+          <div><strong>连接与能力验证</strong><small>${editing ? '使用当前提供商的第一个模型验证；已保存的密钥不会被页面读取。' : '填写首个模型 ID 后即可验证文本、流式与模型能力。'}</small></div>
+          ${editing ? '<button class="secondary-action" type="button" data-test-provider="provider">测试连接</button>' : '<span class="provider-test-pending">下一步验证</span>'}
+          <div id="provider-test-result">${renderProviderVerification(verification, { emptyText: editing ? '尚未验证当前连接' : '等待填写模型' })}</div>
+        </section>
       </div>
-      <div class="settings-editor-actions"><button class="secondary-action" type="button" data-settings-editor-back>取消</button><button class="primary-button" type="submit">${modelSettings.status === 'saving' ? '正在保存…' : editing ? '保存连接' : '添加提供商'}</button></div>
+      <div class="settings-editor-actions"><button class="secondary-action" type="button" data-settings-editor-back>取消</button><button class="primary-button" type="submit">${modelSettings.status === 'saving' ? '正在保存…' : managed ? '保存本机凭据' : editing ? '保存连接' : '添加提供商'}</button></div>
     </form>
   `;
 }
@@ -3827,6 +3993,11 @@ function renderModelForm() {
           <label><input id="model-image-input" type="checkbox" ${draft.imageInput ? 'checked' : ''} /><span>图片输入</span></label>
           <label><input id="model-reasoning" type="checkbox" ${draft.reasoning ? 'checked' : ''} /><span>推理模式</span></label>
         </div></fieldset>
+        ${firstModel ? `<section class="provider-test-card provider-model-test-card">
+          <div><strong>创建前验证</strong><small>直接请求 ${escapeHtml(settingsDialog.pendingProvider.apiUrl)}，不会保存 API Key 或测试内容。</small></div>
+          <button class="secondary-action" type="button" data-test-provider="model">测试连接</button>
+          <div id="provider-test-result">${renderProviderVerification(settingsDialog.providerTest.result, { emptyText: '尚未验证这个模型' })}</div>
+        </section>` : ''}
         <div class="model-limit-grid">
           <label class="settings-field"><span>最大输入 Token <em>可选</em></span><input id="model-context-limit" type="number" min="1" step="1" value="${draft.contextLimit || ''}" placeholder="使用提供商默认值" /><div class="model-limit-presets">${[32000, 64000, 128000, 256000].map((value) => `<button type="button" data-model-limit="${value}" data-limit-target="model-context-limit">${formatModelLimit(value)}</button>`).join('')}</div></label>
           <label class="settings-field"><span>最大输出 Token <em>可选</em></span><input id="model-output-limit" type="number" min="1" step="1" value="${draft.maxOutputTokens || ''}" placeholder="使用提供商默认值" /><div class="model-limit-presets">${[8000, 16000, 32000, 64000].map((value) => `<button type="button" data-model-limit="${value}" data-limit-target="model-output-limit">${formatModelLimit(value)}</button>`).join('')}</div></label>

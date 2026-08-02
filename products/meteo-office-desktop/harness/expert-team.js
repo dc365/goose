@@ -17,6 +17,8 @@
     'cancelled',
     'interrupted',
   ]);
+  const TIMELINE_LIMIT = 60;
+  const RUN_HISTORY_LIMIT = 20;
 
   function list(value) {
     return Array.isArray(value) ? value : [];
@@ -30,6 +32,18 @@
     const text = String(value || '').trim();
     if (text.length <= limit) return text;
     return `${text.slice(0, limit)}\n\n[内容已截断]`;
+  }
+
+  function runtimeOutputFailure(value) {
+    const text = String(value || '');
+    const markerIndex = text.search(/Ran into this error:\s*(?:Server error:\s*)?Failed to parse input(?: at pos \d+)?:?/i);
+    if (markerIndex < 0) return null;
+    const functionIndex = text.indexOf('<function=', markerIndex);
+    if (functionIndex < 0 || functionIndex - markerIndex > 4_000) return null;
+    return {
+      code: 'tool_call_parse',
+      message: '模型生成的工具调用格式无法解析，本次结果未被采纳。',
+    };
   }
 
   function normalizeNode(node, index) {
@@ -139,10 +153,12 @@
       id: input.id || `team-run-${startedAt}`,
       teamId: definition.id,
       teamName: definition.name,
+      responseId: input.responseId || null,
       status: 'running',
       phase: 'dispatching',
       startedAt,
       completedAt: null,
+      timeline: [],
       members: definition.nodes.map((node) => ({
         id: node.id,
         expertId: node.expert.id,
@@ -152,13 +168,55 @@
         dependsOn: [...node.dependsOn],
         status: 'pending',
         sessionId: null,
+        activatedAt: null,
         startedAt: null,
         completedAt: null,
         summary: '',
         detail: '',
+        detailSource: '',
+        detailUpdatedAt: null,
         error: '',
+        activities: [],
+        updates: [],
       })),
     };
+  }
+
+  function appendTimelineEntry(run, entry = {}, limit = TIMELINE_LIMIT) {
+    if (!run || typeof run !== 'object') return null;
+    const at = Number(entry.at || entry.updatedAt || entry.createdAt) || Date.now();
+    const normalized = {
+      id: String(entry.id || `team-event-${at}-${list(run.timeline).length + 1}`),
+      key: String(entry.key || ''),
+      type: String(entry.type || 'status'),
+      memberId: entry.memberId ? String(entry.memberId) : null,
+      actor: String(entry.actor || ''),
+      title: String(entry.title || '协作状态更新'),
+      detail: clipText(entry.detail || '', 600),
+      status: String(entry.status || 'running'),
+      at,
+    };
+    const timeline = list(run.timeline).filter((item) => item && typeof item === 'object');
+    let replaceIndex = -1;
+    if (normalized.key) {
+      for (let index = timeline.length - 1; index >= 0; index -= 1) {
+        if (timeline[index].key === normalized.key) {
+          replaceIndex = index;
+          break;
+        }
+      }
+    }
+    if (replaceIndex >= 0) {
+      timeline[replaceIndex] = {
+        ...timeline[replaceIndex],
+        ...normalized,
+        id: timeline[replaceIndex].id || normalized.id,
+      };
+    } else {
+      timeline.push(normalized);
+    }
+    run.timeline = timeline.slice(-Math.max(1, Number(limit) || TIMELINE_LIMIT));
+    return normalized;
   }
 
   function dependencyContext(node, results = new Map()) {
@@ -218,10 +276,14 @@
 
   return {
     MEMBER_STATUSES,
+    TIMELINE_LIMIT,
+    RUN_HISTORY_LIMIT,
     clipText,
+    runtimeOutputFailure,
     normalizeDefinition,
     executionWaves,
     createRunState,
+    appendTimelineEntry,
     memberPrompt,
     synthesisPrompt,
     isTeamRequest,

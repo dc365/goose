@@ -16,8 +16,9 @@ The service is intentionally independent of Goose Core. It stores metadata in an
 - administrator installation governance with version distribution, active-client, project, and pending-upgrade statistics;
 - managed intranet users with `viewer`, `publisher`, and `admin` roles;
 - Argon2id password hashing and revocable in-memory desktop sessions;
-- embedded `/admin/` console for Experts, Skills, content operations, governance, users, policies, and audit records;
-- organization, role, and user policy delivery for desktop model, Skill, Connector, and permission controls;
+- embedded `/admin/` console for Experts, Skills, model governance, content operations, users, policies, and audit records;
+- organization model-provider catalog with explicit Chat Completions or Responses transport, model capabilities, limits, and verification evidence;
+- organization, role, and user policy delivery for model-provider and model allowlists, verification requirements, Skills, Connectors, and permission controls;
 - organization Skill allowlists and optional administrator approval before publication;
 - owner-scoped Skill management with administrator ownership transfer;
 - owner-scoped Expert registry with immutable revisions and optimistic concurrency;
@@ -122,6 +123,9 @@ curl 'http://127.0.0.1:8088/v1/skills?q=weather'
 - Publishers manage only their own Skill records; administrators can manage all records and transfer ownership to another active publisher or administrator.
 - Organization policy can keep publisher-direct releases or route publisher submissions into the administrator review queue. High-risk packages always enter review.
 - Default Skills are constrained by the effective Skill allowlist before policy delivery to the desktop.
+- Model providers store connection metadata and credential references only. A local credential stays in each MeteoMate user's owner-only Goose secret file; a centrally managed credential must use an `env://`, `vault://`, `secret://`, or `k8s://` reference. SkillHub rejects plaintext secrets.
+- The administrator verification action records results produced by a real desktop probe. It never claims to execute a provider request from the browser and never stores prompts, responses, images, or API keys.
+- A provider or model referenced by any organization, role, or user policy cannot be disabled or removed until those policy references are changed.
 
 For access from other computers, put SkillHub behind an internal HTTPS reverse proxy. Plain HTTP is suitable only for loopback development because login passwords otherwise travel unencrypted on the network.
 
@@ -196,6 +200,8 @@ When neither managed accounts nor static service tokens are configured, public r
 data/
 ├── auth/
 │   └── users.json
+├── models/
+│   └── model-catalog.json
 ├── policy/
 │   └── policies.json
 ├── metadata.json
@@ -219,6 +225,7 @@ GET    /v1/me
 PATCH  /v1/me
 POST   /v1/me/password
 GET    /v1/me/policy
+GET    /v1/me/model-catalog
 GET    /v1/admin/users
 POST   /v1/admin/users
 PATCH  /v1/admin/users/{id}
@@ -234,6 +241,10 @@ DELETE /v1/admin/policies/roles/{role}
 PUT    /v1/admin/policies/users/{id}
 DELETE /v1/admin/policies/users/{id}
 GET    /v1/admin/policies/effective/users/{id}
+GET    /v1/admin/model-providers
+PUT    /v1/admin/model-providers/{id}
+DELETE /v1/admin/model-providers/{id}
+POST   /v1/admin/model-providers/{id}/verification
 GET    /v1/trust/keys
 GET    /v1/experts
 POST   /v1/experts

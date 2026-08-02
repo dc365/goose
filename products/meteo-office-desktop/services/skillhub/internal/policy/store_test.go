@@ -14,6 +14,8 @@ func TestPolicyPrecedenceAndPersistence(t *testing.T) {
 	_, err = store.SetOrganization(Settings{
 		DefaultModel:                "goose/gpt-5.5",
 		AllowedModels:               []string{"goose/gpt-5.5", "goose/gpt-5.5-mini"},
+		AllowedProviderIDs:          []string{"goose"},
+		RequireVerifiedModels:       true,
 		DefaultSkillIDs:             []string{"forecast-writing"},
 		AllowedConnectorIDs:         []string{"weather-data"},
 		DefaultPermissionProfileID:  "artifact-approval",
@@ -41,6 +43,9 @@ func TestPolicyPrecedenceAndPersistence(t *testing.T) {
 	effective := store.Effective("usr-one", "viewer")
 	if effective.DefaultModel != roleDefault || effective.DefaultPermissionProfileID != rolePermission || effective.AutoCompactThreshold != roleThreshold {
 		t.Fatalf("role policy was not applied: %+v", effective)
+	}
+	if !effective.RequireVerifiedModels || !reflect.DeepEqual(effective.AllowedProviderIDs, []string{"goose"}) {
+		t.Fatalf("model governance policy was not applied: %+v", effective)
 	}
 	if !reflect.DeepEqual(effective.DefaultSkillIDs, []string{"forecast-writing", "synoptic-analysis"}) {
 		t.Fatalf("user policy was not applied: %+v", effective.DefaultSkillIDs)
@@ -70,6 +75,13 @@ func TestPolicyValidationAndFallback(t *testing.T) {
 		AllowedModels: []string{"goose/allowed"},
 	}); err == nil {
 		t.Fatal("organization accepted a default model outside the allowlist")
+	}
+	if _, err := store.SetOrganization(Settings{
+		DefaultModel:       "goose/allowed",
+		AllowedModels:      []string{"goose/allowed"},
+		AllowedProviderIDs: []string{"other"},
+	}); err == nil {
+		t.Fatal("organization accepted a default model outside the provider allowlist")
 	}
 	if _, err := store.SetOrganization(Settings{
 		DefaultSkillIDs: []string{"blocked-skill"},

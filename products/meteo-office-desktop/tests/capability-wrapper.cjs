@@ -17,6 +17,8 @@ const runtimeServices = require('../capabilities/runtime-services.cjs');
 assert.equal(packageJson.main, 'capabilities/main-wrapper.cjs');
 const macPackageScript = packageJson.scripts['package:mac'];
 for (const excludedPath of [
+  "^/output($|/)",
+  "^/\\.playwright-cli($|/)",
   "^/services/skillhub($|/)",
   "^/tests($|/)",
   "^/docs($|/)",

@@ -20,11 +20,8 @@
 - Office 成果物通过本地 MCP Runtime 创建、编辑、渲染和校验 DOCX、PPTX、XLSX 与 PDF；
 - HTML、网页、PDF、图片、Markdown 和代码文件可在任务右侧直接预览，支持刷新、前进后退、外部打开和拖拽调宽；
 - 本地 JSON/CSV/GeoJSON 与内网 HTTP/HTTPS 气象资料可按统一 Dataset 契约读取、校验、诊断并生成 Evidence；
-- 工具产出的 Evidence 与 Artifact 实时进入任务 Ledger，发布审核支持结构化结论、版本化 QC、精确人工豁免、签发和撤销；
-- QC 豁免由主进程生成，绑定任务、工作区、Evidence SHA-256、政策摘要、复核身份和 24 小时有效期；工作区、证据、成果物、政策或豁免变化都会使旧签发失效；
-- Evidence、Artifact、签发和豁免使用本地 HMAC 证明，Artifact 的 Evidence lineage 与 Connector/Tool 身份纳入签名；
-- 签发、豁免和撤销由 Electron 主进程再次确认；撤销必须记录理由，并写入带系统加密锚点的追加审计链；
-- 固定 Fixture Weather Run 使用真实诊断与制图代码，但永久标记为构造数据，正式发布门禁必定阻止签发；
+- 工具产出的 Evidence 与 Artifact 实时进入任务 Ledger，保留数据版本、QC 状态与 Connector/Tool 血缘；
+- 固定 Fixture Weather Run 使用真实诊断与制图代码，但永久标记为构造数据，只用于演示和回归验证；
 - 工具卡同时显示连接状态与 `planned / demo / experimental / beta / production / deprecated` 成熟度，连接成功不等于生产可用。
 
 Beta 4 不内置任何单位的真实气象接口地址或生产凭据。接入真实业务前，仍需由部署方配置受信资料源、允许主机和凭据引用。
@@ -136,6 +133,12 @@ METEOMATE_PYTHON_PATH=/path/to/office-python METEOMATE_SOFFICE_PATH=/path/to/sof
 首次测试“桌面应用操作”时，macOS 会要求 MeteoMate 获得“辅助功能”和“屏幕与系统音频录制”权限。产品默认关闭 Cua 遥测和独立更新检查；浏览器、Shell、文件、配置更新、轨迹录制、应用启动与强制结束等 Cua 工具不进入 Agent 工具范围。网页任务继续使用 Playwright。
 
 MeteoMate 不读取系统中的 `goose` 钥匙串项目。ACP 与 Headless 运行时都使用当前 MeteoMate 用户独立的 `GOOSE_PATH_ROOT`，并设置 `GOOSE_DISABLE_KEYRING=1`；首次切换到独立目录时仅迁移旧 Goose 中 OpenAI 兼容 Provider 的名称、地址和模型定义，不复制 API Key、OAuth Token、请求头或旧 `config.yaml`。在模型设置中重新填写的 Provider 密钥由 Goose 写入该用户目录下权限为 `0600` 的 `config/secrets.yaml`。
+
+模型提供商可分别配置 `Chat Completions` 与 `Responses` 协议。默认使用自动识别：火山方舟 Ark 采用 `/api/v3/responses` 并按当前兼容策略关闭流式输出，其他 OpenAI 兼容服务保持 `/v1/chat/completions` 与流式输出。用户可以手动覆盖协议、流式策略和高级请求路径；界面始终展示最终请求地址。新建提供商时还可以用首个模型验证文本响应、流式输出、工具调用和图片输入，验证结果只保存状态和时间，不保存 API Key 或测试内容。
+
+第二期增加组织级模型治理。管理员在 SkillHub 的“模型目录”中登记提供商、协议、请求路径、模型能力与上下文限制，并把真实桌面探测结果登记为验证证据；组织、角色和用户策略可限制提供商、模型及“仅允许已验证模型”。桌面端登录后同步有效目录，只展示当前用户可使用的模型，并以后台登记的传输配置覆盖本地连接元数据。全新电脑会显示尚未启用的组织提供商，用户第一次填写本机密钥时自动创建 Goose 连接并绑定组织 Provider ID。组织后台不接收本机 API Key；`local` 模式下凭据仍保存在用户独立的 Goose `0600` 密钥文件中，`secret_ref` 模式也只保存外部密钥引用。
+
+实现和演示验收说明见 [`docs/MODEL_GOVERNANCE_V2.md`](docs/MODEL_GOVERNANCE_V2.md)。
 
 macOS 的桌面权限会绑定应用的代码签名身份。`npm run package:mac` 首次运行时会在 MeteoMate 专用本地钥匙串中创建并复用 `MeteoMate Local Signing (com.meteomate.desktop)` 签名身份，使重新打包后的 MeteoMate 继续沿用同一权限身份；专用钥匙串密码仅以 `0600` 权限保存在本机 MeteoMate 数据目录。打包时若 MeteoMate 仍在运行会直接停止并提示先完全退出。正式发布时设置 `METEOMATE_CODESIGN_IDENTITY` 使用 Developer ID：
 

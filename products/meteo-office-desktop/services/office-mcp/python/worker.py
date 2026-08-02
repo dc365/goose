@@ -6,6 +6,7 @@ import copy
 import hashlib
 import io
 import json
+import math
 import os
 import re
 import shutil
@@ -32,6 +33,7 @@ from openpyxl.utils import get_column_letter, range_boundaries
 from openpyxl.worksheet.table import Table as ExcelTable
 from openpyxl.worksheet.table import TableStyleInfo
 from PIL import Image
+import pdfplumber
 from pptx import Presentation
 from pptx.chart.data import ChartData
 from pptx.dml.color import RGBColor
@@ -56,7 +58,7 @@ from reportlab.platypus import (
 )
 
 SCHEMA_VERSION = "meteomate.office/v1"
-RUNTIME_VERSION = os.environ.get("METEOMATE_OFFICE_RUNTIME_VERSION", "1.2.0")
+RUNTIME_VERSION = os.environ.get("METEOMATE_OFFICE_RUNTIME_VERSION", "1.3.0")
 DEFAULT_DOCUMENT_FONT = os.environ.get(
     "METEOMATE_OFFICE_DOCUMENT_FONT",
     "Noto Sans CJK SC",
@@ -68,6 +70,8 @@ MAX_OOXML_ENTRIES = 10_000
 MAX_OOXML_RATIO = 200
 MAX_PDF_PAGES = 1_000
 MAX_RENDER_PAGES = 300
+MAX_PREVIEW_TEXT_SPANS = 150_000
+MAX_PREVIEW_TEXT_CHARACTERS = 2_000_000
 MAX_PRESENTATION_SLIDES = 300
 MAX_PRESENTATION_SHAPES = 5_000
 MAX_WORKSHEETS = 200
@@ -413,6 +417,126 @@ def replace_text(document: Document, old: str, new: str) -> int:
     return sum(replace_paragraph_text(paragraph, old, new) for paragraph in iter_document_paragraphs(document))
 
 
+def semantic_text(value: Any) -> tuple[str, list[int]]:
+    normalized: list[str] = []
+    source_indexes: list[int] = []
+    for index, character in enumerate(str(value or "")):
+        if character.isspace():
+            continue
+        normalized.append(character)
+        source_indexes.append(index)
+    return "".join(normalized), source_indexes
+
+
+def text_hash(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def selection_matches(document: Document, selected_text: str) -> list[dict[str, Any]]:
+    normalized_selection, _ = semantic_text(selected_text)
+    if not normalized_selection:
+        fail("INVALID_ARGUMENT", "selectedText 不能为空")
+    matches: list[dict[str, Any]] = []
+    for paragraph_index, paragraph in enumerate(document.paragraphs[:2_000]):
+        normalized_paragraph, source_indexes = semantic_text(paragraph.text)
+        start = normalized_paragraph.find(normalized_selection)
+        while start >= 0:
+            end = start + len(normalized_selection)
+            matches.append({
+                "paragraph": paragraph,
+                "paragraphIndex": paragraph_index,
+                "paragraphId": f"paragraph:{paragraph_index}",
+                "paragraphTextHash": text_hash(paragraph.text),
+                "selectedTextHash": text_hash(normalized_selection),
+                "normalizedStart": start,
+                "normalizedEnd": end,
+                "rawStart": source_indexes[start],
+                "rawEnd": source_indexes[end - 1] + 1,
+            })
+            start = normalized_paragraph.find(normalized_selection, start + 1)
+    return matches
+
+
+def public_selection_anchor(match: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "version": "meteomate.docx-anchor/v1",
+        "paragraphId": match["paragraphId"],
+        "paragraphIndex": match["paragraphIndex"],
+        "paragraphTextHash": match["paragraphTextHash"],
+        "selectedTextHash": match["selectedTextHash"],
+        "normalizedStart": match["normalizedStart"],
+        "normalizedEnd": match["normalizedEnd"],
+    }
+
+
+def resolve_selection_match(
+    document: Document,
+    selected_text: str,
+    anchor: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    matches = selection_matches(document, selected_text)
+    if not matches:
+        fail("ANCHOR_NOT_FOUND", "未能在单一正文段落中定位选区，请重新选择完整句子")
+    if len(matches) != 1:
+        fail("ANCHOR_AMBIGUOUS", "选区在文档中出现多次，请扩大选择范围后重试")
+    match = matches[0]
+    if anchor is None:
+        return match
+    if anchor.get("version") != "meteomate.docx-anchor/v1":
+        fail("INVALID_ARGUMENT", "anchor.version 不受支持")
+    expected = public_selection_anchor(match)
+    for field, value in expected.items():
+        if anchor.get(field) != value:
+            fail("ANCHOR_CHANGED", "段落锚点已失效，请返回预览重新选择原文")
+    return match
+
+
+def replace_run_range(paragraph: Any, start: int, end: int, replacement: str) -> None:
+    if start < 0 or end <= start or end > len(paragraph.text):
+        fail("ANCHOR_CHANGED", "选区范围已失效，请返回预览重新选择原文")
+    runs = list(paragraph.runs)
+    if not runs:
+        paragraph.add_run(replacement)
+        return
+    offsets: list[tuple[int, int]] = []
+    cursor = 0
+    for run in runs:
+        next_cursor = cursor + len(run.text)
+        offsets.append((cursor, next_cursor))
+        cursor = next_cursor
+    start_run = next((index for index, (_, stop) in enumerate(offsets) if stop > start), None)
+    end_run = next((index for index, (begin, stop) in enumerate(offsets) if begin < end <= stop), None)
+    if start_run is None or end_run is None:
+        fail("ANCHOR_CHANGED", "选区与段落文本结构不一致，请重新选择原文")
+    start_offset = start - offsets[start_run][0]
+    end_offset = end - offsets[end_run][0]
+    if start_run == end_run:
+        run = runs[start_run]
+        run.text = f"{run.text[:start_offset]}{replacement}{run.text[end_offset:]}"
+        return
+    runs[start_run].text = f"{runs[start_run].text[:start_offset]}{replacement}"
+    for index in range(start_run + 1, end_run):
+        runs[index].text = ""
+    runs[end_run].text = runs[end_run].text[end_offset:]
+
+
+def versioned_docx_output(source: Path, requested: Any = None) -> Path:
+    if requested:
+        output = resolve_output(requested, ".docx")
+        if output.resolve(strict=False) == source.resolve(strict=True):
+            fail("INVALID_ARGUMENT", "选区编辑必须生成新版本，不能覆盖原文件")
+        return output
+    base_name = f"{source.stem}_已修改"
+    candidate = source.with_name(f"{base_name}.docx")
+    version = 2
+    while candidate.exists():
+        candidate = source.with_name(f"{base_name}_{version}.docx")
+        version += 1
+    if not inside_workspace(candidate.parent.resolve(strict=True)):
+        fail("WORKSPACE_VIOLATION", "新版本输出目录已超出项目工作区")
+    return candidate
+
+
 def fill_content_control(document: Document, name: str, value: str) -> bool:
     namespace = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
     changed = False
@@ -734,6 +858,36 @@ def docx_inspect(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def docx_resolve_selection(payload: dict[str, Any]) -> dict[str, Any]:
+    source = resolve_source(payload.get("sourcePath"), extensions={".docx"})
+    source_hash = verify_source_hash(source, payload.get("sourceHash"))
+    ooxml_preflight(source)
+    selected_text = str(payload.get("selectedText") or "")
+    document = Document(str(source))
+    try:
+        match = resolve_selection_match(document, selected_text)
+    except OfficeError as error:
+        if error.code not in {"ANCHOR_NOT_FOUND", "ANCHOR_AMBIGUOUS"}:
+            raise
+        return base_result(
+            editable=False,
+            status="reference_only",
+            reason=str(error).split(": ", 1)[-1],
+            sourcePath=relative_path(source),
+            sourceHash=source_hash,
+            warnings=[],
+        )
+    return base_result(
+        editable=True,
+        status="editable",
+        reason="已定位唯一正文段落；提交时将再次核对源文件与锚点",
+        sourcePath=relative_path(source),
+        sourceHash=source_hash,
+        anchor=public_selection_anchor(match),
+        warnings=[],
+    )
+
+
 def docx_create(payload: dict[str, Any]) -> dict[str, Any]:
     spec = payload.get("spec")
     if not isinstance(spec, dict):
@@ -839,6 +993,85 @@ def docx_edit(payload: dict[str, Any]) -> dict[str, Any]:
             source_hash=source_hash,
         ),
         operations=operation_results,
+        warnings=[],
+    )
+
+
+def docx_edit_selection(payload: dict[str, Any]) -> dict[str, Any]:
+    source = resolve_source(payload.get("sourcePath"), extensions={".docx"})
+    source_hash = verify_source_hash(source, payload.get("sourceHash"))
+    ooxml_preflight(source)
+    selected_text = str(payload.get("selectedText") or "")
+    replacement_text = str(payload.get("replacementText") or "")
+    anchor = payload.get("anchor")
+    if not isinstance(anchor, dict):
+        fail("INVALID_ARGUMENT", "anchor 必须是 docx_resolve_selection 返回的对象")
+    if len(replacement_text) > 100_000:
+        fail("RESOURCE_LIMIT", "replacementText 不能超过 100000 个字符")
+    document = Document(str(source))
+    match = resolve_selection_match(document, selected_text, anchor)
+    replace_run_range(
+        match["paragraph"],
+        match["rawStart"],
+        match["rawEnd"],
+        replacement_text,
+    )
+    output = versioned_docx_output(source, payload.get("outputPath"))
+    try:
+        atomic_save(document.save, output)
+        security = ooxml_preflight(output)
+        verified_document = Document(str(output))
+        render = render_internal(output)
+    except Exception:
+        output.unlink(missing_ok=True)
+        raise
+    output_hash = sha256_file(output)
+    return base_result(
+        valid=True,
+        status="ready",
+        artifact=artifact_record(
+            output,
+            status="ready",
+            metadata={
+                "sourcePath": relative_path(source),
+                "derivedFrom": source_hash,
+                "render": render,
+                "selectionEdit": {
+                    "paragraphId": match["paragraphId"],
+                    "selectedTextHash": match["selectedTextHash"],
+                    "replacementTextHash": text_hash(replacement_text),
+                },
+                "validation": {
+                    "status": "ready",
+                    "checks": [
+                        {"name": "source-lock", "status": "passed", "sourceHash": source_hash},
+                        {"name": "selection-anchor", "status": "passed", "paragraphId": match["paragraphId"]},
+                        {"name": "structure", "status": "passed", "paragraphCount": len(verified_document.paragraphs)},
+                        {"name": "security", "status": "passed", "detail": security},
+                        {"name": "render", "status": "passed", "pageCount": render["pageCount"]},
+                    ],
+                },
+            },
+            source_hash=source_hash,
+        ),
+        sourceArtifact={
+            "path": relative_path(source),
+            "contentHash": source_hash,
+        },
+        edit={
+            "paragraphId": match["paragraphId"],
+            "selectedText": selected_text,
+            "replacementText": replacement_text,
+            "outputHash": output_hash,
+        },
+        render=render,
+        checks=[
+            {"name": "source-lock", "status": "passed"},
+            {"name": "selection-anchor", "status": "passed"},
+            {"name": "structure", "status": "passed"},
+            {"name": "security", "status": "passed"},
+            {"name": "render", "status": "passed", "pageCount": render["pageCount"]},
+        ],
         warnings=[],
     )
 
@@ -2401,6 +2634,72 @@ def write_json(target: Path, value: Any) -> None:
     temporary.replace(target)
 
 
+def preview_text_layer(
+    preview_pdf: Path,
+    source_hash: str,
+    page_from: int,
+    page_to: int,
+) -> dict[str, Any]:
+    pages: list[dict[str, Any]] = []
+    span_count = 0
+    character_count = 0
+    truncated = False
+    with pdfplumber.open(str(preview_pdf)) as document:
+        for page_number in range(page_from, page_to + 1):
+            page = document.pages[page_number - 1]
+            spans: list[dict[str, Any]] = []
+            words = page.extract_words(
+                x_tolerance=2,
+                y_tolerance=2,
+                keep_blank_chars=False,
+                use_text_flow=False,
+            ) or []
+            for word in words:
+                text = str(word.get("text") or "")
+                coordinates = [
+                    float(word.get("x0") or 0),
+                    float(word.get("top") or 0),
+                    float(word.get("x1") or 0),
+                    float(word.get("bottom") or 0),
+                ]
+                if not text or not all(math.isfinite(value) for value in coordinates):
+                    continue
+                x0, top, x1, bottom = coordinates
+                if x1 <= x0 or bottom <= top:
+                    continue
+                if (
+                    span_count >= MAX_PREVIEW_TEXT_SPANS
+                    or character_count + len(text) > MAX_PREVIEW_TEXT_CHARACTERS
+                ):
+                    truncated = True
+                    break
+                spans.append({
+                    "text": text[:4_000],
+                    "x": round(x0, 4),
+                    "y": round(top, 4),
+                    "width": round(x1 - x0, 4),
+                    "height": round(bottom - top, 4),
+                })
+                span_count += 1
+                character_count += len(text)
+            pages.append({
+                "page": page_number,
+                "width": round(float(page.width), 4),
+                "height": round(float(page.height), 4),
+                "spans": spans,
+            })
+            if truncated:
+                break
+    return {
+        "schemaVersion": "meteomate.preview-text/v1",
+        "sourceHash": source_hash,
+        "pages": pages,
+        "spanCount": span_count,
+        "characterCount": character_count,
+        "truncated": truncated,
+    }
+
+
 def render_internal(
     source: Path,
     *,
@@ -2452,6 +2751,9 @@ def render_internal(
             bitmap.close()
             page.close()
         document.close()
+        text_layer = preview_text_layer(preview_pdf, source_hash, first_page, last_page)
+        text_layer_path = output_directory / "text-layer.json"
+        write_json(text_layer_path, text_layer)
         manifest = {
             "schemaVersion": "meteomate.preview/v1",
             "sourcePath": relative_path(source),
@@ -2460,6 +2762,8 @@ def render_internal(
             "pageCount": page_count,
             "dpi": dpi,
             "thumbnails": thumbnails,
+            "textLayerPath": relative_path(text_layer_path),
+            "textLayerTruncated": text_layer["truncated"],
         }
         manifest_path = output_directory / "manifest.json"
         write_json(manifest_path, manifest)
@@ -2574,8 +2878,10 @@ def artifact_validate(payload: dict[str, Any]) -> dict[str, Any]:
 
 TOOLS = {
     "docx_inspect": docx_inspect,
+    "docx_resolve_selection": docx_resolve_selection,
     "docx_create": docx_create,
     "docx_edit": docx_edit,
+    "docx_edit_selection": docx_edit_selection,
     "pptx_inspect": pptx_inspect,
     "pptx_create": pptx_create,
     "pptx_edit": pptx_edit,

@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: MeteoMate SkillHub API
-  version: 1.7.0
-  description: Self-hosted registry for MeteoMate Experts and Agent Skills packages.
+  version: 1.8.0
+  description: Self-hosted management API for MeteoMate users, model governance, Experts, and Agent Skills packages.
 servers:
   - url: http://127.0.0.1:8088
 paths:
@@ -72,6 +72,16 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/EffectivePolicyContext'}
+  /v1/me/model-catalog:
+    get:
+      security: [{bearerAuth: []}]
+      responses:
+        '200':
+          description: Effective organization model catalog filtered by the current user's policy
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PublicModelCatalog'}
+        '401': {description: Authentication required}
   /v1/admin/users:
     get:
       security: [{bearerAuth: []}]
@@ -205,6 +215,58 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/EffectivePolicyContext'}
+  /v1/admin/model-providers:
+    get:
+      security: [{bearerAuth: []}]
+      responses:
+        '200':
+          description: Complete administrator model catalog, including secret references but never secret values
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminModelCatalog'}
+        '403': {description: Administrator access required}
+  /v1/admin/model-providers/{id}:
+    parameters:
+      - {name: id, in: path, required: true, schema: {type: string, pattern: '^[a-z0-9][a-z0-9._-]{0,63}$'}}
+    put:
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ModelProviderInput'}
+      responses:
+        '200':
+          description: Model provider created or replaced
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminModelProvider'}
+        '400': {description: Invalid provider configuration}
+        '409': {description: Mutation would invalidate a referenced policy}
+    delete:
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: Model provider deleted}
+        '404': {description: Model provider not found}
+        '409': {description: Provider is still referenced by a policy}
+  /v1/admin/model-providers/{id}/verification:
+    post:
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, pattern: '^[a-z0-9][a-z0-9._-]{0,63}$'}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ModelVerificationReport'}
+      responses:
+        '200':
+          description: Verification result recorded without request content or credentials
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminModelProvider'}
+        '400': {description: Invalid verification report}
+        '404': {description: Provider or model not found}
   /v1/trust/keys:
     get:
       responses:
@@ -758,12 +820,143 @@ components:
             orgId: {type: string}
         remote: {type: string}
         detail: {type: object, additionalProperties: true}
+    ModelVerificationCheck:
+      type: object
+      required: [id, status]
+      properties:
+        id: {type: string, enum: [text, streaming, tool_call, image_input, reasoning]}
+        status: {type: string, enum: [passed, failed, skipped]}
+        message: {type: string, maxLength: 512}
+    ModelVerification:
+      type: object
+      required: [status, checks]
+      properties:
+        status: {type: string, enum: [untested, verified, failed]}
+        checkedAt: {type: string, format: date-time}
+        checkedBy: {type: string}
+        message: {type: string, maxLength: 512}
+        checks:
+          type: array
+          items: {$ref: '#/components/schemas/ModelVerificationCheck'}
+    ManagedModel:
+      type: object
+      required: [id, name, enabled, toolCall, imageInput, reasoning, verification]
+      properties:
+        id: {type: string, minLength: 1, maxLength: 128}
+        name: {type: string, minLength: 1, maxLength: 128}
+        enabled: {type: boolean}
+        toolCall: {type: boolean}
+        imageInput: {type: boolean}
+        reasoning: {type: boolean}
+        contextLimit: {type: integer, minimum: 0}
+        maxOutputTokens: {type: integer, minimum: 0}
+        verification: {$ref: '#/components/schemas/ModelVerification'}
+    ModelInput:
+      type: object
+      required: [id, enabled, toolCall, imageInput, reasoning]
+      properties:
+        id: {type: string, minLength: 1, maxLength: 160}
+        name: {type: string, maxLength: 100, description: Defaults to the model ID when omitted}
+        enabled: {type: boolean}
+        toolCall: {type: boolean}
+        imageInput: {type: boolean}
+        reasoning: {type: boolean}
+        contextLimit: {type: integer, minimum: 0}
+        maxOutputTokens: {type: integer, minimum: 0}
+    ModelProviderInput:
+      type: object
+      required: [name, enabled, presetMode, protocol, streamingMode, baseUrl, requiresAuth, credentialMode, models]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 128}
+        description: {type: string, maxLength: 512}
+        enabled: {type: boolean}
+        presetMode: {type: string, enum: [openai-compatible, volcengine-ark]}
+        protocol: {type: string, enum: [chat_completions, responses]}
+        streamingMode: {type: string, enum: [auto, on, off]}
+        baseUrl: {type: string, format: uri}
+        endpointPath: {type: string, maxLength: 256}
+        requiresAuth: {type: boolean}
+        credentialMode: {type: string, enum: [none, local, secret_ref]}
+        secretRef:
+          type: string
+          description: Reference only; accepted schemes are env, vault, secret, and k8s. Secret values are rejected.
+          pattern: '^(env|vault|secret|k8s)://[^\\s]+$'
+        models:
+          type: array
+          minItems: 1
+          maxItems: 128
+          items: {$ref: '#/components/schemas/ModelInput'}
+    AdminModelProvider:
+      allOf:
+        - {$ref: '#/components/schemas/ModelProviderInput'}
+        - type: object
+          required: [id, verification, revision, createdAt, updatedAt]
+          properties:
+            id: {type: string}
+            models: {type: array, items: {$ref: '#/components/schemas/ManagedModel'}}
+            verification: {$ref: '#/components/schemas/ModelVerification'}
+            revision: {type: integer, minimum: 1}
+            createdAt: {type: string, format: date-time}
+            updatedAt: {type: string, format: date-time}
+    PublicModelProvider:
+      type: object
+      required: [id, name, enabled, presetMode, protocol, streamingMode, baseUrl, requiresAuth, credentialMode, credentialConfigured, models, verification, revision, updatedAt]
+      properties:
+        id: {type: string}
+        name: {type: string}
+        description: {type: string}
+        enabled: {type: boolean}
+        presetMode: {type: string, enum: [openai-compatible, volcengine-ark]}
+        protocol: {type: string, enum: [chat_completions, responses]}
+        streamingMode: {type: string, enum: [auto, on, off]}
+        baseUrl: {type: string, format: uri}
+        endpointPath: {type: string}
+        requiresAuth: {type: boolean}
+        credentialMode: {type: string, enum: [none, local, secret_ref]}
+        credentialConfigured: {type: boolean}
+        models: {type: array, items: {$ref: '#/components/schemas/ManagedModel'}}
+        verification: {$ref: '#/components/schemas/ModelVerification'}
+        revision: {type: integer}
+        updatedAt: {type: string, format: date-time}
+    AdminModelCatalog:
+      type: object
+      required: [apiVersion, kind, version, revision, providers, updatedAt]
+      properties:
+        apiVersion: {type: string}
+        kind: {type: string, const: OrganizationModelCatalogState}
+        version: {type: integer}
+        revision: {type: integer}
+        providers:
+          type: object
+          additionalProperties: {$ref: '#/components/schemas/AdminModelProvider'}
+        updatedAt: {type: string, format: date-time}
+    PublicModelCatalog:
+      type: object
+      required: [apiVersion, kind, revision, providers, updatedAt]
+      properties:
+        apiVersion: {type: string}
+        kind: {type: string, const: OrganizationModelCatalog}
+        revision: {type: integer}
+        providers: {type: array, items: {$ref: '#/components/schemas/PublicModelProvider'}}
+        updatedAt: {type: string, format: date-time}
+    ModelVerificationReport:
+      type: object
+      required: [modelId, status, checks]
+      properties:
+        modelId: {type: string}
+        status: {type: string, enum: [verified, failed]}
+        message: {type: string, maxLength: 512}
+        checks:
+          type: array
+          items: {$ref: '#/components/schemas/ModelVerificationCheck'}
     PolicySettings:
       type: object
-      required: [defaultModel, allowedModels, defaultSkillIds, allowedSkillIds, allowedConnectorIds, defaultPermissionProfileId, allowedPermissionProfileIds, autoCompactThreshold, skillPublishMode]
+      required: [defaultModel, allowedModels, allowedProviderIds, requireVerifiedModels, defaultSkillIds, allowedSkillIds, allowedConnectorIds, defaultPermissionProfileId, allowedPermissionProfileIds, autoCompactThreshold, skillPublishMode]
       properties:
         defaultModel: {type: string, description: Provider and model ID separated by a slash}
         allowedModels: {type: array, maxItems: 128, items: {type: string}}
+        allowedProviderIds: {type: array, maxItems: 64, items: {type: string}}
+        requireVerifiedModels: {type: boolean, default: false}
         autoCompactThreshold: {type: number, minimum: 0.5, maximum: 0.95, default: 0.8}
         defaultSkillIds: {type: array, maxItems: 128, items: {type: string}}
         allowedSkillIds: {type: array, maxItems: 128, items: {type: string}}
@@ -780,6 +973,8 @@ components:
       properties:
         defaultModel: {type: string}
         allowedModels: {type: array, maxItems: 128, items: {type: string}}
+        allowedProviderIds: {type: array, maxItems: 64, items: {type: string}}
+        requireVerifiedModels: {type: boolean}
         autoCompactThreshold: {type: number, minimum: 0.5, maximum: 0.95}
         defaultSkillIds: {type: array, maxItems: 128, items: {type: string}}
         allowedSkillIds: {type: array, maxItems: 128, items: {type: string}}

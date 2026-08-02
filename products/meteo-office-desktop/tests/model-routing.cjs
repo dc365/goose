@@ -60,7 +60,7 @@ const runtimeHelperStart = mainSource.indexOf('function sessionProviderId');
 const runtimeHelperEnd = mainSource.indexOf('class GooseAcpRuntime', runtimeHelperStart);
 assert.ok(runtimeHelperStart >= 0 && runtimeHelperEnd > runtimeHelperStart, 'runtime provider helpers should be present');
 const runtimeContext = { URL };
-vm.runInNewContext(`${mainSource.slice(runtimeHelperStart, runtimeHelperEnd)}\nthis.requiresNewRuntimeSession = requiresNewRuntimeSession; this.newSessionMeta = newSessionMeta; this.runtimeToolIdentity = runtimeToolIdentity; this.sessionPermissionGrantKey = sessionPermissionGrantKey; this.openAiChatCompletionsPath = openAiChatCompletionsPath; this.shouldUpdateProviderBasePath = shouldUpdateProviderBasePath;`, runtimeContext);
+vm.runInNewContext(`${mainSource.slice(runtimeHelperStart, runtimeHelperEnd)}\nthis.requiresNewRuntimeSession = requiresNewRuntimeSession; this.newSessionMeta = newSessionMeta; this.runtimeToolIdentity = runtimeToolIdentity; this.sessionPermissionGrantKey = sessionPermissionGrantKey; this.openAiChatCompletionsPath = openAiChatCompletionsPath; this.openAiResponsesPath = openAiResponsesPath; this.openAiProviderRoute = openAiProviderRoute; this.shouldUpdateProviderTransport = shouldUpdateProviderTransport;`, runtimeContext);
 assert.equal(
   runtimeContext.requiresNewRuntimeSession(
     { providerId: 'doubao-provider' },
@@ -145,23 +145,76 @@ assert.equal(
   runtimeContext.openAiChatCompletionsPath('http://192.168.28.105:11434/v1'),
   'v1/chat/completions'
 );
+assert.equal(runtimeContext.openAiResponsesPath('https://gateway.example/openai/v1'), 'openai/v1/responses');
+const arkAutoRoute = runtimeContext.openAiProviderRoute('https://ark.cn-beijing.volces.com/api/v3');
+assert.equal(arkAutoRoute.providerPreset, 'volcengine-ark');
+assert.equal(arkAutoRoute.protocol, 'responses');
+assert.equal(arkAutoRoute.basePath, 'api/v3/responses');
+assert.equal(arkAutoRoute.endpointUrl, 'https://ark.cn-beijing.volces.com/api/v3/responses');
+assert.equal(arkAutoRoute.supportsStreaming, false);
+const migratedArkChatRoute = runtimeContext.openAiProviderRoute(
+  'https://ark.cn-beijing.volces.com/api/v3/chat/completions'
+);
+assert.equal(migratedArkChatRoute.protocol, 'responses');
+assert.equal(migratedArkChatRoute.basePath, 'api/v3/responses');
+const arkExplicitChatRoute = runtimeContext.openAiProviderRoute(
+  'https://ark.cn-beijing.volces.com/api/v3',
+  { protocolMode: 'chat_completions', streamingMode: 'on' }
+);
+assert.equal(arkExplicitChatRoute.protocol, 'chat_completions');
+assert.equal(arkExplicitChatRoute.basePath, 'api/v3/chat/completions');
+assert.equal(arkExplicitChatRoute.supportsStreaming, true);
+const intranetRoute = runtimeContext.openAiProviderRoute('http://192.168.28.105:11434/v1');
+assert.equal(intranetRoute.protocol, 'chat_completions');
+assert.equal(intranetRoute.basePath, 'v1/chat/completions');
+assert.equal(intranetRoute.supportsStreaming, true);
+const explicitResponsesRoute = runtimeContext.openAiProviderRoute(
+  'https://gateway.example/openai/v1',
+  { protocolMode: 'responses', streamingMode: 'off' }
+);
+assert.equal(explicitResponsesRoute.basePath, 'openai/v1/responses');
+assert.equal(explicitResponsesRoute.supportsStreaming, false);
+const overrideRoute = runtimeContext.openAiProviderRoute(
+  'https://gateway.example/openai/v1',
+  { endpointPathOverride: '/proxy/responses' }
+);
+assert.equal(overrideRoute.protocol, 'responses');
+assert.equal(overrideRoute.endpointUrl, 'https://gateway.example/proxy/responses');
 assert.equal(
-  runtimeContext.shouldUpdateProviderBasePath({
+  runtimeContext.shouldUpdateProviderTransport({
     apiUrl: 'https://ark.cn-beijing.volces.com/api/v3',
-    basePath: 'v1/chat/completions',
+    basePath: 'api/v3/chat/completions',
+    supportsStreaming: true,
+  }, { protocolMode: 'chat_completions', streamingMode: 'on' }),
+  false
+);
+assert.equal(
+  runtimeContext.shouldUpdateProviderTransport({
+    apiUrl: 'https://ark.cn-beijing.volces.com/api/v3',
+    basePath: 'api/v3/chat/completions',
+    supportsStreaming: true,
   }),
   true
 );
 assert.equal(
-  runtimeContext.shouldUpdateProviderBasePath({
+  runtimeContext.shouldUpdateProviderTransport({
     apiUrl: 'http://192.168.28.105:11434/v1',
     basePath: 'v1/chat/completions',
+    supportsStreaming: true,
   }),
   false
 );
 assert.ok(mainSource.includes('this.client.listSessions('));
 assert.ok(!mainSource.includes('this.client.goose.sessionInfo_unstable'));
 assert.ok(!mainSource.includes("extMethod('_goose/unstable/session/info'"));
-assert.ok(mainSource.includes("basePath: openAiChatCompletionsPath(String(request.apiUrl || '').trim())"));
+assert.ok(mainSource.includes('const route = openAiProviderRoute(apiUrl, request)'));
+assert.ok(mainSource.includes('supportsStreaming: route.supportsStreaming'));
+assert.ok(mainSource.includes('basePath: route.basePath'));
+assert.ok(mainSource.includes('this.getModelSettings({ [created.providerId]: request })'));
+assert.ok(mainSource.includes('this.getModelSettings({ [providerId]: request })'));
+assert.ok(mainSource.includes('managedProviderEntries?.()'));
+assert.ok(mainSource.includes('request.localProviderAvailable === false'));
+assert.ok(actionsSource.includes('organizationProviderId: settingsDialog.providerDraft.organizationProviderId'));
+assert.ok(rendererSource.includes('先配置凭据'));
 
 console.log('MeteoMate model routing regression checks passed.');

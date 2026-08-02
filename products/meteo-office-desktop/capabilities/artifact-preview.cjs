@@ -197,9 +197,8 @@ async function resolveLocalPreview(target, roots) {
 
   const extension = path.extname(resolved).toLowerCase();
   const kind = previewKind(extension);
-  if (kind === 'office') throw new Error('该 Office 文件尚未生成可视化预览，请先渲染成果物');
 
-  let loadUrl = pathToFileURL(resolved).href;
+  let loadUrl = kind === 'office' ? null : pathToFileURL(resolved).href;
   if (TEXT_EXTENSIONS.has(extension)) {
     const handle = await fs.promises.open(resolved, 'r');
     try {
@@ -217,9 +216,12 @@ async function resolveLocalPreview(target, roots) {
   return {
     address: resolved,
     extension,
+    fingerprint: `${stat.size}:${Math.round(stat.mtimeMs)}`,
     kind,
     loadUrl,
     localPath: resolved,
+    root: roots.find((root) => isInside(root, resolved)) || null,
+    sizeBytes: stat.size,
     title: path.basename(resolved),
   };
 }

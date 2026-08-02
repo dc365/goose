@@ -47,10 +47,65 @@ assert.deepEqual(
 );
 assert.equal(ExpertTeam.isTeamRequest(definition), true);
 
-const run = ExpertTeam.createRunState(definition, { id: 'run-001', startedAt: 100 });
+const run = ExpertTeam.createRunState(definition, {
+  id: 'run-001',
+  startedAt: 100,
+  responseId: 'assistant-001',
+});
 assert.equal(run.id, 'run-001');
+assert.equal(run.responseId, 'assistant-001');
 assert.equal(run.status, 'running');
 assert.deepEqual(run.members.map((member) => member.status), ['pending', 'pending', 'pending']);
+assert.deepEqual(run.members.map((member) => member.updates), [[], [], []]);
+assert.deepEqual(run.timeline, []);
+
+ExpertTeam.appendTimelineEntry(run, {
+  key: 'member:analysis:progress',
+  type: 'progress',
+  memberId: 'analysis',
+  actor: '分析专家',
+  title: '形成阶段结果',
+  detail: '完成第一轮资料核对。',
+  status: 'running',
+  at: 120,
+});
+ExpertTeam.appendTimelineEntry(run, {
+  key: 'member:analysis:progress',
+  type: 'progress',
+  memberId: 'analysis',
+  actor: '分析专家',
+  title: '形成阶段结果',
+  detail: '完成第二轮资料核对。',
+  status: 'running',
+  at: 140,
+});
+assert.equal(run.timeline.length, 1);
+assert.equal(run.timeline[0].detail, '完成第二轮资料核对。');
+
+assert.deepEqual(
+  ExpertTeam.runtimeOutputFailure([
+    'Ran into this error: Server error: Failed to parse input at pos 2679:',
+    '<function=weather-data__weather_diagnose_synoptic>',
+    '<parameter=caseId>synthetic-fujian-rainstorm-001',
+  ].join('\n')),
+  {
+    code: 'tool_call_parse',
+    message: '模型生成的工具调用格式无法解析，本次结果未被采纳。',
+  }
+);
+assert.equal(ExpertTeam.runtimeOutputFailure('正常分析结果，没有运行时错误。'), null);
+
+for (let index = 0; index < 5; index += 1) {
+  ExpertTeam.appendTimelineEntry(run, {
+    key: `activity:${index}`,
+    type: 'activity',
+    title: `工具活动 ${index}`,
+    status: 'completed',
+    at: 200 + index,
+  }, 3);
+}
+assert.equal(run.timeline.length, 3);
+assert.deepEqual(run.timeline.map((entry) => entry.title), ['工具活动 2', '工具活动 3', '工具活动 4']);
 
 const results = new Map([
   ['analysis', {

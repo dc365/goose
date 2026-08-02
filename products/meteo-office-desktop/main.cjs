@@ -5,6 +5,7 @@ const {
   desktopCapturer,
   dialog,
   ipcMain,
+  Menu,
   screen,
   shell,
   WebContentsView,
@@ -24,8 +25,12 @@ const PermissionPolicy = require('./capabilities/permission-policy.cjs');
 const ComputerPip = require('./capabilities/computer-pip-controller.cjs');
 const OfficeArtifactCollector = require('./capabilities/office-artifact-collector.cjs');
 const ArtifactPreview = require('./capabilities/artifact-preview.cjs');
+const ArtifactFileActions = require('./capabilities/artifact-file-actions.cjs');
+const ArtifactSelection = require('./capabilities/artifact-selection.cjs');
+const OfficePreview = require('./capabilities/office-preview.cjs');
 const WeatherConnector = require('./capabilities/weather-connector.js');
 const WeatherResultCollector = require('./capabilities/weather-result-collector.cjs');
+const WindowLayout = require('./capabilities/window-layout.cjs');
 const SafeWorkspace = require('./capabilities/safe-workspace.cjs');
 const ProjectWorkspace = require('./capabilities/project-workspace.cjs');
 const SessionPlatformExtensions = require('./capabilities/session-platform-extensions.cjs');
@@ -58,12 +63,22 @@ const COMPOSER_FILE_LIMIT = 400;
 const COMPOSER_REFERENCE_LIMIT = 8;
 const COMPOSER_REFERENCE_CHAR_LIMIT = 40_000;
 const COMPOSER_REFERENCE_FILE_CHAR_LIMIT = 14_000;
+const TEAM_MEMBER_PROGRESS_INTERVAL_MS = 120;
 const COMPOSER_TEXT_EXTENSIONS = new Set([
   '.txt', '.md', '.markdown', '.csv', '.tsv', '.json', '.jsonl', '.yaml', '.yml',
   '.xml', '.html', '.htm', '.log', '.ini', '.conf', '.cfg', '.toml', '.py', '.r',
   '.js', '.jsx', '.ts', '.tsx', '.sql', '.sh', '.bat', '.ps1', '.tex', '.rst',
   '.go', '.rs', '.java', '.kt', '.swift', '.c', '.h', '.cpp', '.hpp', '.geojson',
 ]);
+
+function streamingTextPreview(value, limit = 4_000) {
+  const text = String(value || '').trim();
+  if (text.length <= limit) return text;
+  const tail = text.slice(-limit);
+  const boundary = tail.search(/\n\s*\n|\n(?=#{1,6}\s|[-*+]\s|\d+\.\s|>\s)/);
+  const visible = boundary >= 0 && boundary < 600 ? tail.slice(boundary).trim() : tail.trim();
+  return `> 较早内容已收起，以下为最新阶段输出。\n\n${visible}`;
+}
 const COMPOSER_SKIPPED_DIRECTORIES = new Set([
   '.git', '.svn', '.hg', '.idea', '.vscode', 'node_modules', 'dist', 'build', 'target',
   '.cache', 'coverage', '__pycache__', '.venv', 'venv',
@@ -75,7 +90,11 @@ const pendingPermissions = new Map();
 let mainWindow = null;
 let computerPipController = null;
 const artifactPreviewEntries = new Map();
+const pendingArtifactPreviewShows = new Map();
 let activeArtifactPreviewId = null;
+let artifactPreviewRequestSequence = 0;
+const CONTROLLED_ARTIFACT_PREVIEW_URL = pathToFileURL(path.join(__dirname, 'artifact-preview.html')).href;
+const WINDOW_MODES = WindowLayout.WINDOW_MODES;
 
 app.on('second-instance', () => {
   if (!mainWindow || mainWindow.isDestroyed()) return;
@@ -84,23 +103,14 @@ app.on('second-instance', () => {
   mainWindow.focus();
 });
 
-const WINDOW_MODES = Object.freeze({
-  account: { width: 480, height: 580, minWidth: 420, minHeight: 520 },
-  workspace: { width: 1540, height: 960, minWidth: 1220, minHeight: 760 },
-});
-
 function setMainWindowMode(mode, animate = true) {
   if (!mainWindow || mainWindow.isDestroyed()) return false;
-  const target = WINDOW_MODES[mode];
-  if (!target) throw new Error('Invalid window mode');
+  if (!WINDOW_MODES[mode]) throw new Error('Invalid window mode');
+  const display = screen.getDisplayMatching(mainWindow.getBounds());
+  const target = WindowLayout.resolveWindowMode(mode, display?.workArea);
   if (mainWindow.isMaximized()) mainWindow.unmaximize();
-  if (mode === 'workspace') {
-    mainWindow.setSize(target.width, target.height, animate);
-    mainWindow.setMinimumSize(target.minWidth, target.minHeight);
-  } else {
-    mainWindow.setMinimumSize(target.minWidth, target.minHeight);
-    mainWindow.setSize(target.width, target.height, animate);
-  }
+  mainWindow.setMinimumSize(target.minWidth, target.minHeight);
+  mainWindow.setSize(target.width, target.height, animate);
   mainWindow.center();
   return true;
 }
@@ -138,14 +148,20 @@ function normalizedPreviewBounds(bounds) {
 function artifactPreviewNavigationState(entry, patch = {}) {
   const webContents = entry.view.webContents;
   const currentUrl = webContents.getURL();
-  const address = currentUrl.startsWith('data:') ? entry.source.address : currentUrl || entry.source.address;
+  const address = entry.source.controlledPreview || currentUrl.startsWith('data:')
+    ? entry.source.address
+    : currentUrl || entry.source.address;
   return {
     id: entry.id,
     address,
+    cached: Boolean(entry.source.cached),
     canGoBack: webContents.navigationHistory.canGoBack(),
     canGoForward: webContents.navigationHistory.canGoForward(),
-    kind: entry.source.kind,
-    loading: webContents.isLoading(),
+    kind: entry.source.originalKind || entry.source.kind,
+    imageBacked: Boolean(entry.source.imageBacked),
+    loading: entry.source.controlledPreview ? entry.documentLoading !== false : webContents.isLoading(),
+    pageCount: entry.source.pageCount || null,
+    previewKind: entry.source.kind,
     title: entry.title || entry.source.title,
     ...patch,
   };
@@ -183,11 +199,113 @@ function destroyArtifactPreview(entry) {
   if (activeArtifactPreviewId === entry.id) activeArtifactPreviewId = null;
 }
 
-function createArtifactPreviewEntry(id, source, roots, targetKey) {
+function reportArtifactFileActionError(error) {
+  dialog.showErrorBox('文件操作失败', error?.message || '无法完成文件操作');
+}
+
+function runArtifactFileCommand(command, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      shell: false,
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      reject(new Error('文件操作超时'));
+    }, 15_000);
+    child.once('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.once('exit', (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve(true);
+      else reject(new Error(`系统文件操作失败（code=${code ?? 'none'}）`));
+    });
+  });
+}
+
+async function openArtifactFile(filePath) {
+  const error = await shell.openPath(filePath);
+  if (error) throw new Error(error);
+}
+
+function openArtifactWithApplication(filePath, applicationPath) {
+  return runArtifactFileCommand('open', ['-a', applicationPath, filePath]);
+}
+
+async function copyArtifactFile(filePath) {
+  const command = ArtifactFileActions.fileClipboardCommand(filePath);
+  if (!command) throw new Error('当前系统暂不支持复制文件对象');
+  await runArtifactFileCommand(command.command, command.args);
+}
+
+async function showArtifactContextMenu(event, request = {}) {
+  const roots = artifactPreviewRoots(request.workspace);
+  const source = await ArtifactPreview.resolvePreviewTarget({ target: request.target, roots });
+  if (!source.localPath) throw new Error('当前地址不是本地文件');
+  const filePath = source.localPath;
+  const applications = process.platform === 'darwin'
+    ? ArtifactFileActions.macApplicationsForFile(filePath)
+    : [];
+  const preferredApplication = applications[0] || null;
+  const chooser = ArtifactFileActions.openWithChooserCommand(filePath);
+  const openWithSubmenu = applications.map((application) => ({
+    label: application.name,
+    click: () => {
+      void openArtifactWithApplication(filePath, application.path).catch(reportArtifactFileActionError);
+    },
+  }));
+  if (chooser) {
+    openWithSubmenu.push({
+      label: '选择其他应用…',
+      click: () => {
+        void runArtifactFileCommand(chooser.command, chooser.args).catch(reportArtifactFileActionError);
+      },
+    });
+  }
+  if (!openWithSubmenu.length) openWithSubmenu.push({ label: '未找到其他可用应用', enabled: false });
+
+  const template = [
+    {
+      label: '打开文件',
+      click: () => void openArtifactFile(filePath).catch(reportArtifactFileActionError),
+    },
+    ...(preferredApplication ? [{
+      label: `在 ${preferredApplication.name} 中打开`,
+      click: () => {
+        void openArtifactWithApplication(filePath, preferredApplication.path).catch(reportArtifactFileActionError);
+      },
+    }] : []),
+    { label: '打开方式', submenu: openWithSubmenu },
+    { type: 'separator' },
+    {
+      label: '复制路径',
+      click: () => clipboard.writeText(filePath),
+    },
+    {
+      label: '复制文件内容',
+      enabled: Boolean(ArtifactFileActions.fileClipboardCommand(filePath)),
+      click: () => void copyArtifactFile(filePath).catch(reportArtifactFileActionError),
+    },
+    {
+      label: ArtifactFileActions.locationMenuLabel(),
+      click: () => shell.showItemInFolder(filePath),
+    },
+  ];
+  const menu = Menu.buildFromTemplate(template);
+  const window = BrowserWindow.fromWebContents(event.sender) || mainWindow;
+  return new Promise((resolve) => menu.popup({ window, callback: () => resolve(true) }));
+}
+
+function createArtifactPreviewEntry(id, source, roots, targetKey, context = {}) {
   const view = new WebContentsView({
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      plugins: source.kind === 'document' && !source.controlledPreview,
+      ...(source.controlledPreview ? { preload: path.join(__dirname, 'artifact-preview-preload.cjs') } : {}),
       sandbox: true,
     },
   });
@@ -200,9 +318,16 @@ function createArtifactPreviewEntry(id, source, roots, targetKey) {
     targetKey,
     title: source.title,
     attached: false,
+    artifactId: String(context.artifactId || ''),
+    taskId: String(context.taskId || ''),
+    workspace: String(context.workspace || ''),
+    documentLoading: Boolean(source.controlledPreview),
+    selectionHighlights: new Map(),
+    pendingSelectionJump: null,
   };
 
   const navigationAllowed = (event, url) => {
+    if (entry.source.controlledPreview && url === CONTROLLED_ARTIFACT_PREVIEW_URL) return;
     if (ArtifactPreview.navigationAllowed(url, entry.source, entry.roots)) return;
     event.preventDefault();
     sendArtifactPreviewState(entry, { error: '已阻止跳转到未授权地址', loading: false });
@@ -210,6 +335,7 @@ function createArtifactPreviewEntry(id, source, roots, targetKey) {
   view.webContents.on('will-navigate', navigationAllowed);
   view.webContents.on('will-redirect', navigationAllowed);
   view.webContents.setWindowOpenHandler(({ url }) => {
+    if (entry.source.controlledPreview) return { action: 'deny' };
     try {
       const parsed = new URL(url);
       if (['http:', 'https:'].includes(parsed.protocol)) void shell.openExternal(parsed.toString());
@@ -219,11 +345,23 @@ function createArtifactPreviewEntry(id, source, roots, targetKey) {
     return { action: 'deny' };
   });
   view.webContents.on('did-start-loading', () => sendArtifactPreviewState(entry, { loading: true, error: '' }));
-  view.webContents.on('did-stop-loading', () => sendArtifactPreviewState(entry, { loading: false, error: '' }));
+  view.webContents.on('did-stop-loading', () => {
+    if (!entry.source.controlledPreview) sendArtifactPreviewState(entry, { loading: false, error: '' });
+  });
   view.webContents.on('did-navigate', () => sendArtifactPreviewState(entry));
   view.webContents.on('did-navigate-in-page', () => sendArtifactPreviewState(entry));
+  view.webContents.on('did-finish-load', () => {
+    if (!entry.source.controlledPreview) return;
+    for (const selection of entry.selectionHighlights.values()) {
+      view.webContents.send('artifact-preview:selection-highlight', selection);
+    }
+    if (entry.pendingSelectionJump) {
+      view.webContents.send('artifact-preview:selection-jump', entry.pendingSelectionJump);
+      entry.pendingSelectionJump = null;
+    }
+  });
   view.webContents.on('page-title-updated', (_event, title) => {
-    if (title) entry.title = title;
+    if (title && entry.source.kind === 'web') entry.title = title;
     sendArtifactPreviewState(entry);
   });
   view.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
@@ -236,26 +374,113 @@ function createArtifactPreviewEntry(id, source, roots, targetKey) {
   return entry;
 }
 
-async function showArtifactPreview(request = {}) {
+async function prepareArtifactPreviewSource(source) {
+  if (source.extension === '.pdf') {
+    let rendered = null;
+    try {
+      rendered = await OfficePreview.renderOfficePreview({
+        sourcePath: source.localPath,
+        workspace: source.root,
+        productRoot: __dirname,
+        allowSystemFallback: app.isPackaged !== true
+          || process.env.METEOMATE_ALLOW_SYSTEM_OFFICE_RUNTIME === '1',
+      });
+    } catch {
+      // PDF.js 仍可直接预览多数 PDF；页面栅格化不可用时保留此只读降级路径
+    }
+    return {
+      ...source,
+      cached: rendered?.cached || false,
+      controlledPreview: true,
+      loadUrl: CONTROLLED_ARTIFACT_PREVIEW_URL,
+      pageCount: rendered?.pageCount || null,
+      previewPath: rendered?.previewPath || source.localPath,
+      sourceHash: rendered?.sourceHash || null,
+      textLayer: rendered?.textLayer || null,
+      thumbnailPaths: rendered?.thumbnailPaths || [],
+    };
+  }
+  if (source.kind !== 'office') return source;
+  const rendered = await OfficePreview.renderOfficePreview({
+    sourcePath: source.localPath,
+    workspace: source.root,
+    productRoot: __dirname,
+    allowSystemFallback: app.isPackaged !== true
+      || process.env.METEOMATE_ALLOW_SYSTEM_OFFICE_RUNTIME === '1',
+  });
+  return {
+    ...source,
+    cached: rendered.cached,
+    controlledPreview: true,
+    kind: 'document',
+    loadUrl: CONTROLLED_ARTIFACT_PREVIEW_URL,
+    originalKind: 'office',
+    pageCount: rendered.pageCount,
+    previewPath: rendered.previewPath,
+    sourceHash: rendered.sourceHash,
+    textLayer: rendered.textLayer,
+    thumbnailPaths: rendered.thumbnailPaths,
+  };
+}
+
+async function showArtifactPreviewNow(request = {}) {
+  const requestSequence = ++artifactPreviewRequestSequence;
   const id = artifactPreviewId(request.id);
   const roots = artifactPreviewRoots(request.workspace);
   const target = String(request.target || '').trim();
-  const targetKey = JSON.stringify([target, ...roots]);
+  const originalTarget = String(request.originalTarget || '').trim();
+  let unresolvedSource;
+  try {
+    unresolvedSource = await ArtifactPreview.resolvePreviewTarget({ target, roots });
+  } catch (error) {
+    if (!originalTarget || originalTarget === target) throw error;
+    unresolvedSource = await ArtifactPreview.resolvePreviewTarget({ target: originalTarget, roots });
+  }
+  if (originalTarget && originalTarget !== target && unresolvedSource.extension === '.pdf') {
+    try {
+      const originalSource = await ArtifactPreview.resolvePreviewTarget({ target: originalTarget, roots });
+      if (originalSource.kind === 'office') unresolvedSource = originalSource;
+    } catch {
+      // 已有的 PDF 预览仍可独立打开，原始 Office 文件不可用时不阻断只读查看
+    }
+  }
+  const targetKey = JSON.stringify([
+    unresolvedSource.localPath || unresolvedSource.address || target,
+    unresolvedSource.fingerprint || '',
+    ...roots,
+  ]);
   let entry = artifactPreviewEntries.get(id);
   if (entry && entry.targetKey !== targetKey) {
     destroyArtifactPreview(entry);
     entry = null;
   }
   if (!entry) {
-    const source = await ArtifactPreview.resolvePreviewTarget({ target, roots });
-    entry = createArtifactPreviewEntry(id, source, roots, targetKey);
+    const source = await prepareArtifactPreviewSource(unresolvedSource);
+    entry = createArtifactPreviewEntry(id, source, roots, targetKey, request);
     artifactPreviewEntries.set(id, entry);
     void entry.view.webContents.loadURL(source.loadUrl).catch((error) => {
       sendArtifactPreviewState(entry, { error: error?.message || '预览加载失败', loading: false });
     });
   }
-  attachArtifactPreview(entry, request.bounds);
+  entry.artifactId = String(request.artifactId || entry.artifactId || '');
+  entry.taskId = String(request.taskId || entry.taskId || '');
+  entry.workspace = String(request.workspace || entry.workspace || '');
+  if (requestSequence === artifactPreviewRequestSequence) attachArtifactPreview(entry, request.bounds);
   return artifactPreviewNavigationState(entry);
+}
+
+async function showArtifactPreview(request = {}) {
+  const id = artifactPreviewId(request.id);
+  const previous = pendingArtifactPreviewShows.get(id) || Promise.resolve();
+  const current = previous
+    .catch(() => undefined)
+    .then(() => showArtifactPreviewNow(request));
+  pendingArtifactPreviewShows.set(id, current);
+  try {
+    return await current;
+  } finally {
+    if (pendingArtifactPreviewShows.get(id) === current) pendingArtifactPreviewShows.delete(id);
+  }
 }
 
 async function navigateArtifactPreview(request = {}) {
@@ -277,10 +502,15 @@ async function navigateArtifactPreview(request = {}) {
       break;
     case 'url': {
       const roots = artifactPreviewRoots(request.workspace);
-      const source = await ArtifactPreview.resolvePreviewTarget({ target: request.url, roots });
+      const unresolvedSource = await ArtifactPreview.resolvePreviewTarget({ target: request.url, roots });
+      const source = await prepareArtifactPreviewSource(unresolvedSource);
       entry.source = source;
       entry.roots = roots;
-      entry.targetKey = JSON.stringify([request.url, ...roots]);
+      entry.targetKey = JSON.stringify([
+        source.localPath || source.address || request.url,
+        source.fingerprint || '',
+        ...roots,
+      ]);
       entry.title = source.title;
       void entry.view.webContents.loadURL(source.loadUrl).catch((error) => {
         sendArtifactPreviewState(entry, { error: error?.message || '预览加载失败', loading: false });
@@ -293,13 +523,120 @@ async function navigateArtifactPreview(request = {}) {
   return artifactPreviewNavigationState(entry);
 }
 
-function sendRuntimeEvent(payload) {
-  let event = payload;
-  try {
-    event = runtimeServices().publicationAttestor?.attestRuntimeEvent(payload) || payload;
-  } catch {
-    event = payload;
+function artifactPreviewEntryForSender(sender) {
+  return [...artifactPreviewEntries.values()].find((entry) =>
+    !entry.view.webContents.isDestroyed() && entry.view.webContents.id === sender.id
+  ) || null;
+}
+
+async function controlledArtifactPreviewDocument(sender) {
+  const entry = artifactPreviewEntryForSender(sender);
+  if (!entry?.source.controlledPreview) throw new Error('当前预览不支持文档选区');
+  const previewPath = entry.source.previewPath || entry.source.localPath;
+  const stat = await fs.promises.stat(previewPath);
+  if (!stat.isFile() || stat.size > ArtifactPreview.MAX_PREVIEW_BYTES) {
+    throw new Error('预览文档不存在或超过大小限制');
   }
+  const buffer = await fs.promises.readFile(previewPath);
+  if (buffer.subarray(0, 5).toString('ascii') !== '%PDF-') throw new Error('预览内容不是有效的 PDF 文档');
+  const pageImages = [];
+  let imageBytes = 0;
+  for (const imagePath of entry.source.thumbnailPaths || []) {
+    const stat = await fs.promises.stat(imagePath);
+    if (imageBytes + stat.size > 32 * 1024 * 1024) break;
+    const image = await fs.promises.readFile(imagePath);
+    imageBytes += image.length;
+    pageImages.push(new Uint8Array(image));
+  }
+  return {
+    bytes: new Uint8Array(buffer),
+    pageImages,
+    textLayer: entry.source.textLayer || null,
+    title: entry.source.title,
+  };
+}
+
+async function artifactSelectionEditResolution({ sourcePath, sourceHash, quote, workspace, format }) {
+  if (String(format || '').toUpperCase() !== 'DOCX') {
+    return ArtifactSelection.sanitizeEditResolution({
+      editability: 'reference_only',
+      editReason: '当前格式在本阶段仅供引用',
+    }, format);
+  }
+  try {
+    const resolution = await OfficePreview.resolveDocxSelection({
+      sourcePath,
+      sourceHash,
+      selectedText: quote,
+      workspace,
+      productRoot: __dirname,
+      allowSystemFallback: app.isPackaged !== true
+        || process.env.METEOMATE_ALLOW_SYSTEM_OFFICE_RUNTIME === '1',
+    });
+    return ArtifactSelection.sanitizeEditResolution({
+      editability: resolution.status,
+      editReason: resolution.reason,
+      editAnchor: resolution.anchor,
+    }, format);
+  } catch {
+    return ArtifactSelection.sanitizeEditResolution({
+      editability: 'reference_only',
+      editReason: '暂时无法建立安全修改锚点，请重新打开文档后选择完整句子',
+    }, format);
+  }
+}
+
+async function createArtifactSelection(sender, input) {
+  const entry = artifactPreviewEntryForSender(sender);
+  if (!entry?.source.controlledPreview || !entry.taskId) throw new Error('当前预览未关联可追问的任务');
+  const draft = ArtifactSelection.sanitizeSelectionDraft(input);
+  const sourcePath = await fs.promises.realpath(entry.source.localPath);
+  const sourceHash = entry.source.sourceHash || await OfficePreview.sha256File(sourcePath);
+  entry.source.sourceHash = sourceHash;
+  const workspaceRoot = await resolveWorkspaceRoot(entry.workspace || entry.source.root);
+  const relativePath = ArtifactSelection.relativeSelectionPath(workspaceRoot, sourcePath);
+  if (!relativePath) throw new Error('选区来源已超出当前项目工作区');
+  const format = path.extname(sourcePath).slice(1).toUpperCase() || 'PDF';
+  const editResolution = await artifactSelectionEditResolution({
+    sourcePath,
+    sourceHash,
+    quote: draft.quote,
+    workspace: workspaceRoot,
+    format,
+  });
+  const payload = {
+    selectionId: `selection-${crypto.randomUUID()}`,
+    previewId: entry.id,
+    artifactId: entry.artifactId || null,
+    taskId: entry.taskId,
+    sourcePath,
+    path: relativePath,
+    sourceHash,
+    title: entry.source.title,
+    format,
+    createdAt: Date.now(),
+    ...draft,
+    ...editResolution,
+  };
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('artifact-preview:selection', payload);
+  }
+  return payload;
+}
+
+function sendSelectionToPreview(channel, request = {}) {
+  const entry = artifactPreviewEntries.get(artifactPreviewId(request.previewId));
+  if (!entry?.source.controlledPreview || entry.view.webContents.isDestroyed()) return false;
+  const selection = request.selection;
+  if (!selection || selection.previewId !== entry.id || !selection.selectionId) return false;
+  entry.selectionHighlights.set(selection.selectionId, selection);
+  if (channel === 'artifact-preview:selection-jump') entry.pendingSelectionJump = selection;
+  entry.view.webContents.send(channel, selection);
+  return true;
+}
+
+function sendRuntimeEvent(payload) {
+  const event = payload;
   computerPipController?.handleRuntimeEvent(event);
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('runtime:event', event);
@@ -460,6 +797,68 @@ async function composerReferenceContext(workspace, references) {
       ...sections,
     ].join('\n\n'),
   };
+}
+
+async function artifactSelectionContext(workspace, selections) {
+  const requested = Array.isArray(selections)
+    ? selections.slice(0, ArtifactSelection.MAX_SELECTIONS)
+    : [];
+  if (!requested.length) return null;
+  const root = await resolveWorkspaceRoot(workspace);
+  const verified = [];
+  const currentHashes = new Map();
+  const editResolutions = new Map();
+
+  for (const selection of requested) {
+    const candidate = String(selection?.sourcePath || selection?.path || '');
+    const requestedPath = path.isAbsolute(candidate) ? candidate : path.resolve(root, candidate);
+    if (!isInsideWorkspace(root, requestedPath)) continue;
+    let sourcePath;
+    try {
+      sourcePath = await fs.promises.realpath(requestedPath);
+      if (!isInsideWorkspace(root, sourcePath) || !(await fs.promises.stat(sourcePath)).isFile()) continue;
+    } catch {
+      continue;
+    }
+    const sourceHash = String(selection?.sourceHash || '');
+    if (!/^[a-f0-9]{64}$/i.test(sourceHash)) continue;
+    if (!currentHashes.has(sourcePath)) {
+      currentHashes.set(sourcePath, await OfficePreview.sha256File(sourcePath));
+    }
+    if (currentHashes.get(sourcePath) !== sourceHash) continue;
+    let draft;
+    try {
+      draft = ArtifactSelection.sanitizeSelectionDraft(selection);
+    } catch {
+      continue;
+    }
+    const format = path.extname(sourcePath).slice(1).toUpperCase() || 'FILE';
+    const resolutionKey = `${sourceHash}:${draft.quote}`;
+    if (!editResolutions.has(resolutionKey)) {
+      editResolutions.set(resolutionKey, artifactSelectionEditResolution({
+        sourcePath,
+        sourceHash,
+        quote: draft.quote,
+        workspace: root,
+        format,
+      }));
+    }
+    const editResolution = await editResolutions.get(resolutionKey);
+    verified.push({
+      selectionId: String(selection.selectionId || crypto.randomUUID()),
+      artifactId: selection.artifactId ? String(selection.artifactId) : null,
+      path: ArtifactSelection.relativeSelectionPath(root, sourcePath),
+      title: path.basename(sourcePath),
+      format,
+      sourceHash,
+      ...draft,
+      ...editResolution,
+    });
+  }
+  if (!verified.some((selection) => selection.path)) {
+    throw new Error('引用的文档已发生变化或不可访问，请重新选择原文');
+  }
+  return ArtifactSelection.buildSelectionContext(verified.filter((selection) => selection.path));
 }
 
 function mergeKnowledgeContext(base, extra) {
@@ -773,7 +1172,7 @@ function permissionPromptInstruction(request) {
     })
     : '';
   const officeInstruction = Array.isArray(request.connectorIds) && request.connectorIds.includes('office-artifacts')
-    ? ' Office 二进制文件必须通过 office-artifacts 工具处理，所有路径使用当前项目内相对路径；创建或编辑后必须执行 artifact_render 和 artifact_validate，不得回退到 Shell 或任意脚本。'
+    ? ' Office 二进制文件必须通过 office-artifacts 工具处理，所有路径使用当前项目内相对路径；普通创建或编辑后必须执行 artifact_render 和 artifact_validate，不得回退到 Shell 或任意脚本。预览选区修改只能使用 docx_edit_selection；该工具已内置源文件与锚点复核、版本化输出、渲染和校验，不得再使用全局 replace_text。'
     : '';
   const capabilityInstruction = `${desktopInstruction}${officeInstruction}`;
   switch (request.permissionProfileId) {
@@ -873,9 +1272,280 @@ function openAiChatCompletionsPath(apiUrl) {
   }
 }
 
-function shouldUpdateProviderBasePath(provider) {
-  return Boolean(provider?.apiUrl)
-    && provider.basePath !== openAiChatCompletionsPath(provider.apiUrl);
+function openAiResponsesPath(apiUrl) {
+  try {
+    const path = new URL(apiUrl).pathname.replace(/^\/+|\/+$/g, '');
+    if (!path) return 'v1/responses';
+    if (path.toLowerCase().endsWith('responses')) return path;
+    if (path.toLowerCase().endsWith('chat/completions')) {
+      return `${path.slice(0, -'chat/completions'.length)}responses`;
+    }
+    const lastSegment = path.split('/').at(-1) || '';
+    return /^v\d+$/i.test(lastSegment)
+      ? `${path}/responses`
+      : `${path}/v1/responses`;
+  } catch {
+    return 'v1/responses';
+  }
+}
+
+function normalizeProviderPresetMode(value) {
+  return ['auto', 'volcengine-ark', 'openai-compatible'].includes(value) ? value : 'auto';
+}
+
+function normalizeProviderProtocolMode(value) {
+  return ['auto', 'chat_completions', 'responses'].includes(value) ? value : 'auto';
+}
+
+function normalizeProviderStreamingMode(value) {
+  return ['auto', 'on', 'off'].includes(value) ? value : 'auto';
+}
+
+function resolvedProviderPreset(apiUrl, presetMode = 'auto') {
+  const normalizedMode = normalizeProviderPresetMode(presetMode);
+  if (normalizedMode !== 'auto') return normalizedMode;
+  try {
+    const url = new URL(apiUrl);
+    return /^ark\.[a-z0-9-]+\.volces\.com$/i.test(url.hostname)
+      ? 'volcengine-ark'
+      : 'openai-compatible';
+  } catch {
+    return 'openai-compatible';
+  }
+}
+
+function providerEndpointUrl(apiUrl, basePath) {
+  try {
+    return `${new URL(apiUrl).origin}/${String(basePath || '').replace(/^\/+/, '')}`;
+  } catch {
+    return '';
+  }
+}
+
+function openAiProviderRoute(apiUrl, options = {}) {
+  const presetMode = normalizeProviderPresetMode(options.presetMode);
+  const protocolMode = normalizeProviderProtocolMode(options.protocolMode);
+  const streamingMode = normalizeProviderStreamingMode(options.streamingMode);
+  const providerPreset = resolvedProviderPreset(apiUrl, presetMode);
+  const endpointPathOverride = String(options.endpointPathOverride || '').trim().replace(/^\/+|\/+$/g, '');
+  let protocol = protocolMode;
+  if (protocol === 'auto') {
+    const candidatePath = endpointPathOverride || (() => {
+      try {
+        return new URL(apiUrl).pathname.replace(/^\/+|\/+$/g, '');
+      } catch {
+        return '';
+      }
+    })();
+    if (!endpointPathOverride && providerPreset === 'volcengine-ark') protocol = 'responses';
+    else if (candidatePath.toLowerCase().endsWith('responses')) protocol = 'responses';
+    else if (candidatePath.toLowerCase().endsWith('chat/completions')) protocol = 'chat_completions';
+    else protocol = providerPreset === 'volcengine-ark' ? 'responses' : 'chat_completions';
+  }
+  const basePath = endpointPathOverride || (protocol === 'responses'
+    ? openAiResponsesPath(apiUrl)
+    : openAiChatCompletionsPath(apiUrl));
+  const supportsStreaming = streamingMode === 'on'
+    ? true
+    : streamingMode === 'off'
+      ? false
+      : !(providerPreset === 'volcengine-ark' && protocol === 'responses');
+  return {
+    basePath,
+    endpointPathOverride,
+    endpointUrl: providerEndpointUrl(apiUrl, basePath),
+    presetMode,
+    providerPreset,
+    protocolMode,
+    protocol,
+    streamingMode,
+    supportsStreaming,
+  };
+}
+
+function shouldUpdateProviderTransport(provider, options = {}) {
+  if (!provider?.apiUrl) return false;
+  const route = openAiProviderRoute(provider.apiUrl, options);
+  return provider.basePath !== route.basePath
+    || provider.supportsStreaming !== route.supportsStreaming;
+}
+
+function providerProbeTool(protocol) {
+  const definition = {
+    name: 'meteomate_connection_check',
+    description: 'Return the requested connection check value.',
+    parameters: {
+      type: 'object',
+      properties: { value: { type: 'string' } },
+      required: ['value'],
+      additionalProperties: false,
+    },
+  };
+  return protocol === 'responses'
+    ? definition
+    : { type: 'function', function: definition };
+}
+
+async function providerProbeRequest({ endpointUrl, apiKey, requiresAuth, body, stream = false }) {
+  const headers = { 'content-type': 'application/json' };
+  if (requiresAuth) headers.authorization = `Bearer ${apiKey}`;
+  let response;
+  try {
+    response = await fetch(endpointUrl, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(30_000),
+    });
+  } catch (error) {
+    if (error?.name === 'TimeoutError') throw new Error('连接超时，请检查地址、网络或代理设置');
+    throw new Error(`无法连接服务：${error?.message || '网络请求失败'}`);
+  }
+  const responseText = await response.text();
+  if (!response.ok) {
+    let message = responseText.trim();
+    try {
+      const payload = JSON.parse(responseText);
+      message = payload?.error?.message || payload?.message || message;
+    } catch {}
+    throw new Error(`服务返回 HTTP ${response.status}${message ? `：${message.slice(0, 360)}` : ''}`);
+  }
+  if (stream) {
+    if (!responseText.includes('data:') && !responseText.includes('response.')) {
+      throw new Error('服务未返回可识别的流式事件');
+    }
+    if (/"type"\s*:\s*"error"/.test(responseText)) throw new Error('流式响应中包含错误事件');
+    return responseText;
+  }
+  try {
+    const payload = JSON.parse(responseText);
+    if (payload?.error) throw new Error(payload.error.message || '服务返回错误');
+    return payload;
+  } catch (error) {
+    if (error instanceof SyntaxError) throw new Error('服务返回的不是有效 JSON');
+    throw error;
+  }
+}
+
+function providerProbeBody(protocol, modelId, kind, stream = false) {
+  if (protocol === 'responses') {
+    const body = {
+      model: modelId,
+      input: kind === 'image'
+        ? [{ role: 'user', content: [
+            { type: 'input_text', text: 'Reply with OK.' },
+            { type: 'input_image', image_url: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=' },
+          ] }]
+        : kind === 'tool'
+          ? 'Call meteomate_connection_check with value "ok".'
+          : 'Reply with OK.',
+      stream,
+    };
+    if (kind === 'tool') {
+      body.tools = [{ type: 'function', ...providerProbeTool(protocol) }];
+      body.tool_choice = { type: 'function', name: 'meteomate_connection_check' };
+    }
+    return body;
+  }
+  const body = {
+    model: modelId,
+    messages: [{
+      role: 'user',
+      content: kind === 'image'
+        ? [
+            { type: 'text', text: 'Reply with OK.' },
+            { type: 'image_url', image_url: { url: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=' } },
+          ]
+        : kind === 'tool'
+          ? 'Call meteomate_connection_check with value "ok".'
+          : 'Reply with OK.',
+    }],
+    stream,
+  };
+  if (kind === 'tool') {
+    body.tools = [providerProbeTool(protocol)];
+    body.tool_choice = { type: 'function', function: { name: 'meteomate_connection_check' } };
+  }
+  return body;
+}
+
+function validateProviderProbePayload(protocol, kind, payload) {
+  if (kind === 'text') {
+    const valid = protocol === 'responses'
+      ? Array.isArray(payload?.output) || typeof payload?.output_text === 'string'
+      : Array.isArray(payload?.choices);
+    if (!valid) throw new Error('响应结构与所选协议不匹配');
+    return;
+  }
+  if (kind === 'tool') {
+    const call = protocol === 'responses'
+      ? payload?.output?.find((item) => item?.type === 'function_call')
+      : payload?.choices?.[0]?.message?.tool_calls?.find((item) => item?.function?.name === 'meteomate_connection_check');
+    const argumentsText = protocol === 'responses' ? call?.arguments : call?.function?.arguments;
+    if (!call || typeof argumentsText !== 'string') throw new Error('模型没有返回规范的函数调用');
+    try {
+      JSON.parse(argumentsText);
+    } catch {
+      throw new Error('函数调用参数不是有效 JSON');
+    }
+    return;
+  }
+  const valid = protocol === 'responses'
+    ? Array.isArray(payload?.output)
+    : Array.isArray(payload?.choices);
+  if (!valid) throw new Error('图片请求的响应结构与所选协议不匹配');
+}
+
+async function testModelProviderConnection(request = {}) {
+  const apiUrl = String(request.apiUrl || '').trim();
+  const modelId = String(request.modelId || request.model?.id || '').trim();
+  const apiKey = typeof request.apiKey === 'string' ? request.apiKey.trim() : '';
+  const requiresAuth = request.requiresAuth !== false;
+  if (!modelId) throw new Error('请先填写用于验证的模型 ID');
+  if (requiresAuth && !apiKey) throw new Error('为保护已保存密钥，重新验证时请再次输入 API Key');
+  const route = openAiProviderRoute(apiUrl, request);
+  if (!route.endpointUrl) throw new Error('请输入有效的 HTTP 或 HTTPS Base URL');
+  const startedAt = Date.now();
+  const tests = [];
+  const run = async (id, label, kind, stream = false) => {
+    try {
+      const payload = await providerProbeRequest({
+        endpointUrl: route.endpointUrl,
+        apiKey,
+        requiresAuth,
+        body: providerProbeBody(route.protocol, modelId, kind, stream),
+        stream,
+      });
+      if (!stream) validateProviderProbePayload(route.protocol, kind, payload);
+      tests.push({ id, label, status: 'passed' });
+      return true;
+    } catch (error) {
+      tests.push({ id, label, status: 'failed', message: error?.message || '验证失败' });
+      return false;
+    }
+  };
+  const textPassed = await run('text', '文本响应', 'text', route.supportsStreaming);
+  if (route.supportsStreaming) {
+    tests.push({ id: 'streaming', label: '流式输出', status: textPassed ? 'passed' : 'failed' });
+  } else {
+    tests.push({ id: 'streaming', label: '流式输出', status: 'skipped', message: '当前策略已关闭' });
+  }
+  if (request.toolCall && textPassed) await run('toolCall', '工具调用', 'tool');
+  else if (request.toolCall) tests.push({ id: 'toolCall', label: '工具调用', status: 'skipped', message: '基础连接失败' });
+  else tests.push({ id: 'toolCall', label: '工具调用', status: 'skipped', message: '模型未声明此能力' });
+  if (request.imageInput && textPassed) await run('imageInput', '图片输入', 'image');
+  else if (request.imageInput) tests.push({ id: 'imageInput', label: '图片输入', status: 'skipped', message: '基础连接失败' });
+  else tests.push({ id: 'imageInput', label: '图片输入', status: 'skipped', message: '模型未声明此能力' });
+  const failed = tests.find((test) => test.status === 'failed');
+  return {
+    status: failed ? 'failed' : 'verified',
+    verifiedAt: new Date().toISOString(),
+    durationMs: Date.now() - startedAt,
+    endpointUrl: route.endpointUrl,
+    protocol: route.protocol,
+    tests,
+    message: failed?.message || '连接与已声明能力验证通过',
+  };
 }
 
 class GooseAcpRuntime {
@@ -1324,6 +1994,8 @@ class GooseAcpRuntime {
       nodeId: node.id,
       expertId: node.expert.id,
       name: node.expert.name,
+      progressSequence: 0,
+      progressText: '',
     };
     this.loadedSessions.add(sessionId);
     this.sessionTaskMap.set(sessionId, request.taskId);
@@ -1404,6 +2076,29 @@ class GooseAcpRuntime {
         prompt: [{ type: 'text', text: prompt }],
       });
       const output = ExpertTeam.clipText(this.teamMemberOutputMap.get(sessionId), 12_000);
+      const runtimeFailure = ExpertTeam.runtimeOutputFailure(output);
+      if (runtimeFailure) {
+        const result = {
+          id: node.id,
+          expertId: node.expert.id,
+          name: node.expert.name,
+          status: 'failed',
+          output: '',
+          error: runtimeFailure.message,
+          sessionId,
+        };
+        sendRuntimeEvent({
+          type: 'team_member_failed',
+          taskId: request.taskId,
+          runtime: 'acp',
+          runId,
+          teamMemberId: node.id,
+          memberSessionId: sessionId,
+          message: result.error,
+          completedAt: Date.now(),
+        });
+        return result;
+      }
       const result = {
         id: node.id,
         expertId: node.expert.id,
@@ -1667,6 +2362,7 @@ class GooseAcpRuntime {
           `你是“${request.expertName}”，是 MeteoMate 气象办公工作空间中的专业智能体。`,
           request.expertInstruction,
           '使用清晰、可审计的中文表达。区分实况事实、算法结果、推断、不确定性与建议；不得虚构气象数据。',
+          '自动生成本会话标题时，必须使用简体中文；即使用户使用英文，也要概括翻译为不超过 12 个汉字的简体中文标题。标题可保留 500hPa、NMC 等必要的专业缩写。',
           toolUseInstruction,
           request.permissionProfileName
             ? `当前权限策略：${request.permissionProfileName}。${request.permissionProfileDescription || ''}`
@@ -1883,31 +2579,44 @@ class GooseAcpRuntime {
           notification.sessionId,
           `${this.teamMemberOutputMap.get(notification.sessionId) || ''}${text}`
         );
+        member.progressText = `${member.progressText || ''}${text}`;
         const now = Date.now();
-        if (text && now - Number(member.progressAt || 0) >= 650) {
+        if (text && now - Number(member.progressAt || 0) >= TEAM_MEMBER_PROGRESS_INTERVAL_MS) {
           member.progressAt = now;
+          const output = this.teamMemberOutputMap.get(notification.sessionId);
+          const runtimeFailure = ExpertTeam.runtimeOutputFailure(output);
           sendRuntimeEvent({
             ...common,
             type: 'team_member_progress',
-            detail: ExpertTeam.clipText(this.teamMemberOutputMap.get(notification.sessionId), 360),
+            source: runtimeFailure ? 'status' : 'message',
+            progressId: runtimeFailure ? 'runtime-failure' : `message:${Number(member.progressSequence) || 0}`,
+            detail: runtimeFailure?.message || streamingTextPreview(member.progressText),
             at: now,
           });
         }
         break;
       }
       case 'agent_thought_chunk': {
-        const detail = contentText(update.content);
-        if (detail) {
+        const now = Date.now();
+        if (contentText(update.content) && now - Number(member.thoughtStatusAt || 0) >= 4_000) {
+          member.thoughtStatusAt = now;
+          member.progressSequence = (Number(member.progressSequence) || 0) + 1;
+          member.progressText = '';
+          member.progressAt = 0;
           sendRuntimeEvent({
             ...common,
             type: 'team_member_progress',
-            detail: ExpertTeam.clipText(detail, 360),
-            at: Date.now(),
+            source: 'status',
+            detail: '正在分析任务上下文并形成阶段结论。',
+            at: now,
           });
         }
         break;
       }
       case 'tool_call': {
+        member.progressSequence = (Number(member.progressSequence) || 0) + 1;
+        member.progressText = '';
+        member.progressAt = 0;
         const toolCall = this.toolCallIdentityTracker.resolve(
           notification.sessionId,
           update.toolCallId,
@@ -2216,7 +2925,7 @@ class GooseAcpRuntime {
     });
   }
 
-  async getModelSettings() {
+  async getModelSettings(transportOverrides = {}) {
     await this.initialize();
     if (!this.client || !this.status.acpAvailable) {
       throw new Error(this.status.error || 'Goose ACP 尚未连接，无法读取模型配置');
@@ -2241,13 +2950,36 @@ class GooseAcpRuntime {
             return null;
           }
           let providerConfig = loaded.provider;
-          if (shouldUpdateProviderBasePath(providerConfig)) {
-            const basePath = openAiChatCompletionsPath(providerConfig.apiUrl);
+          const localProviderMetadata = runtimeServices().profileContext?.customProviderMetadata?.(entry.providerId) || {};
+          const managedProvider = runtimeServices().profileContext?.managedProviderMetadata?.(
+            entry.providerId,
+            localProviderMetadata.managedProviderId
+          );
+          if (managedProvider) {
+            providerConfig = {
+              ...providerConfig,
+              displayName: managedProvider.displayName,
+              apiUrl: managedProvider.apiUrl,
+              requiresAuth: managedProvider.requiresAuth,
+            };
+          }
+          const providerMetadata = {
+            ...localProviderMetadata,
+            ...(transportOverrides[entry.providerId] || {}),
+            ...(managedProvider || {}),
+          };
+          const route = openAiProviderRoute(providerConfig.apiUrl, providerMetadata);
+          const managedConnectionChanged = Boolean(managedProvider) && (
+            loaded.provider.displayName !== providerConfig.displayName
+            || loaded.provider.apiUrl !== providerConfig.apiUrl
+            || loaded.provider.requiresAuth !== providerConfig.requiresAuth
+          );
+          if (managedConnectionChanged || shouldUpdateProviderTransport(providerConfig, providerMetadata)) {
             await this.client.goose.providersCustomUpdate_unstable({
               providerId: entry.providerId,
-              ...this.customProviderPayload(providerConfig, { basePath }),
+              ...this.customProviderPayload(providerConfig, route),
             });
-            providerConfig = { ...providerConfig, basePath };
+            providerConfig = { ...providerConfig, ...route };
           }
           const inventoryModels = new Map((entry.models || []).map((model) => [model.id, model]));
           const models = (providerConfig.models || []).map((id) => {
@@ -2270,8 +3002,21 @@ class GooseAcpRuntime {
             apiUrl: providerConfig.apiUrl,
             apiKeySet: Boolean(providerConfig.apiKeySet),
             requiresAuth: Boolean(providerConfig.requiresAuth),
-            supportsStreaming: providerConfig.supportsStreaming !== false,
-            basePath: providerConfig.basePath || openAiChatCompletionsPath(providerConfig.apiUrl),
+            supportsStreaming: route.supportsStreaming,
+            basePath: route.basePath,
+            endpointUrl: route.endpointUrl,
+            endpointPathOverride: route.endpointPathOverride,
+            presetMode: route.presetMode,
+            providerPreset: route.providerPreset,
+            protocolMode: route.protocolMode,
+            protocol: route.protocol,
+            streamingMode: route.streamingMode,
+            verification: providerMetadata.verification || null,
+            organizationManaged: Boolean(managedProvider),
+            organizationProviderId: managedProvider?.organizationProviderId || '',
+            localProviderAvailable: true,
+            credentialMode: managedProvider?.credentialMode || 'local',
+            credentialConfigured: Boolean(managedProvider?.credentialConfigured),
             preservesThinking: Boolean(providerConfig.preservesThinking),
             models,
           };
@@ -2280,8 +3025,45 @@ class GooseAcpRuntime {
         }
       })
     );
-    const providers = loadedProviders
-      .filter(Boolean)
+    const localProviders = loadedProviders.filter(Boolean);
+    const boundManagedProviders = new Set(
+      localProviders.map((provider) => provider.organizationProviderId).filter(Boolean)
+    );
+    const virtualManagedProviders = (runtimeServices().profileContext?.managedProviderEntries?.() || [])
+      .filter((provider) => !boundManagedProviders.has(provider.organizationProviderId))
+      .map((provider) => {
+        const route = openAiProviderRoute(provider.apiUrl, provider);
+        return {
+          id: provider.organizationProviderId,
+          name: provider.displayName,
+          description: provider.description || '组织统一管理的模型提供商',
+          category: 'model',
+          configured: false,
+          defaultModel: '',
+          modelSelectionHint: '先配置本机凭据后使用',
+          apiUrl: provider.apiUrl,
+          apiKeySet: false,
+          requiresAuth: provider.requiresAuth,
+          supportsStreaming: route.supportsStreaming,
+          basePath: route.basePath,
+          endpointUrl: route.endpointUrl,
+          endpointPathOverride: route.endpointPathOverride,
+          presetMode: route.presetMode,
+          providerPreset: route.providerPreset,
+          protocolMode: route.protocolMode,
+          protocol: route.protocol,
+          streamingMode: route.streamingMode,
+          verification: provider.verification,
+          organizationManaged: true,
+          organizationProviderId: provider.organizationProviderId,
+          localProviderAvailable: false,
+          credentialMode: provider.credentialMode,
+          credentialConfigured: provider.credentialConfigured,
+          preservesThinking: provider.models.some((model) => model.reasoning),
+          models: provider.models.map((model) => ({ ...model })),
+        };
+      });
+    const providers = [...localProviders, ...virtualManagedProviders]
       .sort((left, right) => {
         if (left.id === activeProviderId) return -1;
         if (right.id === activeProviderId) return 1;
@@ -2337,7 +3119,7 @@ class GooseAcpRuntime {
       apiUrl: overrides.apiUrl ?? config.apiUrl,
       apiKey: overrides.apiKey ?? null,
       models: overrides.models ?? config.models ?? [],
-      supportsStreaming: true,
+      supportsStreaming: overrides.supportsStreaming ?? config.supportsStreaming ?? true,
       headers: config.headers || {},
       requiresAuth: overrides.requiresAuth ?? config.requiresAuth,
       catalogProviderId: 'openai',
@@ -2353,36 +3135,73 @@ class GooseAcpRuntime {
     }
     const modelId = String(request.model?.id || '').trim();
     if (!modelId) throw new Error('请先添加一个模型 ID');
+    const apiUrl = String(request.apiUrl || '').trim();
+    const route = openAiProviderRoute(apiUrl, request);
     const created = await this.client.goose.providersCustomCreate_unstable({
       engine: 'openai_compatible',
       displayName: String(request.displayName || '').trim(),
-      apiUrl: String(request.apiUrl || '').trim(),
+      apiUrl,
       apiKey: typeof request.apiKey === 'string' ? request.apiKey : null,
       models: [modelId],
-      supportsStreaming: true,
+      supportsStreaming: route.supportsStreaming,
       headers: {},
       requiresAuth: request.requiresAuth !== false,
       catalogProviderId: 'openai',
-      basePath: openAiChatCompletionsPath(String(request.apiUrl || '').trim()),
+      basePath: route.basePath,
       preservesThinking: Boolean(request.model?.reasoning),
     });
-    return { ...(await this.getModelSettings()), lastChangedProviderId: created.providerId };
+    return {
+      ...(await this.getModelSettings({ [created.providerId]: request })),
+      lastChangedProviderId: created.providerId,
+    };
   }
 
   async updateModelProvider(request = {}) {
     const providerId = String(request.providerId || '').trim();
+    if (request.organizationManaged && request.localProviderAvailable === false) {
+      const organizationProviderId = String(request.organizationProviderId || providerId).trim();
+      const managedProvider = runtimeServices().profileContext?.managedProviderMetadata?.(
+        organizationProviderId,
+        organizationProviderId
+      );
+      if (!managedProvider) throw new Error('组织模型目录已更新，请刷新后重试');
+      const route = openAiProviderRoute(managedProvider.apiUrl, managedProvider);
+      const created = await this.client.goose.providersCustomCreate_unstable({
+        engine: 'openai_compatible',
+        displayName: organizationProviderId,
+        apiUrl: managedProvider.apiUrl,
+        apiKey: typeof request.apiKey === 'string' ? request.apiKey : null,
+        models: managedProvider.models.map((model) => model.id),
+        supportsStreaming: route.supportsStreaming,
+        headers: {},
+        requiresAuth: managedProvider.requiresAuth,
+        catalogProviderId: 'openai',
+        basePath: route.basePath,
+        preservesThinking: managedProvider.models.some((model) => model.reasoning),
+      });
+      return {
+        ...(await this.getModelSettings()),
+        lastChangedProviderId: created.providerId,
+        organizationProviderId,
+      };
+    }
     const config = await this.customProviderConfig(providerId);
+    const apiUrl = String(request.apiUrl || '').trim();
+    const route = openAiProviderRoute(apiUrl, request);
     await this.client.goose.providersCustomUpdate_unstable({
       providerId,
       ...this.customProviderPayload(config, {
         displayName: String(request.displayName || '').trim(),
-        apiUrl: String(request.apiUrl || '').trim(),
+        apiUrl,
         apiKey: typeof request.apiKey === 'string' ? request.apiKey : null,
         requiresAuth: request.requiresAuth !== false,
-        basePath: openAiChatCompletionsPath(String(request.apiUrl || '').trim()),
+        ...route,
       }),
     });
-    return { ...(await this.getModelSettings()), lastChangedProviderId: providerId };
+    return {
+      ...(await this.getModelSettings({ [providerId]: request })),
+      lastChangedProviderId: providerId,
+    };
   }
 
   async deleteModelProvider(providerId) {
@@ -2483,7 +3302,7 @@ function runMockTask(request) {
   const demoWorkspace = request.workspace && path.isAbsolute(request.workspace)
     ? request.workspace
     : path.join(app.getPath('userData'), 'demo-workspace');
-  let fixture = { evidence: [], artifacts: [], publicationAnalysis: null };
+  let fixture = { evidence: [], artifacts: [] };
   let fixtureError = '';
   try {
     fixture = WeatherConnector.createFixtureWeatherRun(demoWorkspace);
@@ -2541,7 +3360,7 @@ function runMockTeamTask(request) {
   const demoWorkspace = request.workspace && path.isAbsolute(request.workspace)
     ? request.workspace
     : path.join(app.getPath('userData'), 'demo-workspace');
-  let fixture = { evidence: [], artifacts: [], publicationAnalysis: null, diagnosis: null };
+  let fixture = { evidence: [], artifacts: [], diagnosis: null };
   let fixtureError = '';
   try {
     fixture = WeatherConnector.createFixtureWeatherRun(demoWorkspace);
@@ -2668,7 +3487,6 @@ function runMockTeamTask(request) {
       taskId,
       runtime: 'mock',
       sessionId: null,
-      publicationAnalysis: fixture.publicationAnalysis,
     });
     activeHeadlessRuns.delete(taskId);
   }, 260);
@@ -2837,7 +3655,7 @@ function desktopTitleBarStyle(platform = process.platform) {
 }
 
 function createWindow() {
-  const initialWindow = WINDOW_MODES.account;
+  const initialWindow = WindowLayout.resolveWindowMode('account', screen.getPrimaryDisplay()?.workArea);
   mainWindow = new BrowserWindow({
     width: initialWindow.width,
     height: initialWindow.height,
@@ -2936,11 +3754,28 @@ ipcMain.handle('runtime:model-settings-save', async (_event, request) => {
   return profileContext.filterModelSettings(settings);
 });
 
+ipcMain.handle('runtime:model-provider-route-preview', (_event, request) => {
+  if (!request || typeof request !== 'object') throw new Error('Invalid provider preview request');
+  return openAiProviderRoute(String(request.apiUrl || ''), request);
+});
+
+ipcMain.handle('runtime:model-provider-test', async (_event, request) => {
+  if (!request || typeof request !== 'object') throw new Error('Invalid provider test request');
+  return testModelProviderConnection(request);
+});
+
 ipcMain.handle('runtime:model-provider-create', async (_event, request) => {
   if (!request || typeof request !== 'object') throw new Error('Invalid provider request');
   const settings = await acpRuntime.createModelProvider(request);
   const providerId = settings.lastChangedProviderId;
   const profileContext = runtimeServices().profileContext;
+  profileContext?.saveCustomProviderMetadata(providerId, {
+    presetMode: request.presetMode,
+    protocolMode: request.protocolMode,
+    streamingMode: request.streamingMode,
+    endpointPathOverride: request.endpointPathOverride,
+    verification: request.verification,
+  });
   profileContext?.saveCustomModelMetadata(providerId, request.model || {});
   return profileContext?.filterModelSettings(settings) || settings;
 });
@@ -2948,7 +3783,22 @@ ipcMain.handle('runtime:model-provider-create', async (_event, request) => {
 ipcMain.handle('runtime:model-provider-update', async (_event, request) => {
   if (!request || typeof request !== 'object') throw new Error('Invalid provider request');
   const settings = await acpRuntime.updateModelProvider(request);
-  return runtimeServices().profileContext?.filterModelSettings(settings) || settings;
+  const localProviderId = settings.lastChangedProviderId || request.providerId;
+  const profileContext = runtimeServices().profileContext;
+  profileContext?.saveCustomProviderMetadata(localProviderId, {
+    managedProviderId: request.organizationManaged
+      ? request.organizationProviderId || settings.organizationProviderId || request.providerId
+      : '',
+    presetMode: request.presetMode,
+    protocolMode: request.protocolMode,
+    streamingMode: request.streamingMode,
+    endpointPathOverride: request.endpointPathOverride,
+    verification: request.verification,
+  });
+  const refreshed = localProviderId !== request.providerId
+    ? await acpRuntime.getModelSettings()
+    : settings;
+  return profileContext?.filterModelSettings({ ...refreshed, lastChangedProviderId: localProviderId }) || refreshed;
 });
 
 ipcMain.handle('runtime:model-provider-delete', async (_event, request) => {
@@ -3068,6 +3918,8 @@ ipcMain.handle('external:open', async (_event, targetUrl) => {
 
 ipcMain.handle('artifact-preview:show', async (_event, request) => showArtifactPreview(request));
 
+ipcMain.handle('artifact:context-menu', async (event, request) => showArtifactContextMenu(event, request));
+
 ipcMain.handle('artifact-preview:bounds', async (_event, request = {}) => {
   const entry = artifactPreviewEntries.get(artifactPreviewId(request.id));
   if (!entry || activeArtifactPreviewId !== entry.id) return false;
@@ -3090,6 +3942,55 @@ ipcMain.handle('artifact-preview:close', async (_event, previewId) => {
   return true;
 });
 
+ipcMain.handle('artifact-preview:document', async (event) => controlledArtifactPreviewDocument(event.sender));
+
+ipcMain.handle('artifact-preview:document-ready', (event, payload = {}) => {
+  const entry = artifactPreviewEntryForSender(event.sender);
+  if (!entry?.source.controlledPreview) return false;
+  entry.documentLoading = false;
+  const pageCount = Math.max(0, Math.round(Number(payload.pageCount) || 0));
+  if (pageCount) entry.source.pageCount = pageCount;
+  entry.source.imageBacked = payload.imageBacked === true;
+  sendArtifactPreviewState(entry, {
+    imageBacked: entry.source.imageBacked,
+    loading: false,
+    error: '',
+  });
+  return true;
+});
+
+ipcMain.handle('artifact-preview:document-error', (event, message) => {
+  const entry = artifactPreviewEntryForSender(event.sender);
+  if (!entry?.source.controlledPreview) return false;
+  entry.documentLoading = false;
+  sendArtifactPreviewState(entry, {
+    error: String(message || '文档加载失败').slice(0, 500),
+    loading: false,
+  });
+  return true;
+});
+
+ipcMain.handle('artifact-preview:selection-add', async (event, input) =>
+  createArtifactSelection(event.sender, input)
+);
+
+ipcMain.handle('artifact-preview:selection-highlight', async (_event, request) =>
+  sendSelectionToPreview('artifact-preview:selection-highlight', request)
+);
+
+ipcMain.handle('artifact-preview:selection-jump', async (_event, request) =>
+  sendSelectionToPreview('artifact-preview:selection-jump', request)
+);
+
+ipcMain.handle('artifact-preview:selection-remove', async (_event, request = {}) => {
+  const entry = artifactPreviewEntries.get(artifactPreviewId(request.previewId));
+  const selectionId = String(request.selectionId || '');
+  if (!entry?.source.controlledPreview || entry.view.webContents.isDestroyed() || !selectionId) return false;
+  entry.selectionHighlights.delete(selectionId);
+  entry.view.webContents.send('artifact-preview:selection-remove', selectionId);
+  return true;
+});
+
 ipcMain.handle('runtime:send', async (_event, request) => {
   if (!request || typeof request !== 'object') throw new Error('Invalid runtime request');
   const constrainedRequest = runtimeServices().profileContext?.enforceRuntimePolicy(request) || request;
@@ -3101,16 +4002,20 @@ ipcMain.handle('runtime:send', async (_event, request) => {
     startedAt: submittedAt,
     modelId: constrainedRequest.modelId || '',
   });
-  const [knowledgeEnrichedRequest, fileContext] = await Promise.all([
+  const [knowledgeEnrichedRequest, fileContext, selectionContext] = await Promise.all([
     runtimeServices().knowledgeService
       ? runtimeServices().knowledgeService.enrichRuntimeRequest(constrainedRequest)
       : constrainedRequest,
     composerReferenceContext(constrainedRequest.workspace, constrainedRequest.fileReferences),
+    artifactSelectionContext(constrainedRequest.workspace, constrainedRequest.artifactSelections),
   ]);
   const enrichedRequest = {
     ...knowledgeEnrichedRequest,
     submittedAt,
-    knowledgeContext: mergeKnowledgeContext(knowledgeEnrichedRequest.knowledgeContext, fileContext),
+    knowledgeContext: mergeKnowledgeContext(
+      mergeKnowledgeContext(knowledgeEnrichedRequest.knowledgeContext, fileContext),
+      selectionContext
+    ),
   };
   sendRuntimeProgress(enrichedRequest.taskId, 'preparing_runtime', {
     startedAt: submittedAt,

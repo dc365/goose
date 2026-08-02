@@ -13,8 +13,6 @@ const ArtifactRegistry = require('../harness/artifact-registry');
 const EvidenceLedger = require('../harness/evidence-ledger');
 const QcPolicy = require('../harness/qc-policy');
 const RuntimeRecords = require('../harness/runtime-records');
-const ValidationEngine = require('../harness/validation-engine');
-const PublicationState = require('../harness/publication-state');
 const StateStore = require('../harness/state-store');
 
 function createDefaultPlan() {
@@ -25,9 +23,6 @@ function createDefaultPlan() {
   ];
 }
 
-assert.equal(ValidationEngine.validRfc3339('2026-02-28T23:59:59+08:00'), true);
-assert.equal(ValidationEngine.validRfc3339('2026-02-30T00:00:00Z'), false);
-assert.equal(ValidationEngine.validRfc3339('2026-07-31T25:00:00Z'), false);
 
 const normalContext = ContextWindow.contextStatus({
   usage: { used: 64_000, contextLimit: 128_000 },
@@ -231,240 +226,24 @@ assert.equal(
   'tool-weather-1'
 );
 
-const incompletePublicationGate = PublicationState.evaluate(task, null, Date.parse('2026-07-30T09:00:00.000Z'));
-assert.ok(incompletePublicationGate.blockers.includes('缺少预报结论'));
-assert.equal(PublicationState.signable(incompletePublicationGate), false);
-
-task.publicationAnalysis = {
-  region: '华南',
-  issueTime: '2026-07-30T08:00:00.000Z',
-  validPeriod: '2026-07-30T08:00:00.000Z/2026-07-31T08:00:00.000Z',
-  conclusions: [{ text: '粤西存在强降水风险。', evidenceIds: ['evidence-runtime-1'] }],
-};
-EvidenceLedger.registerEvidence(task, {
-  id: 'evidence-unreferenced-demo',
-  source: 'fixture-weather-provider',
-  sourceVersion: 'fixture-v1',
-  evidenceType: 'meteorological-fact',
-  variable: 'rain24h',
-  unit: 'mm',
-  value: 120,
-  validTime: '2026-07-29T08:00:00.000Z',
-  expiresAt: '2026-07-29T20:00:00.000Z',
-  qcStatus: 'checked',
-  qcVersion: QcPolicy.POLICY_VERSION,
-  metadata: {
-    classification: 'demo',
-    synthetic: true,
-    official: false,
-  },
-});
-assert.deepEqual(
-  PublicationState.normalizeAnalysis({
-    region: ' 华南 ',
-    forecastConclusions: [{ title: '强降水风险', evidence_ids: ['evidence-runtime-1', 'evidence-runtime-1'] }],
-  }).conclusions,
-  [{ text: '强降水风险', evidenceIds: ['evidence-runtime-1'] }]
-);
-assert.equal(
-  PublicationState.normalizeValidPeriod({
-    start: '2026-07-30T08:00:00+08:00',
-    end: '2026-07-31T08:00:00+08:00',
-  }),
-  '2026-07-30T08:00:00+08:00/2026-07-31T08:00:00+08:00'
-);
-const signablePublicationGate = PublicationState.evaluate(task, null, Date.parse('2026-07-30T09:00:00.000Z'));
-assert.deepEqual(signablePublicationGate.blockers, [PublicationState.SIGNOFF_BLOCKER]);
-assert.equal(PublicationState.signable(signablePublicationGate), true);
-const unreferencedUnsafeEvidenceGate = ValidationEngine.runPublicationGate({
-  analysis: task.publicationAnalysis,
-  artifacts: task.artifacts,
-  evidence: task.evidence,
-  at: Date.parse('2026-07-30T09:00:00.000Z'),
-});
-assert.ok(unreferencedUnsafeEvidenceGate.blockers.some((blocker) =>
-  blocker.includes('evidence-unreferenced-demo') && blocker.includes('synthetic')
-));
-assert.ok(unreferencedUnsafeEvidenceGate.blockers.some((blocker) =>
-  blocker.includes('evidence-unreferenced-demo') && blocker.includes('expired')
-));
-const missingReferencedEvidenceGate = ValidationEngine.runPublicationGate({
-  analysis: {
-    ...task.publicationAnalysis,
-    conclusions: [{ text: '缺少引用记录。', evidenceIds: ['evidence-missing'] }],
-  },
-  artifacts: task.artifacts,
-  evidence: task.evidence,
-  at: Date.parse('2026-07-30T09:00:00.000Z'),
-});
-assert.ok(missingReferencedEvidenceGate.blockers.includes('引用了不存在的证据：evidence-missing'));
-const blankConclusionGate = ValidationEngine.runPublicationGate({
-  analysis: {
-    ...task.publicationAnalysis,
-    conclusions: [{ text: ' ', evidenceIds: ['evidence-runtime-1'] }],
-  },
-  artifacts: task.artifacts,
-  evidence: task.evidence,
-  at: Date.parse('2026-07-30T09:00:00.000Z'),
-});
-assert.ok(blankConclusionGate.blockers.includes('预报结论缺少内容'));
-const publicationRequest = PublicationState.requestForTask(task);
-assert.equal(publicationRequest.taskId, task.id);
-assert.equal(publicationRequest.workspace, task.workspace);
-assert.equal(publicationRequest.evidence.length, 1);
-assert.equal(publicationRequest.evidence[0].id, 'evidence-runtime-1');
-assert.equal(publicationRequest.artifacts.length, 1);
-assert.deepEqual(publicationRequest.analysis.conclusions[0].evidenceIds, ['evidence-runtime-1']);
-assert.equal(PublicationState.requestMatchesTask(task, publicationRequest), true);
-assert.equal(PublicationState.requestMatchesTask(task, {
-  ...publicationRequest,
-  workspace: '/data/another-workspace',
-}), false);
-
-const approvedPublication = PublicationState.applyServiceResult(task, publicationRequest, {
-  signoff: { approved: true, reviewerName: '测试预报员' },
-  gate: { ready: true, checkedAt: 1234 },
-});
-assert.equal(approvedPublication.signoff.reviewerName, '测试预报员');
-assert.equal(approvedPublication.checkedAt, 1234);
-assert.equal(approvedPublication.error, null);
-assert.equal(approvedPublication.dirty, false);
-assert.equal(
-  approvedPublication.requestFingerprint,
-  PublicationState.requestFingerprint(publicationRequest),
-);
-assert.equal(PublicationState.cachedRequestMatchesTask(task), true);
-const legacyCachedTask = {
-  ...task,
-  publication: { ...task.publication },
-};
-delete legacyCachedTask.publication.requestFingerprint;
-assert.equal(PublicationState.cachedRequestMatchesTask(legacyCachedTask), false);
-PublicationState.applyError(task, new Error('发布检查失败'));
-assert.equal(task.publication.error, '发布检查失败');
-assert.equal(task.publication.gate, null);
-assert.equal(task.publication.dirty, true);
-assert.equal(task.publication.requestFingerprint, null);
-assert.equal(task.publication.signoff.reviewerName, '测试预报员');
-PublicationState.updateAnalysis(task, {
-  ...task.publicationAnalysis,
-  conclusions: [...task.publicationAnalysis.conclusions, {
-    text: '沿海风力增大。',
-    evidenceIds: ['evidence-runtime-1'],
-  }],
-});
-assert.equal(task.publication.dirty, true);
-assert.equal(task.publicationAnalysis.conclusions.length, 2);
-assert.equal(PublicationState.cachedRequestMatchesTask(task), false);
-
 const compactedTask = StateStore.compactTaskForStorage({
   ...task,
-  publication: null,
-  publicationAnalysis: {
-    conclusions: [{ text: '保留较早证据', evidenceIds: ['evidence-10'] }],
-  },
-  evidence: Array.from({ length: 260 }, (_unused, index) => ({ id: `evidence-${index}` })),
-  harnessEvents: Array.from({ length: 260 }, (_unused, index) => ({ id: `event-${index}` })),
+  evidence: Array.from({ length: 260 }, (_unused, index) => ({ id: 'evidence-' + index })),
+  harnessEvents: Array.from({ length: 260 }, (_unused, index) => ({ id: 'event-' + index })),
+  teamRuns: Array.from({ length: 25 }, (_unused, index) => ({
+    id: `team-run-${index}`,
+    timeline: Array.from({ length: 70 }, (_entry, eventIndex) => ({ id: `team-event-${index}-${eventIndex}` })),
+    members: [],
+  })),
 }, { evidence: 20, harnessEvents: 30 });
-assert.equal(compactedTask.evidence.length, 21);
-assert.equal(compactedTask.evidence[0].id, 'evidence-10');
+assert.equal(compactedTask.evidence.length, 20);
+assert.equal(compactedTask.evidence[0].id, 'evidence-240');
 assert.equal(compactedTask.evidence.at(-1).id, 'evidence-259');
 assert.equal(compactedTask.harnessEvents.length, 30);
+assert.equal(compactedTask.teamRuns.length, 20);
+assert.equal(compactedTask.teamRuns[0].id, 'team-run-5');
+assert.equal(compactedTask.teamRuns[0].timeline.length, 60);
 assert.deepEqual(compactedTask.pendingPermissions, []);
-
-const artifactLineageCompactionTask = {
-  id: 'artifact-lineage-compaction-task',
-  workspace: '/data/artifact-lineage-workspace',
-  publicationAnalysis: {
-    conclusions: [{ text: '结论仅引用最新证据', evidenceIds: ['e-200'] }],
-  },
-  artifacts: [{
-    id: 'artifact-lineage-current',
-    path: '/data/artifact-lineage-workspace/forecast.pdf',
-    lineage: { evidenceIds: ['e-0'] },
-  }],
-  evidence: Array.from({ length: 201 }, (_unused, index) => ({ id: `e-${index}` })),
-};
-const artifactLineagePublicationRequest = PublicationState.requestForTask(
-  artifactLineageCompactionTask
-);
-artifactLineageCompactionTask.publication = {
-  dirty: false,
-  gate: { ready: false },
-  signoff: null,
-  requestFingerprint: PublicationState.requestFingerprint(artifactLineagePublicationRequest),
-};
-const artifactLineageCompactedTask = StateStore.compactTaskForStorage(
-  artifactLineageCompactionTask
-);
-assert.ok(artifactLineageCompactedTask.evidence.some((record) => record.id === 'e-0'));
-assert.ok(artifactLineageCompactedTask.evidence.some((record) => record.id === 'e-200'));
-assert.equal(
-  PublicationState.requestMatchesTask(
-    artifactLineageCompactedTask,
-    artifactLineagePublicationRequest
-  ),
-  true,
-);
-assert.equal(artifactLineageCompactedTask.publication.dirty, false);
-
-const compactedLegacyTask = StateStore.compactTaskForStorage({
-  publicationAnalysis: {
-    forecastConclusions: [{ text: '旧格式引用', evidence_ids: ['legacy-evidence-5'] }],
-  },
-  evidence: Array.from({ length: 30 }, (_unused, index) => ({ id: `legacy-evidence-${index}` })),
-}, { evidence: 3 });
-assert.deepEqual(
-  compactedLegacyTask.evidence.map((record) => record.id),
-  ['legacy-evidence-5', 'legacy-evidence-27', 'legacy-evidence-28', 'legacy-evidence-29'],
-);
-
-const signedCompactedTask = StateStore.compactTaskForStorage({
-  id: 'signed-compaction-task',
-  workspace: '/data/signed-workspace',
-  publicationAnalysis: {
-    conclusions: [{ text: '签发结论', evidenceIds: ['signed-evidence-5'] }],
-  },
-  publication: {
-    dirty: false,
-    gate: { ready: true },
-    signoff: { approved: true, reviewerId: 'forecaster-1' },
-  },
-  artifacts: Array.from({ length: 12 }, (_unused, index) => ({
-    id: `signed-artifact-${index}`,
-    path: `/data/signed-workspace/artifact-${index}.pdf`,
-  })),
-  evidence: Array.from({ length: 30 }, (_unused, index) => ({ id: `signed-evidence-${index}` })),
-}, { artifacts: 3, evidence: 3 });
-assert.deepEqual(
-  signedCompactedTask.evidence.map((record) => record.id),
-  ['signed-evidence-5', 'signed-evidence-27', 'signed-evidence-28', 'signed-evidence-29'],
-);
-assert.equal(signedCompactedTask.artifacts.length, 12);
-assert.equal(signedCompactedTask.publication.signoff.approved, true);
-assert.equal(signedCompactedTask.publication.dirty, false);
-
-const checkedCompactedTask = StateStore.compactTaskForStorage({
-  id: 'checked-compaction-task',
-  workspace: '/data/checked-workspace',
-  publicationAnalysis: {
-    conclusions: [{ text: '待签发结论', evidenceIds: ['checked-evidence-1'] }],
-  },
-  publication: {
-    dirty: false,
-    gate: { ready: false },
-    signoff: { approved: false, reviewerId: 'pending-reviewer' },
-  },
-  artifacts: Array.from({ length: 5 }, (_unused, index) => ({
-    id: `checked-artifact-${index}`,
-    path: `/data/checked-workspace/artifact-${index}.pdf`,
-  })),
-  evidence: [{ id: 'checked-evidence-1' }],
-}, { artifacts: 2 });
-assert.equal(checkedCompactedTask.artifacts.length, 2);
-assert.equal(checkedCompactedTask.publication.dirty, true);
-assert.equal(checkedCompactedTask.publication.gate, null);
-assert.equal(checkedCompactedTask.publication.signoff, null);
 
 const capabilities = CapabilityResolver.resolveCapabilities({ project, expert, task, catalog });
 assert.equal(capabilities.ready, true);
@@ -743,22 +522,6 @@ const artifact = ArtifactRegistry.registerArtifact(task, {
 assert.equal(artifact.lineage.contextSnapshotId, task.contextSnapshotId);
 assert.equal(ArtifactRegistry.validateArtifact(artifact).valid, true);
 
-const analysis = {
-  region: '华南',
-  issueTime: '2026-07-15T17:00:00+08:00',
-  validPeriod: { start: '2026-07-15T20:00:00+08:00', end: '2026-07-18T20:00:00+08:00' },
-  conclusions: [{ text: '粤西存在强降水风险。', evidenceIds: [evidence.id] }],
-};
-const gate = ValidationEngine.runPublicationGate({
-  analysis,
-  artifacts: [artifact],
-  evidence: [evidence],
-  humanSignoff: { approved: true, userId: 'forecaster-01' },
-  at: Date.parse('2026-07-15T18:00:00Z'),
-});
-assert.equal(gate.ready, true);
-assert.equal(gate.status, 'ready');
-
 const legacy = {
   workspace: '/legacy/project',
   tasks: [{
@@ -834,15 +597,20 @@ const recoveredTeamState = StateStore.normalizeStoredState({
     teamRun: {
       id: 'team-run-1',
       teamId: 'forecast-team',
+      responseId: 'a1',
       status: 'running',
       phase: 'executing',
+      timeline: [{ id: 'event-1', type: 'progress', title: '分析中', status: 'running', at: 100 }],
       members: [
         { id: 'analysis', status: 'completed' },
         { id: 'rain', status: 'running' },
         { id: 'convection', status: 'pending' },
       ],
     },
-    messages: [{ id: 'u1', role: 'user', text: '联合研判', status: 'completed' }],
+    messages: [
+      { id: 'u1', role: 'user', text: '联合研判', status: 'completed' },
+      { id: 'a1', role: 'assistant', text: '', status: 'streaming', teamRunId: 'team-run-1' },
+    ],
   }],
 }, {
   initialState: { projects: [], tasks: [] },
@@ -850,10 +618,57 @@ const recoveredTeamState = StateStore.normalizeStoredState({
 });
 assert.equal(recoveredTeamState.tasks[0].teamRun.status, 'interrupted');
 assert.equal(recoveredTeamState.tasks[0].teamRun.phase, 'interrupted');
+assert.equal(recoveredTeamState.tasks[0].teamRuns.length, 1);
+assert.equal(recoveredTeamState.tasks[0].teamRuns[0].responseId, 'a1');
+assert.equal(recoveredTeamState.tasks[0].teamRuns[0].timeline[0].title, '分析中');
+assert.equal(recoveredTeamState.tasks[0].teamRuns[0].timeline.at(-1).status, 'interrupted');
 assert.deepEqual(
   recoveredTeamState.tasks[0].teamRun.members.map((member) => member.status),
   ['completed', 'interrupted', 'interrupted']
 );
+
+const recoveredCompletedTeamState = StateStore.normalizeStoredState({
+  projects: [],
+  tasks: [{
+    id: 'inconsistent-completed-team-task',
+    title: '报错后错误完成的专家团',
+    status: 'completed',
+    teamRun: {
+      id: 'team-run-2',
+      status: 'completed',
+      phase: 'completed',
+      members: [
+        { id: 'analysis', status: 'running' },
+        { id: 'rain', status: 'completed' },
+        { id: 'convection', status: 'completed' },
+      ],
+    },
+    messages: [{
+      id: 'a2',
+      role: 'assistant',
+      teamRunId: 'team-run-2',
+      status: 'completed',
+      text: 'Ran into this error: Server error: Failed to parse input at pos 2679:\n<function=weather-data__weather_diagnose_synoptic>',
+    }],
+  }],
+}, {
+  initialState: { projects: [], tasks: [] },
+  createDefaultPlan,
+});
+assert.equal(recoveredCompletedTeamState.tasks[0].status, 'failed');
+assert.equal(recoveredCompletedTeamState.tasks[0].teamRun.status, 'partial');
+assert.equal(recoveredCompletedTeamState.tasks[0].teamRun.completedCount, 2);
+assert.equal(recoveredCompletedTeamState.tasks[0].teamRun.failedCount, 1);
+assert.deepEqual(
+  recoveredCompletedTeamState.tasks[0].teamRun.members.map((member) => member.status),
+  ['interrupted', 'completed', 'completed']
+);
+assert.equal(recoveredCompletedTeamState.tasks[0].messages[0].runStatus, 'failed');
+assert.equal(
+  recoveredCompletedTeamState.tasks[0].messages[0].text,
+  '负责人汇总时遇到工具调用格式错误。已保留 2 位专家的完成结果，请重试本轮汇总。'
+);
+assert.equal(recoveredCompletedTeamState.tasks[0].messages[0].text.includes('<function='), false);
 assert.equal(
   EventNormalizer.normalizeRuntimeEvent({ type: 'team_member_completed', teamMemberId: 'analysis' }).type,
   'team.member.completed'
