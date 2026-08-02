@@ -58,6 +58,30 @@ assert.equal(run.status, 'running');
 assert.deepEqual(run.members.map((member) => member.status), ['pending', 'pending', 'pending']);
 assert.deepEqual(run.members.map((member) => member.updates), [[], [], []]);
 assert.deepEqual(run.timeline, []);
+assert.deepEqual(run.synthesis, {
+  status: 'pending',
+  text: '',
+  startedAt: null,
+  updatedAt: null,
+  completedAt: null,
+});
+
+ExpertTeam.appendSynthesisProgress(run, '正在核对事实', { at: 150, status: 'analyzing' });
+ExpertTeam.appendSynthesisProgress(run, '与专家分歧。', { at: 180, status: 'analyzing' });
+assert.equal(run.synthesis.text, '正在核对事实与专家分歧。');
+assert.equal(run.synthesis.startedAt, 150);
+assert.equal(run.synthesis.updatedAt, 180);
+
+ExpertTeam.appendSynthesisProgress(run, '较早内容较早内容', { at: 200, limit: 12 });
+ExpertTeam.appendSynthesisProgress(run, '最新结论', { at: 220, limit: 12 });
+assert.ok(run.synthesis.text.startsWith('…\n\n'));
+assert.ok(run.synthesis.text.endsWith('最新结论'));
+
+ExpertTeam.settleSynthesis(run, 'failed', 240);
+assert.equal(run.synthesis.status, 'failed');
+assert.equal(run.synthesis.completedAt, 240);
+assert.equal(run.synthesis.updatedAt, 240);
+assert.ok(run.synthesis.text.endsWith('最新结论'));
 
 ExpertTeam.appendTimelineEntry(run, {
   key: 'member:analysis:progress',

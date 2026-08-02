@@ -1374,6 +1374,16 @@ function updateLiveResponseDurations() {
         : detail.dataset.modelLabel || '请求已发送';
     }
   });
+  document.querySelectorAll('[data-team-synthesis-awaiting]').forEach((element) => {
+    const startedAt = Number(element.dataset.startedAt);
+    if (!Number.isFinite(startedAt) || startedAt <= 0) return;
+    const label = element.querySelector('[data-team-synthesis-awaiting-label]');
+    if (label) {
+      label.textContent = Date.now() - startedAt >= 8000
+        ? '模型仍在整合，任务继续运行'
+        : label.dataset.defaultLabel || '正在读取成员交接结果';
+    }
+  });
 }
 
 function renderSidebar() {
@@ -1941,6 +1951,22 @@ function renderTeamHandoffResult(member, run) {
     </section>`;
 }
 
+function renderTeamSynthesisProgress(run, completedCount) {
+  if (run?.phase !== 'synthesizing') return '';
+  const synthesis = run.synthesis && typeof run.synthesis === 'object' ? run.synthesis : {};
+  const text = String(synthesis.text || '').trim();
+  const startedAt = Number(synthesis.startedAt) || Date.now();
+  if (text) {
+    return `<div class="team-synthesis-stream team-process-feed-markdown markdown-body" data-team-process-feed data-follow-output="true" role="region" aria-label="交付负责人汇总过程">${renderMarkdown(text)}</div>`;
+  }
+  const defaultLabel = synthesis.status === 'drafting'
+    ? '正在生成最终交付稿'
+    : completedCount
+      ? `正在读取 ${completedCount} 份专家交接结果`
+      : '正在读取成员交接结果';
+  return `<div class="team-synthesis-awaiting" data-team-synthesis-awaiting data-started-at="${startedAt}"><span data-team-synthesis-awaiting-label data-default-label="${escapeHtml(defaultLabel)}">${escapeHtml(defaultLabel)}</span><span aria-hidden="true"><i></i><i></i><i></i></span></div>`;
+}
+
 function renderTeamProcessMember(member, run, memberNames) {
   const dependencyNames = (member.dependsOn || []).map((id) => memberNames.get(id) || id);
   const waitingDetail = member.status === 'pending' && dependencyNames.length
@@ -1999,8 +2025,12 @@ function renderTeamRunProcess(message, run) {
       : ['failed', 'cancelled', 'interrupted'].includes(run.status)
         ? run.status
         : 'pending';
+  const synthesis = run.synthesis && typeof run.synthesis === 'object' ? run.synthesis : {};
+  const synthesisStartedAt = Number(synthesis.startedAt) || Number(run.startedAt) || Date.now();
   const leadDetail = run.phase === 'synthesizing'
-    ? `正在整合 ${completed} 位专家的交接结果`
+    ? synthesis.status === 'drafting'
+      ? '正在生成最终交付稿'
+      : `正在核对 ${completed} 份专家交接结果`
     : ['completed', 'partial'].includes(run.status)
       ? issueCount
         ? `已基于 ${completed} 份可用结果完成交付，${issueCount} 位成员异常`
@@ -2022,7 +2052,10 @@ function renderTeamRunProcess(message, run) {
         ` : ''}
         <article class="team-process-lead ${escapeHtml(leadStatus)}">
           <span class="avatar">责</span>
-          <div><strong>交付负责人</strong><small>${escapeHtml(leadDetail)}</small></div>
+          <div class="team-process-lead-copy">
+            <header><strong>交付负责人</strong><small><span>${escapeHtml(leadDetail)}</span>${run.phase === 'synthesizing' ? `<em data-live-duration data-started-at="${synthesisStartedAt}">${formatDuration(Math.max(0, Date.now() - synthesisStartedAt))}</em>` : ''}</small></header>
+            ${renderTeamSynthesisProgress(run, completed)}
+          </div>
           ${renderTeamStatusIndicator(leadStatus)}
         </article>
       </div>

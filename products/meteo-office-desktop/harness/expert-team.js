@@ -19,6 +19,7 @@
   ]);
   const TIMELINE_LIMIT = 60;
   const RUN_HISTORY_LIMIT = 20;
+  const SYNTHESIS_PROGRESS_LIMIT = 12_000;
 
   function list(value) {
     return Array.isArray(value) ? value : [];
@@ -159,6 +160,13 @@
       startedAt,
       completedAt: null,
       timeline: [],
+      synthesis: {
+        status: 'pending',
+        text: '',
+        startedAt: null,
+        updatedAt: null,
+        completedAt: null,
+      },
       members: definition.nodes.map((node) => ({
         id: node.id,
         expertId: node.expert.id,
@@ -217,6 +225,40 @@
     }
     run.timeline = timeline.slice(-Math.max(1, Number(limit) || TIMELINE_LIMIT));
     return normalized;
+  }
+
+  function appendSynthesisProgress(run, chunk, options = {}) {
+    if (!run || typeof run !== 'object') return null;
+    const text = String(chunk || '');
+    const at = Number(options.at) || Date.now();
+    const limit = Math.max(12, Number(options.limit) || SYNTHESIS_PROGRESS_LIMIT);
+    const current = run.synthesis && typeof run.synthesis === 'object'
+      ? run.synthesis
+      : {};
+    let combined = `${current.text || ''}${text}`;
+    if (combined.length > limit) {
+      combined = `…\n\n${combined.slice(-(limit - 3))}`;
+    }
+    run.synthesis = {
+      status: options.status || current.status || 'analyzing',
+      text: combined,
+      startedAt: Number(current.startedAt) || at,
+      updatedAt: at,
+      completedAt: current.completedAt || null,
+    };
+    return run.synthesis;
+  }
+
+  function settleSynthesis(run, status, at = Date.now()) {
+    if (!run || typeof run !== 'object') return null;
+    const completedAt = Number(at) || Date.now();
+    run.synthesis = {
+      ...(run.synthesis && typeof run.synthesis === 'object' ? run.synthesis : {}),
+      status,
+      updatedAt: completedAt,
+      completedAt,
+    };
+    return run.synthesis;
   }
 
   function dependencyContext(node, results = new Map()) {
@@ -278,12 +320,15 @@
     MEMBER_STATUSES,
     TIMELINE_LIMIT,
     RUN_HISTORY_LIMIT,
+    SYNTHESIS_PROGRESS_LIMIT,
     clipText,
     runtimeOutputFailure,
     normalizeDefinition,
     executionWaves,
     createRunState,
     appendTimelineEntry,
+    appendSynthesisProgress,
+    settleSynthesis,
     memberPrompt,
     synthesisPrompt,
     isTeamRequest,

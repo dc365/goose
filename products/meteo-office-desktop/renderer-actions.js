@@ -4980,8 +4980,16 @@ function handleRuntimeEvent(event) {
       {
         const run = teamRunForEvent(task, event);
         if (run) {
+          const startedAt = event.startedAt || Date.now();
           run.status = 'running';
           run.phase = 'synthesizing';
+          run.synthesis = {
+            status: 'analyzing',
+            text: '',
+            startedAt,
+            updatedAt: startedAt,
+            completedAt: null,
+          };
           recordTeamRunTimeline(run, {
             key: `run:${run.id}:synthesis`,
             type: 'synthesis',
@@ -5016,6 +5024,7 @@ function handleRuntimeEvent(event) {
           run.completedAt = event.completedAt || Date.now();
           run.completedCount = actualCompletedCount;
           run.failedCount = actualFailedCount;
+          window.MeteoMateHarness.ExpertTeam.settleSynthesis(run, 'completed', run.completedAt);
           recordTeamRunTimeline(run, {
             key: `run:${run.id}:completed`,
             type: 'completion',
@@ -5051,6 +5060,7 @@ function handleRuntimeEvent(event) {
           run.phase = 'failed';
           run.error = event.message || '';
           run.completedAt = event.completedAt || Date.now();
+          window.MeteoMateHarness.ExpertTeam.settleSynthesis(run, 'failed', run.completedAt);
           recordTeamRunTimeline(run, {
             key: `run:${run.id}:failed`,
             type: 'error',
@@ -5078,6 +5088,7 @@ function handleRuntimeEvent(event) {
           run.status = 'cancelled';
           run.phase = 'cancelled';
           run.completedAt = event.completedAt || Date.now();
+          window.MeteoMateHarness.ExpertTeam.settleSynthesis(run, 'cancelled', run.completedAt);
           recordTeamRunTimeline(run, {
             key: `run:${run.id}:cancelled`,
             type: 'completion',
@@ -5183,6 +5194,18 @@ function handleRuntimeEvent(event) {
       if (streamingAssistant && event.text) {
         completeRunningThought(task);
         advanceAssistantResponsePhase(task, 'responding');
+        const activeTeamRun = task.teamRun?.responseId === streamingAssistant.id
+          && task.teamRun?.phase === 'synthesizing'
+          ? task.teamRun
+          : null;
+        if (activeTeamRun) {
+          activeTeamRun.synthesis = {
+            ...(activeTeamRun.synthesis || {}),
+            status: 'drafting',
+            updatedAt: Date.now(),
+          };
+          rememberTeamRun(task, activeTeamRun);
+        }
       }
       if (assistant.runtimeOutputFailure) break;
       assistant.text += event.text || '';
@@ -5204,12 +5227,19 @@ function handleRuntimeEvent(event) {
       if (activeTeamRun) {
         advanceAssistantResponsePhase(task, 'analyzing');
         if (activeTeamRun.phase === 'synthesizing') {
+          window.MeteoMateHarness.ExpertTeam.appendSynthesisProgress(
+            activeTeamRun,
+            event.text || '',
+            {
+              at: Date.now(),
+            }
+          );
           recordTeamRunTimeline(activeTeamRun, {
             key: `run:${activeTeamRun.id}:synthesis-progress`,
             type: 'synthesis',
             actor: '交付负责人',
             title: '正在校验成员结论',
-            detail: '对齐证据、分歧、不确定性和待确认项。',
+            detail: '正在对齐证据、分歧和待确认项。',
             status: 'running',
           });
           rememberTeamRun(task, activeTeamRun);
@@ -5379,6 +5409,7 @@ function handleRuntimeEvent(event) {
           task.teamRun.phase = 'failed';
           task.teamRun.error = runtimeFailure.message;
           task.teamRun.completedAt = completedAt;
+          window.MeteoMateHarness.ExpertTeam.settleSynthesis(task.teamRun, 'failed', completedAt);
           recordTeamRunTimeline(task.teamRun, {
             key: `run:${task.teamRun.id}:runtime-output-failure`,
             type: 'error',
@@ -5440,6 +5471,11 @@ function handleRuntimeEvent(event) {
         task.teamRun.status = 'cancelled';
         task.teamRun.phase = 'cancelled';
         task.teamRun.completedAt = Date.now();
+        window.MeteoMateHarness.ExpertTeam.settleSynthesis(
+          task.teamRun,
+          'cancelled',
+          task.teamRun.completedAt
+        );
         recordTeamRunTimeline(task.teamRun, {
           key: `run:${task.teamRun.id}:cancelled`,
           type: 'completion',
@@ -5480,6 +5516,11 @@ function handleRuntimeEvent(event) {
         task.teamRun.phase = 'failed';
         task.teamRun.error = event.message || '';
         task.teamRun.completedAt = Date.now();
+        window.MeteoMateHarness.ExpertTeam.settleSynthesis(
+          task.teamRun,
+          'failed',
+          task.teamRun.completedAt
+        );
         recordTeamRunTimeline(task.teamRun, {
           key: `run:${task.teamRun.id}:failed`,
           type: 'error',
