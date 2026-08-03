@@ -62,10 +62,13 @@ assert.equal(BrowserConnector.SAFE_TOOLS.length, 18);
 assert.ok(BrowserConnector.SAFE_TOOLS.includes('browser_click'));
 assert.ok(!BrowserConnector.SAFE_TOOLS.includes('browser_run_code_unsafe'));
 assert.equal(ComputerConnector.DRIVER_VERSION, '0.12.2');
+assert.equal(ComputerConnector.SAFE_TOOLS.length, 33);
+assert.equal(ComputerConnector.BLOCKED_TOOLS.length, 16);
 assert.ok(ComputerConnector.SAFE_TOOLS.includes('get_window_state'));
 assert.ok(ComputerConnector.SAFE_TOOLS.includes('click'));
-assert.ok(!ComputerConnector.SAFE_TOOLS.includes('browser_navigate'));
-assert.ok(!ComputerConnector.SAFE_TOOLS.includes('kill_app'));
+assert.ok(ComputerConnector.SAFE_TOOLS.includes('browser_navigate'));
+assert.ok(ComputerConnector.SAFE_TOOLS.includes('kill_app'));
+assert.ok(!ComputerConnector.SAFE_TOOLS.includes('start_session'));
 assert.equal(OfficeConnector.SAFE_TOOLS.length, 17);
 assert.ok(OfficeConnector.SAFE_TOOLS.includes('docx_create'));
 assert.ok(OfficeConnector.SAFE_TOOLS.includes('docx_resolve_selection'));
@@ -740,6 +743,10 @@ assert.equal(computerResult.connector.managedPreset, ComputerConnector.ID);
 assert.equal(computerResult.connector.command, computerConnection.mcp.command);
 assert.deepEqual(computerResult.connector.args, computerConnection.mcp.args);
 assert.deepEqual(computerResult.connector.toolAllowlist, ComputerConnector.SAFE_TOOLS);
+assert.deepEqual(
+  computerResult.registry.connectors.find((connector) => connector.id === ComputerConnector.ID).toolAllowlist,
+  ComputerConnector.SAFE_TOOLS,
+);
 const computerExtensions = service.extensionsForRequest({
   connectorIds: [ComputerConnector.ID],
   projectId: 'project-1',
@@ -747,7 +754,10 @@ const computerExtensions = service.extensionsForRequest({
     [ComputerConnector.ID]: ['get_window_state', 'click', 'browser_navigate', 'kill_app'],
   },
 });
-assert.deepEqual(computerExtensions[0].available_tools, ['get_window_state', 'click']);
+assert.deepEqual(
+  computerExtensions[0].available_tools,
+  ['get_window_state', 'click', 'browser_navigate', 'kill_app'],
+);
 assert.equal(computerExtensions[0].server.command, computerConnection.mcp.command);
 assert.ok(computerExtensions[0].server.env.some((entry) => entry.name === 'CUA_DRIVER_EMBEDDED'));
 

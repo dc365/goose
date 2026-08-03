@@ -19,6 +19,7 @@
     'get_screen_size',
     'get_cursor_position',
     'zoom',
+    'get_browser_state',
   ]);
   const INSPECTION_TOOLS = Object.freeze([
     'get_desktop_state',
@@ -32,16 +33,25 @@
     'scroll',
     'move_cursor',
     'press_key',
+    'bring_to_front',
+    'browser_prepare',
+    'browser_navigate',
+    'browser_click',
+    'browser_pointer',
+    'browser_dialog',
+    'page',
   ]);
   const SENSITIVE_TOOLS = Object.freeze([
     'type_text',
     'hotkey',
     'set_value',
-  ]);
-  const BLOCKED_TOOLS = Object.freeze([
     'launch_app',
     'kill_app',
-    'bring_to_front',
+    'browser_type',
+    'browser_download',
+    'browser_set_input_files',
+  ]);
+  const BLOCKED_TOOLS = Object.freeze([
     'start_session',
     'get_session_state',
     'escalate_session',
@@ -56,16 +66,6 @@
     'set_agent_cursor_enabled',
     'set_agent_cursor_motion',
     'set_agent_cursor_style',
-    'browser_prepare',
-    'get_browser_state',
-    'browser_navigate',
-    'browser_click',
-    'browser_type',
-    'browser_pointer',
-    'browser_dialog',
-    'browser_download',
-    'browser_set_input_files',
-    'page',
     'check_for_update',
     'install_ffmpeg',
   ]);

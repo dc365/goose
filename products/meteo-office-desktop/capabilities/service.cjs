@@ -777,10 +777,14 @@ function createCapabilityService({
         runtimeInstruction: runtimeSkillInstruction(record),
       })),
       bundledSkills: listBundledSkills(),
-      connectors: snapshot.connectors.map((record) => ({
-        ...redactConnector(record),
-        policyBlocked: !connectorAllowed(record.id),
-      })),
+      connectors: snapshot.connectors.map((record) => {
+        const toolAllowlist = connectorToolCeiling(record);
+        return {
+          ...redactConnector(record),
+          ...(toolAllowlist ? { toolAllowlist } : {}),
+          policyBlocked: !connectorAllowed(record.id),
+        };
+      }),
       experts: snapshot.experts,
       organizationPolicy: profileContext?.policyContext() || null,
       encryptionAvailable: Boolean(secretStore?.state?.().encryptionAvailable),

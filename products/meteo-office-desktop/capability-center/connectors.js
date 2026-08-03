@@ -54,7 +54,7 @@
       .trim();
   }
 
-  function toolCatalogMarkup(lastTest, toolAllowlist = null) {
+  function toolCatalogMarkup(lastTest, toolAllowlist = null, blockedToolLabel = '高风险工具') {
     if (!lastTest?.ok) return '';
     const discoveredTools = Array.isArray(lastTest.result?.tools) ? lastTest.result.tools : [];
     const allowed = Array.isArray(toolAllowlist) ? new Set(toolAllowlist.map(String)) : null;
@@ -86,7 +86,7 @@
         <div><span class="connector-tool-catalog-icon" aria-hidden="true">⌘</span><div><h3 id="connector-tool-catalog-title">可用工具 <small data-tool-count>${tools.length}</small></h3><p>${checkedAt ? `最近发现于 ${escapeHtml(checkedAt)}` : '来自最近一次连接测试'}</p></div></div>
         ${searchable ? '<label class="connector-tool-search"><span class="sr-only">搜索可用工具</span><input type="search" data-tool-search-input placeholder="搜索工具名称或描述" autocomplete="off" /></label>' : ''}
       </header>
-      ${blockedCount ? `<p class="capability-muted">安全策略已隐藏 ${blockedCount} 个高风险工具。</p>` : ''}
+      ${blockedCount ? `<p class="capability-muted">安全策略已隐藏 ${blockedCount} 个${escapeHtml(blockedToolLabel)}。</p>` : ''}
       ${tools.length ? `<div class="connector-tool-list">${toolItems}</div><div class="connector-tool-empty" data-tool-empty hidden>没有匹配的工具</div>` : '<div class="connector-tool-empty">连接成功，但服务没有返回可用工具。请确认服务已声明 tools 能力。</div>'}
     </section>`;
   }
@@ -200,7 +200,7 @@
           </div>
         </section>
         <div class="connector-test-result full ${binding?.lastTest?.ok ? 'success' : binding?.lastTest ? 'failed' : ''}" id="connector-test-result" role="status" aria-live="polite">${binding?.lastTest ? binding.lastTest.ok ? `最近测试成功${binding.lastTest.result?.tools?.length ? `，发现 ${binding.lastTest.result.tools.length} 个工具` : ''}${managedRuntimeSummary(binding.lastTest) ? `<small>${escapeHtml(managedRuntimeSummary(binding.lastTest))}</small>` : ''}` : `最近测试失败：${escapeHtml(binding.lastTest.error || '')}` : '尚未测试连接'}</div>
-        <div id="connector-tool-catalog-root">${toolCatalogMarkup(binding?.lastTest, toolAllowlist)}</div>
+        <div id="connector-tool-catalog-root">${toolCatalogMarkup(binding?.lastTest, toolAllowlist, computerPreset ? 'Driver 控制工具' : '高风险工具')}</div>
       </div>
       <footer class="capability-modal-footer connector-modal-footer">${binding ? '<button class="danger-text-button" id="delete-connector">删除服务</button>' : ''}<span class="capability-modal-spacer"></span><button class="ghost-button" data-modal-close>取消</button><button class="ghost-button" id="test-connector">测试连接</button><button class="primary-button" id="save-connector">保存工具服务</button></footer>`, {
       wide: true,
@@ -252,7 +252,7 @@
               runtimeLine.textContent = runtimeSummary;
               resultBox.append(runtimeLine);
             }
-            catalogRoot.innerHTML = toolCatalogMarkup(result, toolAllowlist);
+            catalogRoot.innerHTML = toolCatalogMarkup(result, toolAllowlist, computerPreset ? 'Driver 控制工具' : '高风险工具');
             attachToolSearch(catalogRoot);
           } catch (cause) {
             latestTest = null;

@@ -145,16 +145,16 @@ Goose ACP enabledExtensions
 
 Driver 只在连接测试或任务实际选择 `cua-desktop` 时启动，退出 MeteoMate 或切换 Profile 时停止。打包流程从固定 GitHub Release 下载可执行文件并校验发布方 SHA-256；原生 Node 模块、动态库和 Driver 可执行文件均位于 ASAR 外，由最终应用签名覆盖。
 
-产品开放 20 个窗口观察与基础交互工具。网页工具、`page` JavaScript、应用启动/强杀、强制前置、配置、更新、轨迹录制和会话提权等 29 个工具不进入 Goose allowlist，并由 Cua managed policy 默认拒绝。`type_text` 和 `set_value` 还受单次 2,000 字符上限约束；未知的新工具因未出现在 allowlist 中自动拒绝。
+产品开放 33 个窗口观察、应用控制、基础交互和 Cua 浏览器工具。Driver 会话与提权、配置、轨迹录制与回放、Agent 光标控制、独立更新和 FFmpeg 安装等 16 个控制面工具不进入 Goose allowlist，并由 Cua managed policy 默认拒绝。`type_text` 和 `set_value` 还受单次 2,000 字符上限约束；未知的新工具因未出现在 allowlist 中自动拒绝。
 
 权限分为四级：
 
 - 窗口列表和窗口状态等观察操作，在连接已验证并由任务明确选择时可按只读规则处理；
 - 全桌面截图和完整 Accessibility Tree 属于敏感检查；
-- 点击、滚动、拖拽和普通按键属于交互操作；
-- 文本输入、快捷键和直接设置控件值属于敏感操作。
+- 点击、滚动、拖拽、普通按键、应用前置和浏览器导航属于交互操作；
+- 文本输入、快捷键、直接设置控件值、应用启动/结束、浏览器输入、下载和文件上传属于敏感操作。
 
-“请求批准”和“智能审批”仍按上述风险级别决定是否弹出确认；选择“完全访问”后，已进入产品 allowlist 的 Cua 操作由 MeteoMate 自动批准，不再逐次弹窗。未进入 allowlist 的启动应用、强杀、配置、更新、轨迹录制和会话提权等工具仍然拒绝，不能通过“完全访问”绕过。Cua bounded mode 和 managed policy 是下层安全上限。Cua 遥测与独立更新检查由宿主环境强制关闭；网页任务继续使用隔离的 Playwright MCP。
+“请求批准”和“智能审批”仍按上述风险级别决定是否弹出确认；选择“完全访问”后，已进入产品 allowlist 的 Cua 操作由 MeteoMate 自动批准，不再逐次弹窗。未进入 allowlist 的 Driver 会话、配置、录制回放、Agent 光标、更新和组件安装工具仍然拒绝，不能通过“完全访问”绕过。Cua bounded mode 和 managed policy 是下层安全上限。Cua 遥测与独立更新检查由宿主环境强制关闭；网页任务也可继续使用隔离的 Playwright MCP。
 
 ## 6. 与 Harness 的关系
 

@@ -230,8 +230,24 @@ assert.equal(computerType.requiresSmartApproval, true);
 assert.equal(PermissionPolicy.permissionHandling('artifact-approval', computerType), 'prompt');
 assert.equal(PermissionPolicy.permissionHandling('workspace-approval', computerType), 'prompt');
 
-const computerBlocked = PermissionPolicy.classifyPermissionRequest(
+const computerKill = PermissionPolicy.classifyPermissionRequest(
   { toolCall: { title: 'cua-desktop__kill_app', kind: 'other', rawInput: { pid: 100 } } },
+  computerContext
+);
+assert.equal(computerKill.computerRisk, 'sensitive');
+assert.equal(computerKill.requiresSmartApproval, true);
+assert.equal(PermissionPolicy.permissionHandling('workspace-approval', computerKill), 'prompt');
+
+const computerBrowserNavigate = PermissionPolicy.classifyPermissionRequest(
+  { toolCall: { title: 'cua-desktop__browser_navigate', kind: 'other', rawInput: { url: 'https://example.com' } } },
+  computerContext
+);
+assert.equal(computerBrowserNavigate.computerRisk, 'interaction');
+assert.equal(computerBrowserNavigate.requiresSmartApproval, true);
+assert.equal(PermissionPolicy.permissionHandling('workspace-approval', computerBrowserNavigate), 'prompt');
+
+const computerBlocked = PermissionPolicy.classifyPermissionRequest(
+  { toolCall: { title: 'cua-desktop__start_session', kind: 'other', rawInput: {} } },
   computerContext
 );
 assert.equal(computerBlocked.computerRisk, 'blocked');
