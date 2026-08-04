@@ -117,6 +117,15 @@ assert.deepEqual(
     message: '模型生成的工具调用格式无法解析，本次结果未被采纳。',
   }
 );
+assert.deepEqual(
+  ExpertTeam.runtimeOutputFailure(
+    'Ran into this error: Request failed: Bad request (400): The request failed because it is missing input.type parameter.'
+  ),
+  {
+    code: 'provider_error',
+    message: '模型服务请求失败，本次结果未被采纳。',
+  }
+);
 assert.equal(ExpertTeam.runtimeOutputFailure('正常分析结果，没有运行时错误。'), null);
 
 for (let index = 0; index < 5; index += 1) {

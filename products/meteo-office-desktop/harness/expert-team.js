@@ -38,13 +38,22 @@
   function runtimeOutputFailure(value) {
     const text = String(value || '');
     const markerIndex = text.search(/Ran into this error:\s*(?:Server error:\s*)?Failed to parse input(?: at pos \d+)?:?/i);
-    if (markerIndex < 0) return null;
-    const functionIndex = text.indexOf('<function=', markerIndex);
-    if (functionIndex < 0 || functionIndex - markerIndex > 4_000) return null;
-    return {
-      code: 'tool_call_parse',
-      message: '模型生成的工具调用格式无法解析，本次结果未被采纳。',
-    };
+    if (markerIndex >= 0) {
+      const functionIndex = text.indexOf('<function=', markerIndex);
+      if (functionIndex >= 0 && functionIndex - markerIndex <= 4_000) {
+        return {
+          code: 'tool_call_parse',
+          message: '模型生成的工具调用格式无法解析，本次结果未被采纳。',
+        };
+      }
+    }
+    if (/Ran into this error:\s*Request failed:/i.test(text)) {
+      return {
+        code: 'provider_error',
+        message: '模型服务请求失败，本次结果未被采纳。',
+      };
+    }
+    return null;
   }
 
   function normalizeNode(node, index) {

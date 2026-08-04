@@ -2606,6 +2606,10 @@ impl Agent {
                 }
                 can_drain_pending_steers = true;
 
+                if provider_errored {
+                    exit_chat = true;
+                }
+
                 if tools_updated {
                     (tools, toolshim_tools, system_prompt, _) =
                         self.prepare_tools_and_prompt(&session_config.id, &session.working_dir).await?;
@@ -3794,6 +3798,30 @@ echo start >> "$PLUGIN_ROOT/hook.log"
         call_count: AtomicUsize,
     }
 
+    struct FailingProvider {
+        call_count: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::providers::base::Provider for FailingProvider {
+        async fn stream(
+            &self,
+            _model_config: &goose_providers::model::ModelConfig,
+            _system_prompt: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<MessageStream, ProviderError> {
+            self.call_count.fetch_add(1, Ordering::SeqCst);
+            Err(ProviderError::RequestFailed(
+                "Bad request (400): missing input.status".to_string(),
+            ))
+        }
+
+        fn get_name(&self) -> &str {
+            "failing"
+        }
+    }
+
     #[async_trait::async_trait]
     impl crate::providers::base::Provider for RefusingProvider {
         async fn stream(
@@ -3854,6 +3882,43 @@ echo start >> "$PLUGIN_ROOT/hook.log"
             provider.call_count.load(Ordering::SeqCst),
             1,
             "a refused request must not be resent"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn provider_error_exits_turn_even_when_final_output_is_required() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let provider = Arc::new(FailingProvider {
+            call_count: AtomicUsize::new(0),
+        });
+        let hook_manager = crate::hooks::HookManager::from_plugins_for_test(vec![]);
+        let (agent, session_id) =
+            create_test_agent(temp_dir.path().join("data"), hook_manager, provider.clone()).await?;
+        agent
+            .add_final_output_tool(Response {
+                json_schema: Some(serde_json::json!({"type": "object"})),
+            })
+            .await;
+
+        let session_config = SessionConfig {
+            id: session_id,
+            schedule_id: None,
+            max_turns: Some(10),
+            retry_config: None,
+        };
+        let reply_stream = agent
+            .reply(Message::user().with_text("hi"), session_config, None)
+            .await?;
+        tokio::pin!(reply_stream);
+        while let Some(event) = reply_stream.next().await {
+            event?;
+        }
+
+        assert_eq!(
+            provider.call_count.load(Ordering::SeqCst),
+            1,
+            "a terminal provider error must not re-enter the final_output continuation loop"
         );
         Ok(())
     }

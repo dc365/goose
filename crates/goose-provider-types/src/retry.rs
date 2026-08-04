@@ -91,9 +91,11 @@ const PERMANENT_REQUEST_FAILURE_MARKERS: &[&str] = &[
 ];
 
 fn is_permanent_request_failure(message: &str) -> bool {
-    PERMANENT_REQUEST_FAILURE_MARKERS
-        .iter()
-        .any(|marker| message.contains(marker))
+    let normalized = message.to_ascii_lowercase().replace('`', "");
+    (normalized.contains("missing input.") && normalized.contains(" parameter"))
+        || PERMANENT_REQUEST_FAILURE_MARKERS
+            .iter()
+            .any(|marker| message.contains(marker))
 }
 
 pub fn should_retry(error: &ProviderError, config: &RetryConfig) -> bool {
@@ -284,6 +286,22 @@ mod tests {
     }
 
     #[test]
+    fn never_retries_missing_parameter_400() {
+        let config = RetryConfig::default();
+        let error = ProviderError::RequestFailed(
+            "Bad request (400): The request failed because it is missing `input.status` parameter."
+                .into(),
+        );
+        assert!(!should_retry(&error, &config));
+
+        let error = ProviderError::RequestFailed(
+            "Bad request (400): The request failed because it is missing `input.type` parameter."
+                .into(),
+        );
+        assert!(!should_retry(&error, &config));
+    }
+
+    #[test]
     fn permanent_request_failure_marker_detection() {
         assert!(is_permanent_request_failure(
             "messages.3.content.1: `thinking` blocks in the latest assistant message \
@@ -291,6 +309,15 @@ mod tests {
         ));
         assert!(is_permanent_request_failure(
             "These blocks must remain as they were in the original response."
+        ));
+        assert!(is_permanent_request_failure(
+            "The request failed because it is missing `input.status` parameter."
+        ));
+        assert!(is_permanent_request_failure(
+            "The request failed because it is missing `input.type` parameter."
+        ));
+        assert!(is_permanent_request_failure(
+            "The request failed because it is missing input.type parameter."
         ));
         assert!(!is_permanent_request_failure(
             "Bad request (400): model not found"

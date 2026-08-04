@@ -364,6 +364,14 @@ pub enum ContentPart {
     },
 }
 
+fn replayed_message_item(role: &str, content: Vec<Value>) -> Value {
+    json!({
+        "type": "message",
+        "role": role,
+        "content": content
+    })
+}
+
 fn add_message_items(input_items: &mut Vec<Value>, messages: &[Message]) {
     for message in messages.iter().filter(|m| m.is_agent_visible()) {
         let role = match message.role {
@@ -376,22 +384,14 @@ fn add_message_items(input_items: &mut Vec<Value>, messages: &[Message]) {
         for content in &message.content {
             match content {
                 MessageContent::Text(text) if !text.text.is_empty() => {
-                    let content_type = if message.role == Role::Assistant {
-                        "output_text"
-                    } else {
-                        "input_text"
-                    };
                     text_items.push(json!({
-                        "type": content_type,
+                        "type": "input_text",
                         "text": text.text
                     }));
                 }
                 MessageContent::ToolRequest(request) if message.role == Role::Assistant => {
                     if !text_items.is_empty() {
-                        input_items.push(json!({
-                            "role": role,
-                            "content": text_items
-                        }));
+                        input_items.push(replayed_message_item(role, text_items));
                         text_items = Vec::new();
                     }
 
@@ -415,7 +415,8 @@ fn add_message_items(input_items: &mut Vec<Value>, messages: &[Message]) {
                                 "type": "function_call",
                                 "call_id": request.id,
                                 "name": sanitized_name,
-                                "arguments": arguments_str
+                                "arguments": arguments_str,
+                                "status": "completed"
                             }));
                         }
                         Err(e) => {
@@ -435,10 +436,7 @@ fn add_message_items(input_items: &mut Vec<Value>, messages: &[Message]) {
                 }
                 MessageContent::ToolResponse(response) => {
                     if !text_items.is_empty() {
-                        input_items.push(json!({
-                            "role": role,
-                            "content": text_items
-                        }));
+                        input_items.push(replayed_message_item(role, text_items));
                         text_items = Vec::new();
                     }
 
@@ -516,10 +514,7 @@ fn add_message_items(input_items: &mut Vec<Value>, messages: &[Message]) {
                 }
                 MessageContent::FrontendToolRequest(request) => {
                     if !text_items.is_empty() {
-                        input_items.push(json!({
-                            "role": role,
-                            "content": text_items
-                        }));
+                        input_items.push(replayed_message_item(role, text_items));
                         text_items = Vec::new();
                     }
 
@@ -538,7 +533,8 @@ fn add_message_items(input_items: &mut Vec<Value>, messages: &[Message]) {
                                 "type": "function_call",
                                 "call_id": request.id,
                                 "name": sanitized_name,
-                                "arguments": arguments_str
+                                "arguments": arguments_str,
+                                "status": "completed"
                             }));
                         }
                         Err(e) => {
@@ -555,10 +551,7 @@ fn add_message_items(input_items: &mut Vec<Value>, messages: &[Message]) {
         }
 
         if !text_items.is_empty() {
-            input_items.push(json!({
-                "role": role,
-                "content": text_items
-            }));
+            input_items.push(replayed_message_item(role, text_items));
         }
     }
 }
@@ -581,6 +574,7 @@ pub fn create_responses_request(
 
     if !system.is_empty() {
         input_items.push(json!({
+            "type": "message",
             "role": "system",
             "content": [{
                 "type": "input_text",
@@ -1363,8 +1357,57 @@ mod tests {
 
         assert_eq!(
             types,
-            vec!["assistant", "function_call", "assistant", "function_call"]
+            vec!["message", "function_call", "message", "function_call"]
         );
+        assert_eq!(input[0]["role"], "assistant");
+        assert_eq!(input[2]["role"], "assistant");
+        assert!(input[0].get("status").is_none());
+        assert!(input[2].get("status").is_none());
+    }
+
+    #[test]
+    fn test_continuation_history_serializes_valid_input_items() {
+        use rmcp::model::{CallToolResult, Content};
+
+        let model_config = ModelConfig {
+            model_name: "gpt-5.5".to_string(),
+            context_limit: None,
+            temperature: None,
+            max_tokens: None,
+            toolshim: false,
+            toolshim_model: None,
+            request_params: None,
+            reasoning: None,
+        };
+        let messages = vec![
+            Message::assistant().with_tool_request(
+                "call_1",
+                Ok(CallToolRequestParams::new("create_document")
+                    .with_arguments(object!({"title": "forecast"}))),
+            ),
+            Message::user().with_content(MessageContent::tool_response(
+                "call_1",
+                Ok(CallToolResult::success(vec![Content::text("created")])),
+            )),
+            Message::assistant().with_text("document ready"),
+            Message::user().with_text("continue editing"),
+        ];
+
+        let result = create_responses_request(&model_config, "", &messages, &[]).unwrap();
+        let input = result["input"].as_array().unwrap();
+
+        assert_eq!(input[0]["type"], "function_call");
+        assert_eq!(input[0]["status"], "completed");
+        assert_eq!(input[1]["type"], "function_call_output");
+        assert_eq!(input[1]["call_id"], "call_1");
+        assert_eq!(input[2]["type"], "message");
+        assert_eq!(input[2]["role"], "assistant");
+        assert!(input[2].get("status").is_none());
+        assert!(input[2].get("id").is_none());
+        assert_eq!(input[2]["content"][0]["type"], "input_text");
+        assert_eq!(input[3]["type"], "message");
+        assert_eq!(input[3]["role"], "user");
+        assert!(input[3].get("status").is_none());
     }
 
     #[test]
@@ -1651,8 +1694,10 @@ mod tests {
         let input = result["input"].as_array().unwrap();
         assert_eq!(input.len(), 2);
 
+        assert_eq!(input[0]["type"], "message");
         assert_eq!(input[0]["role"], "system");
 
+        assert_eq!(input[1]["type"], "message");
         assert_eq!(input[1]["role"], "user");
         let content = input[1]["content"].as_array().unwrap();
         assert_eq!(content.len(), 2);
@@ -1733,6 +1778,7 @@ mod tests {
         assert_eq!(input[0]["type"], "function_call");
         assert_eq!(input[0]["call_id"], "call_1");
         assert_eq!(input[0]["name"], "search");
+        assert_eq!(input[0]["status"], "completed");
 
         let args: serde_json::Value =
             serde_json::from_str(input[0]["arguments"].as_str().unwrap()).unwrap();
@@ -1793,9 +1839,12 @@ mod tests {
 
         assert_eq!(input.len(), 2);
         assert_eq!(input[0]["role"], "assistant");
-        assert_eq!(input[0]["content"][0]["type"], "output_text");
+        assert_eq!(input[0]["type"], "message");
+        assert_eq!(input[0]["content"][0]["type"], "input_text");
         assert_eq!(input[0]["content"][0]["text"], "planning");
+        assert!(input[0].get("status").is_none());
         assert_eq!(input[1]["type"], "function_call");
+        assert_eq!(input[1]["status"], "completed");
     }
 
     #[test]
@@ -1929,7 +1978,7 @@ mod tests {
     }
 
     #[test]
-    fn test_assistant_text_uses_output_text_type() {
+    fn test_assistant_text_replays_as_easy_input_message() {
         use crate::conversation::message::Message;
 
         let messages = vec![Message::assistant().with_text("hello")];
@@ -1949,7 +1998,10 @@ mod tests {
         let input = result["input"].as_array().unwrap();
 
         assert_eq!(input[0]["role"], "assistant");
-        assert_eq!(input[0]["content"][0]["type"], "output_text");
+        assert_eq!(input[0]["type"], "message");
+        assert!(input[0].get("status").is_none());
+        assert!(input[0].get("id").is_none());
+        assert_eq!(input[0]["content"][0]["type"], "input_text");
         assert_eq!(input[0]["content"][0]["text"], "hello");
     }
 
@@ -2093,6 +2145,7 @@ mod tests {
         assert_eq!(input[0]["type"], "function_call");
         assert_eq!(input[0]["call_id"], "call_ft1");
         assert_eq!(input[0]["name"], "browser_click");
+        assert_eq!(input[0]["status"], "completed");
 
         assert_eq!(input[1]["type"], "function_call_output");
         assert_eq!(input[1]["call_id"], "call_ft1");
@@ -2133,10 +2186,12 @@ mod tests {
         assert_eq!(input[0]["type"], "function_call");
         assert_eq!(input[0]["call_id"], "call_agent");
         assert_eq!(input[0]["name"], "Crack_Catcher");
+        assert_eq!(input[0]["status"], "completed");
 
         assert_eq!(input[1]["type"], "function_call");
         assert_eq!(input[1]["call_id"], "call_frontend_agent");
         assert_eq!(input[1]["name"], "_Review_Agent");
+        assert_eq!(input[1]["status"], "completed");
     }
 
     #[test]
