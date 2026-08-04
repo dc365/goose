@@ -4,11 +4,12 @@
   const Project = isNode ? require('./project') : root.MeteoMateHarness.Project;
   const Resolver = isNode ? require('./capability-resolver') : root.MeteoMateHarness.CapabilityResolver;
   const Policy = isNode ? require('./policy-engine') : root.MeteoMateHarness.PolicyEngine;
-  const api = factory(Shared, Project, Resolver, Policy);
+  const MemoryContext = isNode ? require('./memory-context') : root.MeteoMateHarness.MemoryContext;
+  const api = factory(Shared, Project, Resolver, Policy, MemoryContext);
   if (isNode) module.exports = api;
   root.MeteoMateHarness = root.MeteoMateHarness || {};
   root.MeteoMateHarness.ContextCompiler = api;
-})(typeof globalThis !== 'undefined' ? globalThis : this, function (Shared, Project, Resolver, Policy) {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (Shared, Project, Resolver, Policy, MemoryContext) {
   'use strict';
 
   function latestUserPrompt(task, explicitPrompt) {
@@ -338,6 +339,7 @@
       capabilities: Shared.deepClone(capabilities),
       meteorologicalContext: Shared.deepClone(normalizedProject.spec.meteorologicalContext),
       assets: Shared.deepClone(normalizedProject.spec.assets),
+      memoryContext: MemoryContext.normalizeSnapshot(task.memoryContext || null),
       modelPolicy: {
         id: policy.modelPolicy,
         providerId: task.providerId || '',
@@ -359,6 +361,10 @@
         weatherFactsTtlHours: 168,
         preserveUserPreferences: true,
         preserveProjectDecisions: true,
+        ...MemoryContext.normalizePolicy(
+          task.memoryPolicy,
+          normalizedProject.spec.policies?.memory
+        ),
       },
     };
     body.completionContract = compileCompletionContract(body);
@@ -388,6 +394,8 @@
         connectorSources: Shared.deepClone(snapshot.capabilities.connectorSources || {}),
       },
       knowledgeSourceIds: Shared.uniqueStrings(snapshot.assets.knowledgeSources),
+      memoryContext: MemoryContext.runtimeEnvelope(snapshot.memoryContext),
+      memoryPolicy: Shared.deepClone(snapshot.memoryPolicy),
       meteorologicalContext: snapshot.meteorologicalContext,
       expectedOutputs: snapshot.task.expectedOutputs,
       expertTeam: snapshot.expert.kind === 'team'

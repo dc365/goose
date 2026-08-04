@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meteomate.local/schemas/memory-context-snapshot.schema.json",
+  "title": "MeteoMate Memory Context Snapshot",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "id", "query", "projectId", "userId", "generatedAt", "items", "error"],
+  "properties": {
+    "apiVersion": { "const": "meteomate.ai/v1" },
+    "kind": { "const": "MemoryContextSnapshot" },
+    "id": { "type": "string", "minLength": 1 },
+    "query": { "type": "string" },
+    "projectId": { "type": ["string", "null"] },
+    "userId": { "type": ["string", "null"] },
+    "generatedAt": { "type": "integer" },
+    "items": {
+      "type": "array",
+      "maxItems": 20,
+      "items": { "$ref": "memory-context-item.schema.json" }
+    },
+    "error": { "type": ["string", "null"] }
+  }
+}

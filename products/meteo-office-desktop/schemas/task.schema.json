@@ -68,6 +68,25 @@
     "sessionCapabilityHash": { "type": ["string", "null"] },
     "capabilityLoad": { "type": ["object", "null"] },
     "contextSnapshotId": { "type": ["string", "null"] },
+    "memoryPolicy": {
+      "type": "object",
+      "properties": {
+        "useProjectMemory": { "type": "boolean" },
+        "useUserMemory": { "type": "boolean" },
+        "learnFromTask": { "type": "boolean" },
+        "maxItems": { "type": "integer", "minimum": 1, "maximum": 20 },
+        "charBudget": { "type": "integer", "minimum": 1000, "maximum": 24000 }
+      }
+    },
+    "memoryContext": {
+      "oneOf": [
+        { "$ref": "memory-context-snapshot.schema.json" },
+        { "type": "null" }
+      ]
+    },
+    "memoryUsedIds": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+    "memoryContextError": { "type": ["string", "null"] },
+    "memoryUseError": { "type": ["string", "null"] },
     "runAttempts": { "type": "array", "items": { "type": "object" } },
     "checkpoints": { "type": "array", "items": { "type": "object" } },
     "validationResults": { "type": "array", "items": { "type": "object" } },

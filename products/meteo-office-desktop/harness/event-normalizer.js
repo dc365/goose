@@ -36,6 +36,11 @@
     turn_cancelled: 'run.cancelled',
     artifact_created: 'artifact.created',
     evidence_created: 'evidence.created',
+    memory_used: 'memory.used',
+    memory_created: 'memory.created',
+    memory_updated: 'memory.updated',
+    memory_archived: 'memory.archived',
+    memory_deleted: 'memory.deleted',
   });
 
   function normalizeRuntimeEvent(event = {}, options = {}) {

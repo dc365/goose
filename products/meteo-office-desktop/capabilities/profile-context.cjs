@@ -11,6 +11,7 @@ const DEFAULT_DESKTOP_PREFERENCES = Object.freeze({
   sendOnEnter: true,
   showExecutionProcess: true,
   showContextMeter: true,
+  memoryEnabled: false,
   autoCompactThreshold:
     normalizeManagedAutoCompactThreshold(
       process.env.METEOMATE_AUTO_COMPACT_THRESHOLD || process.env.GOOSE_AUTO_COMPACT_THRESHOLD
@@ -144,6 +145,7 @@ function normalizeDesktopPreferences(value = {}) {
     sendOnEnter: input.sendOnEnter !== false,
     showExecutionProcess: input.showExecutionProcess !== false,
     showContextMeter: input.showContextMeter !== false,
+    memoryEnabled: input.memoryEnabled === true,
     autoCompactThreshold:
       normalizeManagedAutoCompactThreshold(input.autoCompactThreshold)
       ?? DEFAULT_DESKTOP_PREFERENCES.autoCompactThreshold,
@@ -1124,7 +1126,10 @@ function createProfileContext({
     ipcMain.handle('auth:change-password', async (_event, request) => changePassword(request || {}));
     ipcMain.handle('auth:claim-legacy', async () => claimLegacyData());
     ipcMain.handle('auth:preferences', async () => desktopPreferences());
-    ipcMain.handle('auth:preferences-save', async (_event, request) => saveDesktopPreferences(request || {}));
+    ipcMain.handle('auth:preferences-save', async (_event, request) => {
+      const { memoryEnabled: _memoryEnabled, ...desktop } = request || {};
+      return saveDesktopPreferences(desktop);
+    });
   }
 
   return {

@@ -146,6 +146,17 @@
 .settings-preference-row>span:first-child,.settings-select-row>span:first-child{display:flex;min-width:0;flex-direction:column;gap:3px}
 .settings-preference-row strong,.settings-select-row strong{color:#40454d;font-size:11px}
 .settings-preference-row small,.settings-select-row small{color:var(--muted);font-size:9px;line-height:1.45}
+.settings-personalization-intro{padding:3px 2px 2px}
+.settings-personalization-intro h2{color:#343941;font-size:14px}
+.settings-personalization-intro p{max-width:620px;margin-top:5px;color:var(--muted);font-size:10px;line-height:1.6}
+.settings-memory-preference-block{padding-top:0!important;padding-bottom:0!important}
+.settings-memory-preference-list{margin-top:0;border-top:0}
+.settings-memory-preference-list .settings-preference-row{min-height:68px}
+.settings-memory-manage-row{display:flex;min-height:68px;align-items:center;justify-content:space-between;gap:24px;border-top:1px solid var(--line)}
+.settings-memory-manage-row>span{display:flex;min-width:0;flex-direction:column;gap:3px}
+.settings-memory-manage-row strong{color:#40454d;font-size:11px}
+.settings-memory-manage-row small{color:var(--muted);font-size:9px;line-height:1.45}
+.settings-memory-manage-row .settings-text-action{min-height:40px;padding:0 13px}
 .settings-switch{position:relative;width:32px;height:19px;flex:0 0 auto}
 .settings-switch input{position:absolute;inset:0;width:100%;height:100%;margin:0;opacity:0;cursor:pointer}
 .settings-switch i{display:block;width:100%;height:100%;border-radius:999px;background:#c9ced6;transition:background-color 130ms ease}
@@ -207,5 +218,5 @@
 @media(hover:hover){.settings-return-button:hover,.settings-page-nav nav button:hover{background:#e7e9ec;color:#30343a}}
 @media(hover:hover){.settings-path-list button:hover,.settings-text-action:hover{background:#e3e6ea;color:#353b43}}
 @media(max-width:900px){.settings-window-titlebar,.settings-page-shell{grid-template-columns:190px minmax(0,1fr)}.settings-page-header{padding-right:28px;padding-left:28px}.settings-page-body{padding-right:24px;padding-left:24px}.settings-permission-summary{grid-template-columns:1fr}}
-@media(max-width:680px){.settings-window-titlebar{display:block}.settings-titlebar-sidebar{display:none}.settings-page-shell{grid-template-columns:1fr;grid-template-rows:auto minmax(0,1fr)}.settings-page-nav{display:flex;min-height:auto;align-items:center;gap:5px;overflow-x:auto;border-right:0;border-bottom:1px solid var(--line);padding:8px 10px}.settings-page-brand,.settings-nav-group{display:none}.settings-page-nav nav{flex-direction:row;gap:3px}.settings-page-nav nav button{min-width:76px;justify-content:center;padding:0 8px}.settings-page-header{min-height:76px;padding:13px 18px}.settings-page-header h1{font-size:19px}.settings-page-body{padding:16px}.settings-return-button{flex:0 0 auto}.settings-return-button span{display:none}.settings-stat-grid{grid-template-columns:1fr}.settings-select-row{align-items:flex-start;flex-direction:column;padding:12px 0}.settings-select-row select{width:100%}}
+@media(max-width:680px){.settings-window-titlebar{display:block}.settings-titlebar-sidebar{display:none}.settings-page-shell{grid-template-columns:1fr;grid-template-rows:auto minmax(0,1fr)}.settings-page-nav{display:flex;min-height:auto;align-items:center;gap:5px;overflow-x:auto;border-right:0;border-bottom:1px solid var(--line);padding:8px 10px}.settings-page-brand,.settings-nav-group{display:none}.settings-page-nav nav{flex-direction:row;gap:3px}.settings-page-nav nav button{min-width:76px;justify-content:center;padding:0 8px}.settings-page-header{min-height:76px;padding:13px 18px}.settings-page-header h1{font-size:19px}.settings-page-body{padding:16px}.settings-return-button{flex:0 0 auto}.settings-return-button span{display:none}.settings-stat-grid{grid-template-columns:1fr}.settings-select-row{align-items:flex-start;flex-direction:column;padding:12px 0}.settings-select-row select{width:100%}.settings-memory-manage-row{align-items:flex-start;flex-direction:column;gap:10px;padding:14px 0}.settings-memory-manage-row .settings-text-action{align-self:flex-start}}
 @media(prefers-reduced-motion:reduce){.settings-return-button,.settings-page-nav nav button{transition:none}}

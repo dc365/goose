@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meteomate.local/schemas/memory-context-item.schema.json",
+  "title": "MeteoMate Retrieved Memory Item",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "scope",
+    "memoryType",
+    "title",
+    "summary",
+    "structuredData",
+    "sourceRefs",
+    "authority",
+    "confidence",
+    "temporal",
+    "tags",
+    "pinned",
+    "revision",
+    "recordHash",
+    "retrievalScore",
+    "updatedAt",
+    "lastUsedAt",
+    "useCount"
+  ],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id"],
+      "properties": {
+        "type": { "enum": ["user", "project"] },
+        "id": { "type": "string", "minLength": 1 }
+      }
+    },
+    "memoryType": {
+      "enum": ["preference", "decision", "correction", "note", "task-summary", "case-summary", "procedure-candidate"]
+    },
+    "title": { "type": "string" },
+    "summary": { "type": "string" },
+    "structuredData": { "type": "object", "additionalProperties": true },
+    "sourceRefs": { "type": "array", "items": { "type": "object" } },
+    "authority": { "type": "string" },
+    "confidence": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+    "temporal": { "type": "object" },
+    "tags": { "type": "array", "items": { "type": "string" } },
+    "pinned": { "type": "boolean" },
+    "revision": { "type": "integer", "minimum": 1 },
+    "recordHash": { "type": ["string", "null"] },
+    "retrievalScore": { "type": "number" },
+    "updatedAt": { "type": ["integer", "null"] },
+    "lastUsedAt": { "type": ["integer", "null"] },
+    "useCount": { "type": "integer", "minimum": 0 }
+  }
+}

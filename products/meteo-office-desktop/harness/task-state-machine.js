@@ -70,6 +70,13 @@
           ? 'execute'
           : 'ask'),
       contextSnapshotId: task.contextSnapshotId || task.contextSnapshot?.id || null,
+      memoryPolicy: Shared.cleanObject(task.memoryPolicy),
+      memoryContext: task.memoryContext && typeof task.memoryContext === 'object'
+        ? Shared.deepClone(task.memoryContext)
+        : null,
+      memoryUsedIds: Shared.uniqueStrings(task.memoryUsedIds),
+      memoryContextError: task.memoryContextError || null,
+      memoryUseError: task.memoryUseError || null,
       runAttempts: Array.isArray(task.runAttempts) ? task.runAttempts : [],
       teamRuns: Array.isArray(task.teamRuns) ? task.teamRuns : [],
       checkpoints: Array.isArray(task.checkpoints) ? task.checkpoints : [],

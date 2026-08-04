@@ -1926,6 +1926,10 @@ function bindSettingsDialogEvents() {
     });
   });
 
+  document.querySelectorAll('[data-settings-manage-memory]').forEach((element) => {
+    element.addEventListener('click', () => window.MeteoMateMemoryCenter?.open());
+  });
+
   document.querySelectorAll('[data-add-provider]').forEach((element) => {
     element.addEventListener('click', () => {
       settingsDialog.providerDraft = {
@@ -2412,7 +2416,9 @@ async function persistDesktopSetting(key, value) {
   desktopSettings.message = '';
   desktopSettings.error = '';
   try {
-    const preferences = await window.meteoDesktop.saveDesktopPreferences(desktopSettings.preferences);
+    const preferences = key === 'memoryEnabled'
+      ? await window.meteoDesktop.setMemoryEnabled(value)
+      : await window.meteoDesktop.saveDesktopPreferences(desktopSettings.preferences);
     desktopSettings.preferences = { ...desktopSettings.preferences, ...(preferences || {}) };
     desktopSettings.status = 'ready';
     desktopSettings.message = '已保存';
@@ -2426,6 +2432,7 @@ async function persistDesktopSetting(key, value) {
     desktopSettings.error = error?.message || '设置保存失败，请稍后重试。';
   }
   render();
+  if (key === 'memoryEnabled') window.MeteoMateMemoryCenter?.refreshPreferences?.();
 }
 
 async function loadModelSettings() {

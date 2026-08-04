@@ -332,6 +332,7 @@ const desktopSettings = {
     sendOnEnter: true,
     showExecutionProcess: true,
     showContextMeter: true,
+    memoryEnabled: false,
     autoCompactThreshold: 0.75,
     defaultPermissionProfileId: '',
   },
@@ -342,6 +343,7 @@ const desktopSettings = {
 };
 const settingsSections = Object.freeze({
   general: { title: '常规', description: '调整日常对话、反馈与本地工作方式', icon: 'settings' },
+  personalization: { title: '个性化', description: '管理 MeteoMate 如何使用你的偏好与长期记忆', icon: 'star' },
   context: { title: '上下文与资料', description: '管理上下文压缩和气象资料接入状态', icon: 'file' },
   permissions: { title: '权限与安全', description: '设置默认审批策略并了解当前安全边界', icon: 'shield' },
   models: { title: '模型', description: '管理 OpenAI 兼容提供商与模型', icon: 'model' },
@@ -3628,6 +3630,7 @@ function renderAccountSettingsPage() {
   const section = settingsSections[settingsDialog.section] || settingsSections.general;
   const panels = {
     general: renderGeneralSettings(),
+    personalization: renderPersonalizationSettings(),
     context: renderContextSettings(),
     permissions: renderPermissionSettings(),
     models: renderModelSettings(),
@@ -3649,6 +3652,7 @@ function renderAccountSettingsPage() {
         <span class="settings-nav-group">工作方式</span>
         <nav aria-label="工作方式设置">
           ${navButton('general')}
+          ${navButton('personalization')}
           ${navButton('context')}
           ${navButton('permissions')}
         </nav>
@@ -3707,6 +3711,31 @@ function renderGeneralSettings() {
       </section>
     </div>
   `;
+}
+
+function memoryGloballyEnabled() {
+  return desktopSettings.preferences.memoryEnabled === true;
+}
+
+function renderPersonalizationSettings() {
+  const enabled = memoryGloballyEnabled();
+  return `
+    <div class="general-settings-stack settings-preference-stack">
+      ${renderDesktopSettingsFeedback()}
+      <section class="settings-personalization-intro">
+        <h2>记忆</h2>
+        <p>MeteoMate 第一版只使用你明确保存的偏好、决定和工作背景，不会自动学习完整对话。</p>
+      </section>
+      <section class="settings-section-block settings-memory-preference-block">
+        <div class="settings-preference-list settings-memory-preference-list">
+          ${renderSettingsToggle('memoryEnabled', '启用记忆', '在新对话中参考已保存的个人与项目记忆，并允许从消息手动保存。', enabled)}
+        </div>
+        <div class="settings-memory-manage-row">
+          <span><strong>管理记忆</strong><small>查看、编辑或删除已保存的记忆。关闭记忆不会删除已有内容。</small></span>
+          <button class="settings-text-action" type="button" data-settings-manage-memory>管理</button>
+        </div>
+      </section>
+    </div>`;
 }
 
 function renderContextSettings() {

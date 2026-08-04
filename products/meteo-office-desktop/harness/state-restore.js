@@ -87,11 +87,94 @@
     });
   }
 
+  async function prepareMemoryContext(task, project, prompt) {
+    const policy = harness.MemoryContext.normalizePolicy(
+      task.memoryPolicy,
+      project?.spec?.policies?.memory
+    );
+    const globallyEnabled = typeof memoryGloballyEnabled !== 'function' || memoryGloballyEnabled();
+    const projectId = project?.id || task.projectId || null;
+    if (
+      !root.meteoDesktop?.retrieveMemories
+      || !globallyEnabled
+      || (!policy.useProjectMemory && !policy.useUserMemory)
+    ) {
+      task.memoryContext = harness.MemoryContext.emptySnapshot({
+        query: prompt,
+        projectId,
+      });
+      task.memoryContextError = null;
+      return task.memoryContext;
+    }
+    try {
+      const result = await root.meteoDesktop.retrieveMemories({
+        projectId,
+        query: prompt,
+        policy,
+        limit: policy.maxItems,
+        charBudget: policy.charBudget,
+      });
+      task.memoryContext = harness.MemoryContext.normalizeSnapshot(result?.snapshot);
+      task.memoryContextError = null;
+    } catch (error) {
+      task.memoryContext = harness.MemoryContext.emptySnapshot({
+        query: prompt,
+        projectId,
+        error: error?.message || String(error),
+      });
+      task.memoryContextError = error?.message || String(error);
+    }
+    return task.memoryContext;
+  }
+
+  async function recordMemoryUse(task, attempt, snapshot) {
+    const items = snapshot?.memoryContext?.items || [];
+    if (!items.length) {
+      task.memoryUsedIds = [];
+      return;
+    }
+    const ids = items.map((item) => item.id);
+    task.memoryUsedIds = ids;
+    task.memoryUseError = null;
+    try {
+      await root.meteoDesktop?.markMemoriesUsed?.({
+        ids,
+        taskId: task.id,
+        runId: attempt.id,
+        projectId: snapshot.project?.id || task.projectId || null,
+      });
+    } catch (error) {
+      task.memoryUseError = error?.message || String(error);
+    }
+    items.forEach((memory) => {
+      harness.RuntimeRecords.recordRuntimeEvent(task, {
+        type: 'memory_used',
+        taskId: task.id,
+        runId: attempt.id,
+        memoryId: memory.id,
+        memory: {
+          id: memory.id,
+          type: memory.memoryType,
+          scope: memory.scope,
+          authority: memory.authority,
+          revision: memory.revision,
+          recordHash: memory.recordHash,
+          retrievalScore: memory.retrievalScore,
+        },
+        timestamp: Date.now(),
+      }, {
+        runId: attempt.id,
+        runtime: task.runtimeMode || 'memory',
+      });
+    });
+  }
+
   const originalSend = runtimeRouter.send.bind(runtimeRouter);
   runtimeRouter.send = async (task, request) => {
     const project = getConversationProject(task) || getActiveProject() || {};
     const expert = getTaskExpert(task) || getSelectedExpert() || primaryAssistant;
     const normalizedProject = harness.Project.normalizeProject(project);
+    await prepareMemoryContext(task, normalizedProject, request.prompt);
     const snapshot = harness.ContextCompiler.compileTaskContext({
       task,
       project: normalizedProject,
@@ -141,6 +224,14 @@
     if (workflowInstruction) {
       request.expertInstruction = [request.expertInstruction, workflowInstruction].filter(Boolean).join('\n\n');
     }
+    const memoryInstruction = harness.MemoryContext.runtimeInstruction(snapshot.memoryContext);
+    if (memoryInstruction) {
+      request.knowledgeContext = {
+        ...(request.knowledgeContext || {}),
+        prompt: [request.knowledgeContext?.prompt || '', memoryInstruction].filter(Boolean).join('\n\n'),
+      };
+    }
+    request.memoryContext = structuredClone(snapshot.memoryContext);
     request.connectorIds = snapshot.capabilities.connectors.map((item) => item.id);
     request.toolSelections = structuredClone(snapshot.capabilities.toolSelections || {});
     request.capabilityHash = snapshot.capabilities.id;
@@ -148,7 +239,10 @@
     request.runAttemptId = attempt.id;
     saveState();
     try {
-      return await originalSend(task, request);
+      const result = await originalSend(task, request);
+      await recordMemoryUse(task, attempt, snapshot);
+      saveState();
+      return result;
     } catch (error) {
       harness.TaskStateMachine.finishRunAttempt(task, attempt.id, 'failed', error?.message || String(error));
       saveState();

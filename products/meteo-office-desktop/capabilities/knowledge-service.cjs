@@ -520,7 +520,15 @@ function createKnowledgeService({ dialog, ipcMain, profileContext, secretStore }
     );
     if (!sourceIds.length) return request;
     const knowledgeContext = await retrieveContext(sourceIds, request.prompt);
-    return { ...request, knowledgeSourceIds: sourceIds, knowledgeContext };
+    return {
+      ...request,
+      knowledgeSourceIds: sourceIds,
+      knowledgeContext: {
+        ...(request.knowledgeContext || {}),
+        ...knowledgeContext,
+        prompt: [knowledgeContext.prompt, request.knowledgeContext?.prompt].filter(Boolean).join('\n\n'),
+      },
+    };
   }
 
   function registerIpc() {

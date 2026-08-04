@@ -139,18 +139,21 @@ server.listen(0, '127.0.0.1', async () => {
       sendOnEnter: true,
       showExecutionProcess: true,
       showContextMeter: true,
+      memoryEnabled: false,
       autoCompactThreshold: 0.75,
       defaultPermissionProfileId: '',
     });
     const savedDesktopPreferences = await ipcHandlers.get('auth:preferences-save')(null, {
       sendOnEnter: false,
       showExecutionProcess: false,
+      memoryEnabled: true,
       autoCompactThreshold: 0.72,
       defaultPermissionProfileId: 'artifact-approval',
     });
     assert.equal(savedDesktopPreferences.sendOnEnter, false);
     assert.equal(savedDesktopPreferences.showExecutionProcess, false);
     assert.equal(savedDesktopPreferences.showContextMeter, true);
+    assert.equal(savedDesktopPreferences.memoryEnabled, false, 'general preferences IPC cannot enable memory');
     assert.equal(savedDesktopPreferences.autoCompactThreshold, 0.72);
     assert.equal(context.desktopPreferences().defaultPermissionProfileId, 'artifact-approval');
 

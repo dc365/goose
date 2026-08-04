@@ -20,6 +20,7 @@
     "permissionPolicy": { "type": "object" },
     "workspaceGrant": { "type": "object" },
     "outputContract": { "type": "object" },
+    "memoryContext": { "$ref": "memory-context-snapshot.schema.json" },
     "memoryPolicy": { "type": "object" }
   }
 }
