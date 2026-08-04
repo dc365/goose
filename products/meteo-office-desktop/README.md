@@ -352,3 +352,20 @@ Beta 4 的 QC、人工豁免与发布门禁契约见
 - [`docs/WORKFLOWS_V1.md`](docs/WORKFLOWS_V1.md)
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 - [`docs/PRODUCT_MVP.md`](docs/PRODUCT_MVP.md)（历史版本）
+
+## 桌面智伴 Companion Mode
+
+MeteoMate 内置“云鹅 Meteo”桌面智伴。它是现有任务与运行时状态的轻量桌面投影，不运行第二套 Agent：
+
+- 单击云鹅查看当前任务、待处理事项和最近结果；双击回到对应任务；
+- 显示规划、运行、等待输入、等待审批、完成、失败和离线状态；
+- 支持拖动、跨显示器贴边、位置锁定、尺寸、静默与减少动态效果；
+- 主窗口关闭后可继续在后台执行，使用托盘菜单显式退出；
+- 任务摘要不包含 Prompt 正文、模型输出、工具原始参数、文件绝对路径或凭据。
+
+实现、IPC、偏好与验收说明见 [`docs/COMPANION_V1.md`](docs/COMPANION_V1.md)。可通过以下命令验证：
+
+```bash
+npm run check:syntax
+npm run test:companion
+```

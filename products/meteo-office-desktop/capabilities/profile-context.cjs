@@ -7,6 +7,20 @@ const SecurityMode = require('./security-mode.cjs');
 
 const DEFAULT_BASE_URL = 'http://127.0.0.1:8088';
 const PROFILE_VERSION = 3;
+const DEFAULT_COMPANION_PREFERENCES = Object.freeze({
+  enabled: true,
+  scale: 'medium',
+  opacity: 1,
+  showBubbles: true,
+  lockPosition: false,
+  showOnAllWorkspaces: true,
+  showInFullscreen: false,
+  reduceMotion: false,
+  completionNotification: true,
+  approvalNotification: true,
+  failureNotification: true,
+  keepRunningInBackground: true,
+});
 const DEFAULT_DESKTOP_PREFERENCES = Object.freeze({
   sendOnEnter: true,
   showExecutionProcess: true,
@@ -17,6 +31,7 @@ const DEFAULT_DESKTOP_PREFERENCES = Object.freeze({
       process.env.METEOMATE_AUTO_COMPACT_THRESHOLD || process.env.GOOSE_AUTO_COMPACT_THRESHOLD
     ) ?? 0.75,
   defaultPermissionProfileId: '',
+  companion: DEFAULT_COMPANION_PREFERENCES,
 });
 
 function unrestrictedPolicy(user = {}) {
@@ -139,6 +154,25 @@ function normalizeManagedAutoCompactThreshold(value) {
   return Number.isFinite(threshold) && threshold >= 0.5 && threshold <= 0.95 ? threshold : null;
 }
 
+function normalizeCompanionPreferences(value = {}) {
+  const input = value && typeof value === 'object' ? value : {};
+  const opacity = Number(input.opacity);
+  return {
+    enabled: input.enabled !== false,
+    scale: ['small', 'medium', 'large'].includes(input.scale) ? input.scale : 'medium',
+    opacity: Number.isFinite(opacity) ? Math.min(1, Math.max(0.65, opacity)) : 1,
+    showBubbles: input.showBubbles !== false,
+    lockPosition: Boolean(input.lockPosition),
+    showOnAllWorkspaces: input.showOnAllWorkspaces !== false,
+    showInFullscreen: Boolean(input.showInFullscreen),
+    reduceMotion: Boolean(input.reduceMotion),
+    completionNotification: input.completionNotification !== false,
+    approvalNotification: input.approvalNotification !== false,
+    failureNotification: input.failureNotification !== false,
+    keepRunningInBackground: input.keepRunningInBackground !== false,
+  };
+}
+
 function normalizeDesktopPreferences(value = {}) {
   const input = value && typeof value === 'object' ? value : {};
   return {
@@ -152,6 +186,7 @@ function normalizeDesktopPreferences(value = {}) {
     defaultPermissionProfileId: String(
       input.defaultPermissionProfileId ?? DEFAULT_DESKTOP_PREFERENCES.defaultPermissionProfileId
     ),
+    companion: normalizeCompanionPreferences(input.companion),
   };
 }
 
@@ -1175,6 +1210,8 @@ module.exports = {
   profileKey,
   normalizePolicyContext,
   normalizeManagedModelCatalog,
+  DEFAULT_COMPANION_PREFERENCES,
+  normalizeCompanionPreferences,
   normalizeDesktopPreferences,
   normalizeCustomProviderMetadata,
   modelRef,

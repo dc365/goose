@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const {
   createProfileContext,
+  DEFAULT_COMPANION_PREFERENCES,
   normalizeCustomProviderMetadata,
   normalizeDesktopPreferences,
 } = require('../capabilities/profile-context.cjs');
@@ -142,6 +143,7 @@ server.listen(0, '127.0.0.1', async () => {
       memoryEnabled: false,
       autoCompactThreshold: 0.75,
       defaultPermissionProfileId: '',
+      companion: DEFAULT_COMPANION_PREFERENCES,
     });
     const savedDesktopPreferences = await ipcHandlers.get('auth:preferences-save')(null, {
       sendOnEnter: false,
@@ -155,6 +157,7 @@ server.listen(0, '127.0.0.1', async () => {
     assert.equal(savedDesktopPreferences.showContextMeter, true);
     assert.equal(savedDesktopPreferences.memoryEnabled, false, 'general preferences IPC cannot enable memory');
     assert.equal(savedDesktopPreferences.autoCompactThreshold, 0.72);
+    assert.deepEqual(savedDesktopPreferences.companion, DEFAULT_COMPANION_PREFERENCES);
     assert.equal(context.desktopPreferences().defaultPermissionProfileId, 'artifact-approval');
 
     const rawModels = {

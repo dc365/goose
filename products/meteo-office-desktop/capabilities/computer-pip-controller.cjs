@@ -409,6 +409,7 @@ function createComputerPipController({
   screen,
   productRoot,
   getMainWindow = () => null,
+  getExcludedWindows = () => [],
   stopTask = async () => false,
   platform = process.platform,
   env = process.env,
@@ -712,9 +713,17 @@ function createComputerPipController({
   async function excludedSourceIds() {
     const excluded = new Set();
     const mainWindow = getMainWindow();
+    let additionalWindows = [];
+    try {
+      const candidates = getExcludedWindows();
+      if (Array.isArray(candidates)) additionalWindows = candidates;
+    } catch {
+      additionalWindows = [];
+    }
     const windows = [
       mainWindow,
       ...[...previews.values()].map((entry) => entry.window),
+      ...additionalWindows,
     ];
     for (const window of windows) {
       if (!window || window.isDestroyed() || typeof window.getMediaSourceId !== 'function') continue;

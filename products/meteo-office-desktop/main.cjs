@@ -8,6 +8,7 @@ const {
   Menu,
   screen,
   shell,
+  Tray,
   WebContentsView,
 } = require('electron');
 const { spawn, spawnSync } = require('node:child_process');
@@ -23,6 +24,7 @@ const WorkflowIo = require('./capabilities/workflow-io.cjs');
 const GooseRuntimeEnvironment = require('./capabilities/goose-runtime-environment.cjs');
 const PermissionPolicy = require('./capabilities/permission-policy.cjs');
 const ComputerPip = require('./capabilities/computer-pip-controller.cjs');
+const Companion = require('./capabilities/companion-window-controller.cjs');
 const OfficeArtifactCollector = require('./capabilities/office-artifact-collector.cjs');
 const ArtifactPreview = require('./capabilities/artifact-preview.cjs');
 const ArtifactFileActions = require('./capabilities/artifact-file-actions.cjs');
@@ -89,6 +91,8 @@ const activeHeadlessRuns = new Map();
 const pendingPermissions = new Map();
 let mainWindow = null;
 let computerPipController = null;
+let companionController = null;
+let appIsQuitting = false;
 const artifactPreviewEntries = new Map();
 const pendingArtifactPreviewShows = new Map();
 let activeArtifactPreviewId = null;
@@ -96,12 +100,26 @@ let artifactPreviewRequestSequence = 0;
 const CONTROLLED_ARTIFACT_PREVIEW_URL = pathToFileURL(path.join(__dirname, 'artifact-preview.html')).href;
 const WINDOW_MODES = WindowLayout.WINDOW_MODES;
 
-app.on('second-instance', () => {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
+function showMainWindow(taskId = '') {
+  if (!mainWindow || mainWindow.isDestroyed()) createWindow();
+  if (!mainWindow || mainWindow.isDestroyed()) return false;
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show();
   mainWindow.focus();
-});
+  companionController?.setMainWindowVisible(true);
+  if (taskId) {
+    const focusTask = () => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('companion:focus-task', { taskId });
+      }
+    };
+    if (mainWindow.webContents.isLoading()) mainWindow.webContents.once('did-finish-load', focusTask);
+    else focusTask();
+  }
+  return true;
+}
+
+app.on('second-instance', () => showMainWindow());
 
 function setMainWindowMode(mode, animate = true) {
   if (!mainWindow || mainWindow.isDestroyed()) return false;
@@ -637,6 +655,7 @@ function sendSelectionToPreview(channel, request = {}) {
 
 function sendRuntimeEvent(payload) {
   const event = payload;
+  companionController?.handleRuntimeEvent(event);
   computerPipController?.handleRuntimeEvent(event);
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('runtime:event', event);
@@ -3685,9 +3704,24 @@ function createWindow() {
   mainWindow.on('maximize', sendWindowState);
   mainWindow.on('unmaximize', sendWindowState);
   mainWindow.on('restore', sendWindowState);
+  mainWindow.on('close', (event) => {
+    if (appIsQuitting) return;
+    if (companionController?.keepsAppAlive()) {
+      event.preventDefault();
+      mainWindow.hide();
+      companionController.setMainWindowVisible(false);
+      return;
+    }
+    event.preventDefault();
+    appIsQuitting = true;
+    app.quit();
+  });
+  mainWindow.on('show', () => companionController?.setMainWindowVisible(true));
+  mainWindow.on('hide', () => companionController?.setMainWindowVisible(false));
   mainWindow.on('closed', () => {
     for (const entry of [...artifactPreviewEntries.values()]) destroyArtifactPreview(entry);
     computerPipController?.close();
+    companionController?.setMainWindowVisible(false);
     mainWindow = null;
   });
 
@@ -4049,6 +4083,21 @@ ipcMain.handle('runtime:permission', async (_event, request) => {
 app.whenReady().then(() => {
   if (process.platform === 'darwin') app.dock.setIcon(APP_ICON);
   createWindow();
+  companionController = Companion.createCompanionController({
+    app,
+    BrowserWindow,
+    Menu,
+    Tray,
+    ipcMain,
+    screen,
+    productRoot: __dirname,
+    iconPath: APP_ICON,
+    profileContext: runtimeServices().profileContext,
+    getMainWindow: () => mainWindow,
+    openMainWindow: showMainWindow,
+    quitApplication: () => app.quit(),
+  });
+  companionController.start();
   computerPipController = ComputerPip.createComputerPipController({
     app,
     BrowserWindow,
@@ -4057,12 +4106,11 @@ app.whenReady().then(() => {
     screen,
     productRoot: __dirname,
     getMainWindow: () => mainWindow,
+    getExcludedWindows: () => companionController?.windows() || [],
     stopTask: (request) => acpRuntime.cancel(request),
   });
   if (runtimeServices().profileContext?.hasActiveProfile()) void acpRuntime.initialize();
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
-  });
+  app.on('activate', () => showMainWindow());
 });
 
 runtimeServices().profileContext?.onChange(() => {
@@ -4074,6 +4122,7 @@ runtimeServices().profileContext?.onChange(() => {
 });
 
 app.on('window-all-closed', () => {
+  if (companionController?.keepsAppAlive()) return;
   for (const run of activeHeadlessRuns.values()) run.cancel();
   if (process.platform !== 'darwin') {
     void acpRuntime.shutdown();
@@ -4082,6 +4131,8 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => {
+  appIsQuitting = true;
+  companionController?.shutdown();
   computerPipController?.close();
   void acpRuntime.shutdown();
 });

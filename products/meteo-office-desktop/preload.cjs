@@ -14,6 +14,12 @@ contextBridge.exposeInMainWorld('meteoDesktop', {
   claimLegacyProfileData: () => ipcRenderer.invoke('auth:claim-legacy'),
   getDesktopPreferences: () => ipcRenderer.invoke('auth:preferences'),
   saveDesktopPreferences: (request) => ipcRenderer.invoke('auth:preferences-save', request),
+  syncCompanionSummary: (summary) => ipcRenderer.invoke('companion:summary-sync', summary),
+  onCompanionFocusTask: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('companion:focus-task', listener);
+    return () => ipcRenderer.removeListener('companion:focus-task', listener);
+  },
   refreshRuntimePreferences: () => ipcRenderer.invoke('runtime:preferences-refresh'),
   setWindowMode: (mode) => ipcRenderer.invoke('window:mode', mode),
   platform: process.platform,

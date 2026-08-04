@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self'; img-src 'self' data:; script-src 'self'; connect-src 'self';"
+    />
+    <title>MeteoMate 桌面智伴</title>
+    <link rel="stylesheet" href="companion.css" />
+  </head>
+  <body data-mode="avatar" data-state="idle">
+    <svg class="symbol-library" aria-hidden="true" focusable="false">
+      <defs>
+        <linearGradient id="cloud-gradient" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#ffffff" />
+          <stop offset="1" stop-color="#dce9ff" />
+        </linearGradient>
+        <linearGradient id="wing-gradient" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#eff5ff" />
+          <stop offset="1" stop-color="#bcd2ff" />
+        </linearGradient>
+        <filter id="soft-shadow" x="-35%" y="-35%" width="170%" height="180%">
+          <feDropShadow dx="0" dy="5" stdDeviation="5" flood-color="#21467b" flood-opacity="0.22" />
+        </filter>
+        <symbol id="meteo-mascot" viewBox="0 0 132 132">
+          <g class="radar-orbit" transform="translate(66 64)">
+            <circle r="42" fill="none" stroke="#79a5ff" stroke-width="2" stroke-opacity="0.24" />
+            <circle r="31" fill="none" stroke="#79a5ff" stroke-width="1.6" stroke-opacity="0.2" />
+            <path class="radar-sweep" d="M0 0 L36 -18 A40 40 0 0 1 40 0 Z" fill="#4b75f2" fill-opacity="0.18" />
+          </g>
+          <g class="mascot-body" filter="url(#soft-shadow)">
+            <ellipse cx="59" cy="78" rx="39" ry="28" fill="url(#cloud-gradient)" />
+            <circle cx="33" cy="78" r="19" fill="url(#cloud-gradient)" />
+            <circle cx="52" cy="61" r="24" fill="url(#cloud-gradient)" />
+            <circle cx="77" cy="68" r="25" fill="url(#cloud-gradient)" />
+            <circle cx="93" cy="82" r="18" fill="url(#cloud-gradient)" />
+            <path class="goose-neck" d="M74 73 C78 60 78 43 89 34 C96 28 106 31 110 38 C114 45 110 54 102 56 C96 58 91 55 88 52 C87 61 88 70 91 79 Z" fill="#ffffff" />
+            <ellipse cx="98" cy="43" rx="13" ry="12" fill="#ffffff" />
+            <path d="M109 42 L124 47 L109 51 Z" fill="#f3aa32" />
+            <circle cx="101" cy="40" r="2.5" fill="#24334a" />
+            <circle cx="100.2" cy="39.2" r="0.8" fill="#ffffff" />
+            <path class="mascot-wing" d="M50 75 C61 66 77 67 88 76 C80 89 64 96 49 89 C43 86 43 79 50 75 Z" fill="url(#wing-gradient)" stroke="#9dbcf8" stroke-width="1.2" />
+            <path d="M55 80 C66 76 75 78 82 83" fill="none" stroke="#7198ea" stroke-width="2" stroke-linecap="round" stroke-opacity="0.7" />
+            <path d="M23 89 C31 93 42 95 51 93" fill="none" stroke="#b9cff5" stroke-width="3" stroke-linecap="round" />
+          </g>
+          <g class="status-effects">
+            <g class="success-sparks">
+              <path d="M25 37 L27 43 L33 45 L27 47 L25 53 L23 47 L17 45 L23 43 Z" fill="#f2b83f" />
+              <path d="M112 68 L114 72 L119 74 L114 76 L112 81 L110 76 L105 74 L110 72 Z" fill="#f2b83f" />
+            </g>
+            <g class="failure-rain" fill="#5c86d7">
+              <path d="M42 104 C47 111 47 116 42 119 C37 116 37 111 42 104 Z" />
+              <path d="M67 108 C72 115 72 120 67 123 C62 120 62 115 67 108 Z" />
+              <path d="M90 102 C95 109 95 114 90 117 C85 114 85 109 90 102 Z" />
+            </g>
+            <g class="sleep-zzz" fill="#5b6f93" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-weight="700">
+              <text x="105" y="28" font-size="13">Z</text>
+              <text x="116" y="18" font-size="10">z</text>
+            </g>
+          </g>
+        </symbol>
+      </defs>
+    </svg>
+
+    <main id="companion-root" class="companion-root">
+      <section id="avatar-view" class="avatar-view" aria-label="MeteoMate 桌面智伴">
+        <button id="mascot-button" class="mascot-button" type="button" data-interactive aria-label="打开 MeteoMate 桌面智伴面板">
+          <svg class="mascot-svg" viewBox="0 0 132 132" aria-hidden="true">
+            <use href="#meteo-mascot"></use>
+          </svg>
+          <span id="state-badge" class="state-badge" aria-hidden="true"></span>
+          <span id="task-count-badge" class="task-count-badge" aria-hidden="true"></span>
+        </button>
+      </section>
+
+      <section id="bubble-view" class="bubble-card" data-interactive aria-live="polite">
+        <button class="bubble-mascot" type="button" data-action="open-main" aria-label="打开对应任务">
+          <svg viewBox="0 0 132 132" aria-hidden="true"><use href="#meteo-mascot"></use></svg>
+        </button>
+        <div class="bubble-copy">
+          <div class="eyebrow">METEOMATE</div>
+          <strong id="bubble-title">桌面智伴</strong>
+          <p id="bubble-text">随时可以开始新的气象任务。</p>
+          <div class="bubble-actions">
+            <button type="button" data-action="open-main">打开任务</button>
+            <button class="quiet-button" type="button" data-action="clear-notification">知道了</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="panel-view" class="companion-panel" data-interactive aria-label="MeteoMate 桌面智伴面板">
+        <header class="panel-header">
+          <div class="panel-brand">
+            <svg viewBox="0 0 132 132" aria-hidden="true"><use href="#meteo-mascot"></use></svg>
+            <div>
+              <span>MeteoMate</span>
+              <strong>桌面智伴</strong>
+            </div>
+          </div>
+          <button class="icon-button" type="button" data-action="close-panel" aria-label="收起面板">×</button>
+        </header>
+
+        <div class="runtime-line">
+          <span id="runtime-dot" class="runtime-dot"></span>
+          <span id="runtime-label">正在连接运行时</span>
+        </div>
+
+        <article id="primary-task-card" class="primary-task-card">
+          <div class="card-kicker" id="task-project">当前任务</div>
+          <h1 id="task-title">暂无运行中的任务</h1>
+          <p id="task-status">随时可以开始</p>
+          <div id="task-meta" class="task-meta"></div>
+          <button id="open-task-button" class="primary-button" type="button" data-action="open-main">打开 MeteoMate</button>
+        </article>
+
+        <div class="metric-grid" aria-label="任务状态统计">
+          <div><strong id="metric-running">0</strong><span>运行中</span></div>
+          <div><strong id="metric-waiting">0</strong><span>待处理</span></div>
+          <div><strong id="metric-completed">0</strong><span>新完成</span></div>
+        </div>
+
+        <section class="recent-section">
+          <header><strong>最近任务</strong><span id="recent-count">0 项</span></header>
+          <div id="recent-task-list" class="recent-task-list"></div>
+        </section>
+
+        <footer class="panel-footer">
+          <button type="button" data-action="mute-hour">静默 1 小时</button>
+          <button type="button" data-action="context-menu">更多设置</button>
+        </footer>
+      </section>
+    </main>
+
+    <script src="companion.js"></script>
+  </body>
+</html>
