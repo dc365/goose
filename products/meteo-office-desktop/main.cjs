@@ -26,6 +26,9 @@ const PermissionPolicy = require('./capabilities/permission-policy.cjs');
 const ComputerPip = require('./capabilities/computer-pip-controller.cjs');
 const Companion = require('./capabilities/companion-window-controller.cjs');
 const OfficeArtifactCollector = require('./capabilities/office-artifact-collector.cjs');
+const RemoteArtifactDownloader = require('./capabilities/remote-artifact-downloader.cjs');
+const StreamingOutputGuard = require('./capabilities/streaming-output-guard.cjs');
+const AgentLoopGuard = require('./capabilities/agent-loop-guard.cjs');
 const ArtifactPreview = require('./capabilities/artifact-preview.cjs');
 const ArtifactFileActions = require('./capabilities/artifact-file-actions.cjs');
 const ArtifactSelection = require('./capabilities/artifact-selection.cjs');
@@ -907,13 +910,6 @@ async function resolveGooseBinary() {
   const candidates = [];
   if (process.env.GOOSE_BINARY) candidates.push(process.env.GOOSE_BINARY);
 
-  try {
-    const { resolveGooseBinary: resolveFromSdk } = await import('@aaif/goose-sdk/node');
-    candidates.push(resolveFromSdk());
-  } catch {
-    // The SDK is optional at runtime; fall back to repository and PATH discovery.
-  }
-
   const binaryName = process.platform === 'win32' ? 'goose.exe' : 'goose';
   if (app.isPackaged) {
     candidates.push(path.join(process.resourcesPath, 'bin', binaryName));
@@ -921,6 +917,13 @@ async function resolveGooseBinary() {
   } else {
     candidates.push(path.resolve(__dirname, '..', '..', 'target', 'release', binaryName));
     candidates.push(path.resolve(__dirname, '..', '..', 'target', 'debug', binaryName));
+  }
+
+  try {
+    const { resolveGooseBinary: resolveFromSdk } = await import('@aaif/goose-sdk/node');
+    candidates.push(resolveFromSdk());
+  } catch {
+    // The SDK is optional at runtime; fall back to PATH discovery.
   }
 
   for (const candidate of candidates) {
@@ -1180,7 +1183,7 @@ function sessionPermissionContext(request) {
 
 function permissionPromptInstruction(request) {
   const workspace = request.workspace || '未选择';
-  const fullAccessDesktopApproval = '完全访问下，已允许的桌面操作无需再次请求审批；';
+  const fullAccessDesktopApproval = '完全访问下，除破坏性删除操作外，已允许的桌面操作无需再次请求审批；';
   const interactiveDesktopApproval = '每次请求交互审批时说明目标应用、窗口和预期结果；';
   const desktopInstruction = Array.isArray(request.connectorIds) && request.connectorIds.includes('cua-desktop')
     ? ComputerPip.computerUsePromptInstruction({
@@ -1196,7 +1199,7 @@ function permissionPromptInstruction(request) {
   const capabilityInstruction = `${desktopInstruction}${officeInstruction}`;
   switch (request.permissionProfileId) {
     case 'workspace-approval':
-      return `用户已开启完全访问。可访问互联网和本机文件并执行命令；仍应围绕当前任务，避免无必要的破坏性操作。${capabilityInstruction}`;
+      return `用户已开启完全访问。可访问互联网和本机文件并执行命令；除删除文件、数据、记录或卸载等破坏性删除操作仍需用户批准外，其余已允许操作不再询问。${capabilityInstruction}`;
     case 'artifact-approval':
       return `当前为智能审批。工作区为：${workspace}。常规操作可自动执行；删除、工作区外访问、敏感信息、发布和高风险命令必须请求用户审批。${capabilityInstruction}`;
     default:
@@ -1210,9 +1213,15 @@ function sessionProviderId(sessionInfo) {
 
 function completionRecipeForRequest(request) {
   if (!request.completionContract?.required) return null;
+  if (String(request.providerId || '').trim()) return null;
   return request.completionRecipe && typeof request.completionRecipe === 'object'
     ? request.completionRecipe
     : null;
+}
+
+function sessionHasNativeRecipe(sessionInfo) {
+  const meta = sessionInfo?.session?._meta || sessionInfo?._meta || {};
+  return meta.hasRecipe === true || Boolean(meta.recipe && typeof meta.recipe === 'object');
 }
 
 function encodeRecipeDeeplink(recipe) {
@@ -1228,11 +1237,8 @@ function requiresNewRuntimeSession(request, sessionInfo) {
     request.capabilityHash && request.sessionCapabilityHash !== request.capabilityHash
   );
   const completionRecipe = completionRecipeForRequest(request);
-  const completionRecipeMissing = Boolean(
-    completionRecipe
-    && sessionInfo?.session?._meta?.hasRecipe !== true
-  );
-  return providerChanged || capabilitiesChanged || completionRecipeMissing;
+  const completionModeChanged = Boolean(completionRecipe) !== sessionHasNativeRecipe(sessionInfo);
+  return providerChanged || capabilitiesChanged || completionModeChanged;
 }
 
 function gooseExtensionName(extension) {
@@ -1320,17 +1326,26 @@ function normalizeProviderStreamingMode(value) {
   return ['auto', 'on', 'off'].includes(value) ? value : 'auto';
 }
 
+function isVolcengineArkEndpoint(apiUrl) {
+  try {
+    return /^ark\.[a-z0-9-]+\.volces\.com$/i.test(new URL(apiUrl).hostname);
+  } catch {
+    return false;
+  }
+}
+
+function isOfficialDeepSeekEndpoint(apiUrl) {
+  try {
+    return new URL(apiUrl).hostname.toLowerCase() === 'api.deepseek.com';
+  } catch {
+    return false;
+  }
+}
+
 function resolvedProviderPreset(apiUrl, presetMode = 'auto') {
   const normalizedMode = normalizeProviderPresetMode(presetMode);
   if (normalizedMode !== 'auto') return normalizedMode;
-  try {
-    const url = new URL(apiUrl);
-    return /^ark\.[a-z0-9-]+\.volces\.com$/i.test(url.hostname)
-      ? 'volcengine-ark'
-      : 'openai-compatible';
-  } catch {
-    return 'openai-compatible';
-  }
+  return isVolcengineArkEndpoint(apiUrl) ? 'volcengine-ark' : 'openai-compatible';
 }
 
 function providerEndpointUrl(apiUrl, basePath) {
@@ -1364,11 +1379,13 @@ function openAiProviderRoute(apiUrl, options = {}) {
   const basePath = endpointPathOverride || (protocol === 'responses'
     ? openAiResponsesPath(apiUrl)
     : openAiChatCompletionsPath(apiUrl));
-  const supportsStreaming = streamingMode === 'on'
-    ? true
-    : streamingMode === 'off'
-      ? false
-      : !(providerPreset === 'volcengine-ark' && protocol === 'responses');
+  const streamingCompatibilityLocked = protocol === 'responses'
+    && (providerPreset === 'volcengine-ark' || isVolcengineArkEndpoint(apiUrl));
+  const supportsStreaming = streamingCompatibilityLocked
+    ? false
+    : streamingMode === 'on'
+      ? true
+      : streamingMode !== 'off';
   return {
     basePath,
     endpointPathOverride,
@@ -1379,6 +1396,8 @@ function openAiProviderRoute(apiUrl, options = {}) {
     protocol,
     streamingMode,
     supportsStreaming,
+    streamingCompatibilityLocked,
+    preservesThinking: isOfficialDeepSeekEndpoint(apiUrl),
   };
 }
 
@@ -1386,7 +1405,8 @@ function shouldUpdateProviderTransport(provider, options = {}) {
   if (!provider?.apiUrl) return false;
   const route = openAiProviderRoute(provider.apiUrl, options);
   return provider.basePath !== route.basePath
-    || provider.supportsStreaming !== route.supportsStreaming;
+    || provider.supportsStreaming !== route.supportsStreaming
+    || Boolean(provider.preservesThinking) !== route.preservesThinking;
 }
 
 function providerProbeTool(protocol) {
@@ -1405,7 +1425,38 @@ function providerProbeTool(protocol) {
     : { type: 'function', function: definition };
 }
 
-async function providerProbeRequest({ endpointUrl, apiKey, requiresAuth, body, stream = false }) {
+function validateProviderProbeStream(protocol, responseText) {
+  const events = responseText.split(/\r?\n/).flatMap((line) => {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('data:')) return [];
+    const data = trimmed.slice('data:'.length).trim();
+    if (!data || data === '[DONE]') return [];
+    try {
+      return [JSON.parse(data)];
+    } catch {
+      throw new Error('流式响应事件不是有效 JSON');
+    }
+  });
+  if (!events.length) throw new Error('服务未返回可识别的流式事件');
+  if (events.some((event) => event?.type === 'error' || event?.error)) {
+    throw new Error('流式响应中包含错误事件');
+  }
+  if (protocol !== 'responses') {
+    if (!events.some((event) => Array.isArray(event?.choices))) {
+      throw new Error('流式响应结构与 Chat Completions 协议不匹配');
+    }
+    return;
+  }
+  for (const event of events) {
+    if (!['response.created', 'response.in_progress', 'response.completed'].includes(event?.type)) continue;
+    const metadata = event.response;
+    const missing = ['id', 'object', 'created_at', 'status', 'model']
+      .find((field) => metadata?.[field] === undefined || metadata?.[field] === null);
+    if (missing) throw new Error(`Responses 流事件缺少 Goose 必需字段：${missing}`);
+  }
+}
+
+async function providerProbeRequest({ endpointUrl, apiKey, requiresAuth, body, protocol, stream = false }) {
   const headers = { 'content-type': 'application/json' };
   if (requiresAuth) headers.authorization = `Bearer ${apiKey}`;
   let response;
@@ -1430,10 +1481,7 @@ async function providerProbeRequest({ endpointUrl, apiKey, requiresAuth, body, s
     throw new Error(`服务返回 HTTP ${response.status}${message ? `：${message.slice(0, 360)}` : ''}`);
   }
   if (stream) {
-    if (!responseText.includes('data:') && !responseText.includes('response.')) {
-      throw new Error('服务未返回可识别的流式事件');
-    }
-    if (/"type"\s*:\s*"error"/.test(responseText)) throw new Error('流式响应中包含错误事件');
+    validateProviderProbeStream(protocol, responseText);
     return responseText;
   }
   try {
@@ -1446,14 +1494,16 @@ async function providerProbeRequest({ endpointUrl, apiKey, requiresAuth, body, s
   }
 }
 
-function providerProbeBody(protocol, modelId, kind, stream = false) {
+const PROVIDER_PROBE_IMAGE_DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAGklEQVR4nGN4/fH/f0oww6gBowaMGjBcDAAAJG3aLp2gt6wAAAAASUVORK5CYII=';
+
+function providerProbeBody(protocol, modelId, kind, stream = false, options = {}) {
   if (protocol === 'responses') {
     const body = {
       model: modelId,
       input: kind === 'image'
         ? [{ role: 'user', content: [
             { type: 'input_text', text: 'Reply with OK.' },
-            { type: 'input_image', image_url: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=' },
+            { type: 'input_image', image_url: PROVIDER_PROBE_IMAGE_DATA_URL },
           ] }]
         : kind === 'tool'
           ? 'Call meteomate_connection_check with value "ok".'
@@ -1473,7 +1523,7 @@ function providerProbeBody(protocol, modelId, kind, stream = false) {
       content: kind === 'image'
         ? [
             { type: 'text', text: 'Reply with OK.' },
-            { type: 'image_url', image_url: { url: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=' } },
+            { type: 'image_url', image_url: { url: PROVIDER_PROBE_IMAGE_DATA_URL } },
           ]
         : kind === 'tool'
           ? 'Call meteomate_connection_check with value "ok".'
@@ -1483,7 +1533,11 @@ function providerProbeBody(protocol, modelId, kind, stream = false) {
   };
   if (kind === 'tool') {
     body.tools = [providerProbeTool(protocol)];
-    body.tool_choice = { type: 'function', function: { name: 'meteomate_connection_check' } };
+    const deepSeekThinkingModel = isOfficialDeepSeekEndpoint(options.apiUrl)
+      && /^(?:deepseek-v4-|deepseek-reasoner$)/i.test(modelId);
+    if (!deepSeekThinkingModel) {
+      body.tool_choice = { type: 'function', function: { name: 'meteomate_connection_check' } };
+    }
   }
   return body;
 }
@@ -1518,10 +1572,22 @@ function validateProviderProbePayload(protocol, kind, payload) {
 async function testModelProviderConnection(request = {}) {
   const apiUrl = String(request.apiUrl || '').trim();
   const modelId = String(request.modelId || request.model?.id || '').trim();
-  const apiKey = typeof request.apiKey === 'string' ? request.apiKey.trim() : '';
+  let apiKey = typeof request.apiKey === 'string' ? request.apiKey.trim() : '';
   const requiresAuth = request.requiresAuth !== false;
   if (!modelId) throw new Error('请先填写用于验证的模型 ID');
-  if (requiresAuth && !apiKey) throw new Error('为保护已保存密钥，重新验证时请再次输入 API Key');
+  if (requiresAuth && !apiKey && request.providerId && request.apiKeySet) {
+    const provider = await acpRuntime.customProviderConfig(String(request.providerId));
+    const runtimeRoot = GooseRuntimeEnvironment.resolveRuntimeRoot({
+      env: process.env,
+      profileContext: runtimeServices().profileContext,
+      userDataDir: app.getPath('userData'),
+    });
+    apiKey = GooseRuntimeEnvironment.readStoredSecret({
+      runtimeRoot,
+      key: provider.apiKeyEnv,
+    }) || '';
+  }
+  if (requiresAuth && !apiKey) throw new Error('已保存的 API Key 不可用，请重新输入后保存');
   const route = openAiProviderRoute(apiUrl, request);
   if (!route.endpointUrl) throw new Error('请输入有效的 HTTP 或 HTTPS Base URL');
   const startedAt = Date.now();
@@ -1532,7 +1598,8 @@ async function testModelProviderConnection(request = {}) {
         endpointUrl: route.endpointUrl,
         apiKey,
         requiresAuth,
-        body: providerProbeBody(route.protocol, modelId, kind, stream),
+        body: providerProbeBody(route.protocol, modelId, kind, stream, { apiUrl }),
+        protocol: route.protocol,
         stream,
       });
       if (!stream) validateProviderProbePayload(route.protocol, kind, payload);
@@ -1582,6 +1649,13 @@ class GooseAcpRuntime {
     this.sessionModelMap = new Map();
     this.sessionRecipeMap = new Map();
     this.sessionCompletionFallbackMap = new Map();
+    this.sessionAssistantTextMap = new Map();
+    this.sessionRemoteArtifactUrlMap = new Map();
+    this.sessionOutputGuardMap = new Map();
+    this.sessionAgentLoopGuardMap = new Map();
+    this.sessionTurnRequestMap = new Map();
+    this.sessionRemoteArtifactPromiseMap = new Map();
+    this.extensionSecretHashes = new Map();
     this.toolCallIdentityTracker = ComputerPip.createToolIdentityTracker();
     this.turnTimingMap = new Map();
     this.sessionTeamMemberMap = new Map();
@@ -1603,6 +1677,246 @@ class GooseAcpRuntime {
 
   snapshot() {
     return { ...this.status, binary: this.binary };
+  }
+
+  appendAssistantText(sessionId, text) {
+    if (!text) return;
+    const current = `${this.sessionAssistantTextMap.get(sessionId) || ''}${text}`;
+    this.sessionAssistantTextMap.set(sessionId, current.slice(-2 * 1024 * 1024));
+  }
+
+  beginTurnCapture(request, sessionId) {
+    this.sessionAssistantTextMap.set(sessionId, '');
+    this.sessionRemoteArtifactUrlMap.set(sessionId, []);
+    this.sessionTurnRequestMap.set(sessionId, request);
+    this.sessionOutputGuardMap.set(
+      sessionId,
+      StreamingOutputGuard.createOfficeOutputGuard(
+        RemoteArtifactDownloader.isOfficeProductRequest(request.prompt)
+      )
+    );
+    this.sessionAgentLoopGuardMap.set(
+      sessionId,
+      AgentLoopGuard.create({
+        enabled: Boolean(
+          String(request.providerId || '').trim()
+          && request.completionContract?.required
+        ),
+      })
+    );
+    this.sessionRemoteArtifactPromiseMap.delete(sessionId);
+  }
+
+  clearTurnCapture(sessionId) {
+    this.sessionAssistantTextMap.delete(sessionId);
+    this.sessionRemoteArtifactUrlMap.delete(sessionId);
+    this.sessionOutputGuardMap.delete(sessionId);
+    this.sessionAgentLoopGuardMap.delete(sessionId);
+    this.sessionTurnRequestMap.delete(sessionId);
+    this.sessionRemoteArtifactPromiseMap.delete(sessionId);
+  }
+
+  captureRemoteOfficeArtifactUrls(sessionId, payloads) {
+    if (!RemoteArtifactDownloader.isOfficeProductRequest(
+      this.sessionTurnRequestMap.get(sessionId)?.prompt
+    )) return;
+    const captured = this.sessionRemoteArtifactUrlMap.get(sessionId) || [];
+    const seen = new Set(captured);
+    for (const url of RemoteArtifactDownloader.extractRemoteOfficeUrls(payloads)) {
+      if (seen.has(url.href)) continue;
+      seen.add(url.href);
+      captured.push(url.href);
+    }
+    this.sessionRemoteArtifactUrlMap.set(sessionId, captured);
+  }
+
+  ensureRemoteOfficeArtifacts(request, sessionId) {
+    const active = this.sessionRemoteArtifactPromiseMap.get(sessionId);
+    if (active) return active;
+    const pending = this.materializeRemoteOfficeArtifacts(request, sessionId);
+    this.sessionRemoteArtifactPromiseMap.set(sessionId, pending);
+    return pending;
+  }
+
+  handleAssistantOutput(sessionId, text) {
+    AgentLoopGuard.observeText(this.sessionAgentLoopGuardMap.get(sessionId), text);
+    const guard = this.sessionOutputGuardMap.get(sessionId)
+      || StreamingOutputGuard.createOfficeOutputGuard(false);
+    const guarded = StreamingOutputGuard.appendOfficeOutput(guard, text);
+    this.appendAssistantText(sessionId, guarded.text);
+    const request = this.sessionTurnRequestMap.get(sessionId);
+    if (guarded.downloadReady && request) {
+      void this.ensureRemoteOfficeArtifacts(request, sessionId);
+    }
+    if (guarded.shouldCancel && request) {
+      sendRuntimeEvent({
+        type: 'runtime_log',
+        taskId: request.taskId,
+        sessionId,
+        runtime: 'acp',
+        level: 'info',
+        text: '检测到 Office 产品结果重复，已保留首个完整结果并停止继续生成。',
+      });
+      void this.client.cancel({ sessionId }).catch(() => {});
+    }
+    return guarded.text;
+  }
+
+  handleAgentLoopToolCall(sessionId, toolCall, rawInput) {
+    const result = AgentLoopGuard.observeToolCall(
+      this.sessionAgentLoopGuardMap.get(sessionId),
+      {
+        extensionName: toolCall.extensionName,
+        toolName: toolCall.toolName,
+        rawInput,
+      }
+    );
+    if (!result.shouldCancel) return;
+    const request = this.sessionTurnRequestMap.get(sessionId);
+    if (!request) return;
+    sendRuntimeEvent({
+      type: 'runtime_log',
+      taskId: request.taskId,
+      sessionId,
+      runtime: 'acp',
+      level: 'warning',
+      text: '模型已声明任务完成后仍重复调用同一工具，MeteoMate 已停止本轮并进入完成结果校验。',
+    });
+    void this.client.cancel({ sessionId }).catch(() => {});
+  }
+
+  async materializeRemoteOfficeArtifacts(request, sessionId) {
+    const assistantText = this.sessionAssistantTextMap.get(sessionId) || '';
+    if (!RemoteArtifactDownloader.isOfficeProductRequest(request.prompt)) return;
+    const securityMode = process.env.METEOMATE_SECURITY_MODE;
+    const artifactSources = this.sessionRemoteArtifactUrlMap.get(sessionId) || [];
+    const urls = RemoteArtifactDownloader.extractRemoteOfficeUrls(
+      [assistantText, ...artifactSources],
+      { securityMode }
+    );
+    if (!urls.length) return;
+    const workspace = request.workspace || this.sessionPermissionMap.get(sessionId)?.workspace;
+
+    const toolCallId = `remote-office-download-${crypto.randomUUID()}`;
+    sendRuntimeEvent({
+      type: 'tool_call_started',
+      taskId: request.taskId,
+      sessionId,
+      runtime: 'acp',
+      toolCallId,
+      title: '保存 Office 产品到本机',
+      toolName: 'artifact_auto_download',
+      extensionName: 'remote-office-download',
+      kind: 'fetch',
+      status: 'running',
+    });
+
+    const result = await RemoteArtifactDownloader.downloadOfficeArtifacts({
+      userPrompt: request.prompt,
+      assistantText,
+      artifactSources,
+      workspace,
+      securityMode,
+    }).catch((error) => ({
+      downloads: [],
+      failures: [{ message: error?.message || String(error) }],
+    }));
+    const completed = [];
+    const failures = [...(result.failures || [])];
+    const warnings = [];
+
+    for (const download of result.downloads || []) {
+      let rendered = null;
+      let renderError = '';
+      try {
+        rendered = await OfficePreview.renderOfficePreview({
+          sourcePath: download.path,
+          workspace,
+          productRoot: __dirname,
+          allowSystemFallback: app.isPackaged !== true
+            || process.env.METEOMATE_ALLOW_SYSTEM_OFFICE_RUNTIME === '1',
+        });
+      } catch (error) {
+        renderError = error?.message || String(error);
+        warnings.push({ remoteSource: download.remoteSource, message: renderError });
+      }
+      try {
+        const artifact = OfficeArtifactCollector.materializeOfficeArtifact({
+          apiVersion: 'meteomate/v1',
+          kind: 'Artifact',
+          id: `artifact-office-${crypto.createHash('sha256')
+            .update(`remote:${download.contentHash}:${download.relativePath}`)
+            .digest('hex')
+            .slice(0, 24)}`,
+          name: download.name,
+          type: download.extension.slice(1).toUpperCase(),
+          path: download.relativePath,
+          status: rendered ? 'ready' : 'validated',
+          contentHash: download.contentHash,
+          createdAt: Date.now(),
+          metadata: {
+            source: 'office-artifacts',
+            delivery: 'remote-download',
+            remoteSource: download.remoteSource,
+            downloadedAt: download.downloadedAt,
+            reused: download.reused,
+            validation: {
+              status: rendered ? 'ready' : 'validated',
+              checks: rendered ? ['download', 'signature', 'render'] : ['download', 'signature'],
+              ...(renderError ? { renderError } : {}),
+            },
+            ...(rendered ? {
+              render: {
+                pageCount: rendered.pageCount,
+                sourceHash: rendered.sourceHash,
+                previewPath: rendered.previewPath,
+                thumbnailPath: rendered.thumbnailPaths?.[0] || '',
+                thumbnails: rendered.thumbnailPaths || [],
+              },
+            } : {}),
+          },
+        }, {
+          workspace,
+          sessionId,
+          toolCallId,
+          extensionName: 'remote-office-download',
+          toolName: 'artifact_auto_download',
+        });
+        completed.push(artifact);
+        sendRuntimeEvent({
+          type: 'artifact_created',
+          taskId: request.taskId,
+          sessionId,
+          runtime: 'acp',
+          toolCallId,
+          toolName: 'artifact_auto_download',
+          extensionName: 'remote-office-download',
+          artifact,
+        });
+      } catch (error) {
+        failures.push({
+          remoteSource: download.remoteSource,
+          message: error?.message || String(error),
+        });
+      }
+    }
+
+    sendRuntimeEvent({
+      type: 'tool_call_updated',
+      taskId: request.taskId,
+      sessionId,
+      runtime: 'acp',
+      toolCallId,
+      title: '保存 Office 产品到本机',
+      toolName: 'artifact_auto_download',
+      extensionName: 'remote-office-download',
+      status: completed.length ? 'completed' : 'failed',
+      rawOutput: {
+        saved: completed.map((artifact) => artifact.metadata.relativePath),
+        warnings,
+        failures,
+      },
+    });
   }
 
   emitStatus() {
@@ -1739,9 +2053,23 @@ class GooseAcpRuntime {
     ];
     return {
       enabledExtensions,
-      sessionExtensionConfigs:
-        runtimeServices().capabilityService?.sessionExtensionsForRequest(request) || [],
+      extensionSecretValues:
+        runtimeServices().capabilityService?.extensionSecretsForRequest(request) || {},
     };
+  }
+
+  async syncExtensionSecrets(secretValues = {}) {
+    for (const [key, value] of Object.entries(secretValues)) {
+      const textValue = String(value);
+      const digest = crypto.createHash('sha256').update(textValue).digest('hex');
+      if (this.extensionSecretHashes.get(key) === digest) continue;
+      await this.client.extMethod('_goose/unstable/config/upsert', {
+        key,
+        value: textValue,
+        isSecret: true,
+      });
+      this.extensionSecretHashes.set(key, digest);
+    }
   }
 
   async ensureSession(request) {
@@ -1755,7 +2083,7 @@ class GooseAcpRuntime {
     }
 
     await runtimeServices().capabilityService?.prepareForRequest?.(request);
-    const { enabledExtensions, sessionExtensionConfigs } = this.sessionExtensionsForRequest(request);
+    const { enabledExtensions, extensionSecretValues } = this.sessionExtensionsForRequest(request);
     const capabilityMetrics = {
       connectorCount: enabledExtensions.length,
       toolCount: enabledExtensions.reduce(
@@ -1764,6 +2092,7 @@ class GooseAcpRuntime {
       ),
     };
     request.runtimeCapabilityMetrics = capabilityMetrics;
+    await this.syncExtensionSecrets(extensionSecretValues);
     sendRuntimeProgress(request.taskId, 'loading_capabilities', {
       ...capabilityMetrics,
       modelId: request.modelId || '',
@@ -1778,7 +2107,7 @@ class GooseAcpRuntime {
         && capabilityLoad?.status === 'loaded'
         && (!request.capabilityHash || capabilityLoad.capabilityHash === request.capabilityHash)
         && (!request.providerId || this.sessionProviderMap.get(request.sessionId) === request.providerId)
-        && (!recipeRequired || this.sessionRecipeMap.get(request.sessionId) === true)
+        && this.sessionRecipeMap.get(request.sessionId) === recipeRequired
       );
       const sessionInfo = canReuseLoadedSession ? null : await this.findSessionInfo(request.sessionId);
       if (!canReuseLoadedSession && (!sessionInfo || requiresNewRuntimeSession(request, sessionInfo))) {
@@ -1825,7 +2154,6 @@ class GooseAcpRuntime {
             request,
             request.sessionId,
             enabledExtensions,
-            sessionExtensionConfigs,
             loadResponse
           );
         } else {
@@ -1863,7 +2191,6 @@ class GooseAcpRuntime {
       request,
       sessionId,
       enabledExtensions,
-      sessionExtensionConfigs,
       response
     );
     sendRuntimeEvent({
@@ -1875,22 +2202,16 @@ class GooseAcpRuntime {
     return sessionId;
   }
 
-  async syncSessionExtensions(sessionId, sessionExtensionConfigs, enabledExtensions) {
-    if (!sessionExtensionConfigs.length) return;
+  async syncSessionExtensions(sessionId, enabledExtensions) {
     const listed = await this.client.goose.sessionExtensionsList_unstable({ sessionId });
     const loadedNames = new Set(
       (listed.extensions || []).map(gooseExtensionName).filter(Boolean)
     );
-    for (const config of sessionExtensionConfigs) {
-      if (loadedNames.has(config.name)) continue;
-      try {
-        await this.client.goose.sessionExtensionsAdd_unstable({ sessionId, config });
-      } catch (legacyError) {
-        const extension = enabledExtensions.find((item) => gooseExtensionName(item) === config.name);
-        if (!extension) throw legacyError;
-        await this.client.extMethod('_goose/unstable/session/extensions/add', { sessionId, extension });
-      }
-      loadedNames.add(config.name);
+    for (const extension of enabledExtensions) {
+      const name = gooseExtensionName(extension);
+      if (!name || loadedNames.has(name)) continue;
+      await this.client.extMethod('_goose/unstable/session/extensions/add', { sessionId, extension });
+      loadedNames.add(name);
     }
   }
 
@@ -1898,7 +2219,6 @@ class GooseAcpRuntime {
     request,
     sessionId,
     enabledExtensions,
-    sessionExtensionConfigs,
     sessionResponse = null
   ) {
     const expected = enabledExtensions
@@ -1932,7 +2252,7 @@ class GooseAcpRuntime {
     };
 
     try {
-      await this.syncSessionExtensions(sessionId, sessionExtensionConfigs, enabledExtensions);
+      await this.syncSessionExtensions(sessionId, enabledExtensions);
       const results = Array.isArray(sessionResponse?._meta?.extensionResults)
         ? sessionResponse._meta.extensionResults
         : [];
@@ -1999,7 +2319,8 @@ class GooseAcpRuntime {
       teamMemberName: node.expert.name,
       teamRunId: runId,
     };
-    const { enabledExtensions, sessionExtensionConfigs } = this.sessionExtensionsForRequest(memberRequest);
+    const { enabledExtensions, extensionSecretValues } = this.sessionExtensionsForRequest(memberRequest);
+    await this.syncExtensionSecrets(extensionSecretValues);
     const response = await this.client.newSession({
       cwd: request.workspace || os.homedir(),
       mcpServers: [],
@@ -2034,11 +2355,14 @@ class GooseAcpRuntime {
       memberRequest,
       sessionId,
       enabledExtensions,
-      sessionExtensionConfigs,
       response
     );
     if (request.modelId) {
-      await this.client.unstable_setSessionModel({ sessionId, modelId: request.modelId });
+      await this.client.setSessionConfigOption({
+        sessionId,
+        configId: 'model',
+        value: request.modelId,
+      });
       this.sessionModelMap.set(sessionId, request.modelId);
     }
     return { sessionId, memberRequest };
@@ -2274,10 +2598,13 @@ class GooseAcpRuntime {
         : '当前未启用本地文件与命令工具。',
       completionInstruction,
     ].filter(Boolean).join('\n\n');
+    this.beginTurnCapture(request, sessionId);
     const response = await this.client.prompt({
       sessionId,
       prompt: [{ type: 'text', text: prompt }],
     });
+    await this.ensureRemoteOfficeArtifacts(request, sessionId);
+    this.clearTurnCapture(sessionId);
     this.turnTimingMap.delete(request.taskId);
     const failedCount = [...results.values()].filter((result) => result.status !== 'completed').length;
     sendRuntimeEvent({
@@ -2364,9 +2691,10 @@ class GooseAcpRuntime {
   async send(request) {
     const sessionId = await this.ensureSession(request);
     if (request.modelId && this.sessionModelMap.get(sessionId) !== request.modelId) {
-      await this.client.unstable_setSessionModel({
+      await this.client.setSessionConfigOption({
         sessionId,
-        modelId: request.modelId,
+        configId: 'model',
+        value: request.modelId,
       });
       this.sessionModelMap.set(sessionId, request.modelId);
     }
@@ -2423,12 +2751,15 @@ class GooseAcpRuntime {
       ...(request.runtimeCapabilityMetrics || {}),
     });
 
+    this.beginTurnCapture(request, sessionId);
     this.client
       .prompt({
         sessionId,
         prompt: [{ type: 'text', text: prompt }],
       })
-      .then((response) => {
+      .then(async (response) => {
+        await this.ensureRemoteOfficeArtifacts(request, sessionId);
+        this.clearTurnCapture(sessionId);
         this.turnTimingMap.delete(request.taskId);
         sendRuntimeEvent({
           type: 'turn_completed',
@@ -2439,7 +2770,9 @@ class GooseAcpRuntime {
           response: safeJson(response),
         });
       })
-      .catch((error) => {
+      .catch(async (error) => {
+        await this.sessionRemoteArtifactPromiseMap.get(sessionId)?.catch(() => {});
+        this.clearTurnCapture(sessionId);
         this.turnTimingMap.delete(request.taskId);
         sendRuntimeEvent({
           type: 'turn_failed',
@@ -2699,6 +3032,8 @@ class GooseAcpRuntime {
             detail: safeJson(sanitizeAcpPayload(update.rawOutput || update.content)),
             rawOutput: safeJson(sanitizeAcpPayload(update.rawOutput)),
             content: safeJson(sanitizeAcpPayload(update.content)),
+            structuredContent: safeJson(sanitizeAcpPayload(update.structuredContent)),
+            result: safeJson(sanitizeAcpPayload(update.result)),
           },
         });
         artifacts.forEach((artifact) => {
@@ -2785,11 +3120,20 @@ class GooseAcpRuntime {
       case 'user_message_chunk':
         sendRuntimeEvent({ ...common, type: 'user_message_delta', text: contentText(update.content) });
         break;
-      case 'agent_message_chunk':
-        sendRuntimeEvent({ ...common, type: 'assistant_message_delta', text: contentText(update.content) });
+      case 'agent_message_chunk': {
+        const text = contentText(update.content);
+        const guardedText = this.handleAssistantOutput(notification.sessionId, text);
+        if (guardedText) {
+          sendRuntimeEvent({ ...common, type: 'assistant_message_delta', text: guardedText });
+        }
         break;
+      }
       case 'agent_thought_chunk':
-        sendRuntimeEvent({ ...common, type: 'thought_delta', text: contentText(update.content) });
+        {
+          const text = contentText(update.content);
+          AgentLoopGuard.observeText(this.sessionAgentLoopGuardMap.get(notification.sessionId), text);
+          sendRuntimeEvent({ ...common, type: 'thought_delta', text });
+        }
         break;
       case 'tool_call':
         {
@@ -2798,6 +3142,7 @@ class GooseAcpRuntime {
             update.toolCallId,
             runtimeToolIdentity(update),
           );
+        this.handleAgentLoopToolCall(notification.sessionId, toolCall, update.rawInput);
         sendRuntimeEvent({
           ...common,
           type: 'tool_call_started',
@@ -2818,6 +3163,12 @@ class GooseAcpRuntime {
             update.toolCallId,
             runtimeToolIdentity(update),
           );
+          this.captureRemoteOfficeArtifactUrls(notification.sessionId, [
+            update.structuredContent,
+            update.content,
+            update.rawOutput,
+            update.result,
+          ]);
           const artifacts = materializeAcpImageArtifacts([update.content, update.rawOutput], {
             sessionId: notification.sessionId,
             toolCallId: update.toolCallId,
@@ -2854,6 +3205,8 @@ class GooseAcpRuntime {
           status: update.status,
           rawOutput: safeJson(sanitizeAcpPayload(update.rawOutput)),
           content: safeJson(sanitizeAcpPayload(update.content)),
+          structuredContent: safeJson(sanitizeAcpPayload(update.structuredContent)),
+          result: safeJson(sanitizeAcpPayload(update.result)),
         });
         artifacts.forEach((artifact) => {
           sendRuntimeEvent({
@@ -3036,7 +3389,7 @@ class GooseAcpRuntime {
             localProviderAvailable: true,
             credentialMode: managedProvider?.credentialMode || 'local',
             credentialConfigured: Boolean(managedProvider?.credentialConfigured),
-            preservesThinking: Boolean(providerConfig.preservesThinking),
+            preservesThinking: route.preservesThinking || Boolean(providerConfig.preservesThinking),
             models,
           };
         } catch {
@@ -3078,7 +3431,7 @@ class GooseAcpRuntime {
           localProviderAvailable: false,
           credentialMode: provider.credentialMode,
           credentialConfigured: provider.credentialConfigured,
-          preservesThinking: provider.models.some((model) => model.reasoning),
+          preservesThinking: route.preservesThinking || provider.models.some((model) => model.reasoning),
           models: provider.models.map((model) => ({ ...model })),
         };
       });
@@ -3167,7 +3520,7 @@ class GooseAcpRuntime {
       requiresAuth: request.requiresAuth !== false,
       catalogProviderId: 'openai',
       basePath: route.basePath,
-      preservesThinking: Boolean(request.model?.reasoning),
+      preservesThinking: route.preservesThinking || Boolean(request.model?.reasoning),
     });
     return {
       ...(await this.getModelSettings({ [created.providerId]: request })),
@@ -3196,7 +3549,7 @@ class GooseAcpRuntime {
         requiresAuth: managedProvider.requiresAuth,
         catalogProviderId: 'openai',
         basePath: route.basePath,
-        preservesThinking: managedProvider.models.some((model) => model.reasoning),
+        preservesThinking: route.preservesThinking || managedProvider.models.some((model) => model.reasoning),
       });
       return {
         ...(await this.getModelSettings()),
@@ -3238,7 +3591,9 @@ class GooseAcpRuntime {
     const config = await this.customProviderConfig(providerId);
     const models = (config.models || []).filter((id) => id !== originalModelId && id !== modelId);
     models.push(modelId);
-    const preservesThinking = Boolean(request.model?.reasoning) || Boolean(config.preservesThinking);
+    const preservesThinking = openAiProviderRoute(config.apiUrl).preservesThinking
+      || Boolean(request.model?.reasoning)
+      || Boolean(config.preservesThinking);
     await this.client.goose.providersCustomUpdate_unstable({
       providerId,
       ...this.customProviderPayload(config, { models, preservesThinking }),
@@ -3275,6 +3630,13 @@ class GooseAcpRuntime {
     this.sessionModelMap.clear();
     this.sessionRecipeMap.clear();
     this.sessionCompletionFallbackMap.clear();
+    this.sessionAssistantTextMap.clear();
+    this.sessionRemoteArtifactUrlMap.clear();
+    this.sessionOutputGuardMap.clear();
+    this.sessionAgentLoopGuardMap.clear();
+    this.sessionTurnRequestMap.clear();
+    this.sessionRemoteArtifactPromiseMap.clear();
+    this.extensionSecretHashes.clear();
     this.toolCallIdentityTracker.clear();
     this.turnTimingMap.clear();
     this.sessionTeamMemberMap.clear();

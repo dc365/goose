@@ -10,12 +10,14 @@ const ConnectorClient = require('../capabilities/connector-client.cjs');
 const BrowserConnector = require('../capabilities/browser-connector.js');
 const ComputerConnector = require('../capabilities/computer-connector.js');
 const OfficeConnector = require('../capabilities/office-connector.js');
+const CapabilityResolver = require('../harness/capability-resolver.js');
 const { parseZipBuffer } = require('../capabilities/safe-zip.cjs');
 const { compareSkillVersions } = require('../capabilities/skill-version.cjs');
 
 const connectorsSource = fs.readFileSync(path.resolve(__dirname, '..', 'capability-center', 'connectors.js'), 'utf8');
 const capabilityRenderSource = fs.readFileSync(path.resolve(__dirname, '..', 'capability-center', 'render.js'), 'utf8');
 const capabilityCoreSource = fs.readFileSync(path.resolve(__dirname, '..', 'capability-center', 'core.js'), 'utf8');
+const capabilitySkillsSource = fs.readFileSync(path.resolve(__dirname, '..', 'capability-center', 'skills.js'), 'utf8');
 const capabilitiesManifestSource = fs.readFileSync(path.resolve(__dirname, '..', 'manifests', 'capabilities.js'), 'utf8');
 const skillHubRenderSource = fs.readFileSync(path.resolve(__dirname, '..', 'capability-center', 'skillhub-render.js'), 'utf8');
 const skillHubCoreSource = fs.readFileSync(path.resolve(__dirname, '..', 'capability-center', 'skillhub-core.js'), 'utf8');
@@ -86,6 +88,7 @@ assert.ok(capabilityRenderSource.includes('item.toolCount'));
 assert.ok(capabilityRenderSource.includes('tool.description'));
 assert.ok(capabilityRenderSource.includes('maturityLabel(item.maturity)'));
 assert.ok(capabilityCoreSource.includes("binding ? 'experimental'"));
+assert.ok(capabilitySkillsSource.includes("if (item.updateSource === 'bundled') void inspectBundled(item.id);"));
 assert.ok(connectorsSource.includes('toolMaturityLabel'));
 assert.ok(connectorsSource.includes('connector-tool-maturity'));
 assert.ok(![rendererSource, capabilityRenderSource, connectorsSource].some((source) => source.includes('连接器')));
@@ -194,8 +197,33 @@ capabilityApi.center.registry = {
     tags: ['离线', '分析'],
     sidecar: { categories: ['天气分析'], icon: '析', tags: ['离线', '分析'] },
   }],
-  connectors: [],
+  connectors: [
+    {
+      id: OfficeConnector.ID,
+      name: 'Office 成果物',
+      managedPreset: OfficeConnector.ID,
+      enabled: true,
+      toolAllowlist: OfficeConnector.SAFE_TOOLS,
+      lastTest: {
+        ok: true,
+        result: {
+          tools: OfficeConnector.FULL_SELECTION_BASELINE.map((name) => ({ name, description: name })),
+        },
+      },
+    },
+    {
+      id: 'custom-limited',
+      name: '自定义受限工具',
+      enabled: true,
+      toolAllowlist: ['existing_tool', 'undiscovered_tool'],
+      lastTest: {
+        ok: true,
+        result: { tools: [{ name: 'existing_tool' }] },
+      },
+    },
+  ],
   skills: [
+    { id: 'user:bundled-analysis', skillId: 'bundled-analysis', scope: 'user', enabled: true, name: '随包分析技能', version: '1.1.0' },
     { id: 'user:user-skill', skillId: 'user-skill', scope: 'user', enabled: true, name: '用户技能', version: '1.0.0' },
     { id: 'project:a-skill', skillId: 'project-a-skill', scope: 'project', projectId: 'project-a', enabled: true, name: '项目 A 技能' },
     { id: 'project:b-skill', skillId: 'project-b-skill', scope: 'project', projectId: 'project-b', enabled: true, name: '项目 B 技能' },
@@ -207,19 +235,22 @@ const bundledCatalogEntry = capabilityApi.skillCatalog('project-a').find((item) 
 assert.equal(bundledCatalogEntry.category, '天气分析');
 assert.equal(bundledCatalogEntry.icon, '析');
 assert.deepEqual(Array.from(bundledCatalogEntry.tags), ['离线', '分析']);
+assert.equal(bundledCatalogEntry.updateAvailable, true);
+assert.equal(bundledCatalogEntry.updateSource, 'bundled');
+assert.equal(bundledCatalogEntry.latestVersion, '1.2.0');
 assert.equal(capabilityApi.skillCatalog('project-a').find((item) => item.id === 'user-skill').updateAvailable, true);
 assert.deepEqual(
   Array.from(capabilityApi.enabledSkillCatalog('project-a'), (item) => item.id).sort(),
-  ['project-a-skill', 'user-skill']
+  ['bundled-analysis', 'project-a-skill', 'user-skill']
 );
 assert.deepEqual(
   Array.from(capabilityApi.enabledSkillCatalog(null), (item) => item.id),
-  ['user-skill']
+  ['bundled-analysis', 'user-skill']
 );
 assert.ok(!capabilityApi.enabledSkillCatalog('project-a').some((item) => item.id === 'docx-template'));
 assert.deepEqual(
   Array.from(capabilityApi.mergedCatalog(capabilityContext.catalog, 'project-a').skills, (item) => item.id).sort(),
-  ['project-a-skill', 'user-skill']
+  ['bundled-analysis', 'project-a-skill', 'user-skill']
 );
 const projectSelectableSkills = capabilityApi.projectSelectableSkillCatalog([
   { id: 'skill-creator', name: '技能创建助手', summary: '创建技能', latestVersion: '1.1.0', categories: ['效率工具'] },
@@ -235,6 +266,30 @@ assert.equal(projectSelectableSkills.find((item) => item.id === 'synoptic-analys
 assert.equal(projectSelectableSkills.find((item) => item.id === 'synoptic-analysis').remoteSkill.latestVersion, '1.0.0');
 assert.ok(!projectSelectableSkills.some((item) => item.id === 'docx-template'));
 assert.equal(capabilityApi.connectorCatalog().find((item) => item.id === 'weather-data').maturity, 'beta');
+const upgradedOfficeCatalog = capabilityApi.connectorCatalog().find((item) => item.id === OfficeConnector.ID);
+assert.equal(upgradedOfficeCatalog.toolCount, OfficeConnector.SAFE_TOOLS.length);
+assert.ok(upgradedOfficeCatalog.tools.some((tool) => tool.name === 'docx_edit_selection'));
+const customLimitedCatalog = capabilityApi.connectorCatalog().find((item) => item.id === 'custom-limited');
+assert.deepEqual(Array.from(customLimitedCatalog.tools, (tool) => tool.name), ['existing_tool']);
+const editableSelectionCapabilities = CapabilityResolver.resolveCapabilities({
+  project: null,
+  expert: null,
+  task: {
+    capabilityMode: 'custom',
+    connectorIds: [],
+    toolSelections: {},
+    messages: [{
+      role: 'user',
+      artifactSelections: [{ format: 'DOCX', editability: 'editable' }],
+    }],
+  },
+  catalog: capabilityApi.mergedCatalog(capabilityContext.catalog, null),
+});
+assert.equal(editableSelectionCapabilities.ready, true);
+assert.deepEqual(
+  Array.from(editableSelectionCapabilities.toolSelections[OfficeConnector.ID]),
+  ['docx_edit_selection'],
+);
 
 const normalizedToolTest = ConnectorClient.normalizeLastTest({
   ok: true,
@@ -390,6 +445,13 @@ fs.writeFileSync(path.join(bundledWeather, 'meteomate.json'), JSON.stringify({
   tags: ['离线', '天气'],
   requires: { connectors: [] },
 }, null, 2));
+const recoveredBundledWeather = path.join(homeDir, '.agents', 'skills', 'bundled-weather');
+fs.cpSync(bundledWeather, recoveredBundledWeather, { recursive: true });
+const recoveredEnabledSkill = createSkill(path.join(homeDir, '.agents', 'skills'), 'recovered-enabled');
+const recoveredDisabledSkill = createSkill(path.join(homeDir, '.agents', 'disabled-skills'), 'recovered-disabled');
+const invalidSkillDirectory = path.join(homeDir, '.agents', 'skills', 'invalid-skill');
+fs.mkdirSync(invalidSkillDirectory, { recursive: true });
+fs.writeFileSync(path.join(invalidSkillDirectory, 'README.md'), '# Not a skill\n');
 const ipcHandlers = new Map();
 const computerConnection = {
   pid: 100,
@@ -432,7 +494,19 @@ const service = createCapabilityService({
 service.registerIpc();
 assert.ok(ipcHandlers.has('capability:install-skill'));
 assert.ok(ipcHandlers.has('capability:save-connector'));
-const bundledEntry = service.registrySnapshot().bundledSkills.find((item) => item.id === 'bundled-weather');
+const reconciledSnapshot = service.registrySnapshot();
+const recoveredEnabled = reconciledSnapshot.skills.find((item) => item.skillId === 'recovered-enabled');
+const recoveredDisabled = reconciledSnapshot.skills.find((item) => item.skillId === 'recovered-disabled');
+assert.equal(recoveredEnabled.enabled, true);
+assert.equal(recoveredEnabled.installPath, recoveredEnabledSkill);
+assert.equal(recoveredEnabled.source.type, 'recovered');
+assert.match(recoveredEnabled.runtimeInstruction, /# Test[\s\S]*Verify the result\./);
+assert.equal(recoveredDisabled.enabled, false);
+assert.equal(recoveredDisabled.installPath, recoveredDisabledSkill);
+assert.equal(recoveredDisabled.runtimeInstruction, '');
+assert.ok(!reconciledSnapshot.skills.some((item) => item.skillId === 'invalid-skill'));
+assert.equal(reconciledSnapshot.skills.find((item) => item.skillId === 'bundled-weather').installPath, recoveredBundledWeather);
+const bundledEntry = reconciledSnapshot.bundledSkills.find((item) => item.id === 'bundled-weather');
 assert.equal(bundledEntry.category, '天气分析');
 assert.equal(bundledEntry.icon, '天');
 assert.deepEqual(bundledEntry.tags, ['离线', '天气']);
@@ -550,7 +624,12 @@ const extensions = service.extensionsForRequest({ connectorIds: ['weather-data-l
 assert.equal(extensions.length, 1);
 assert.equal(extensions[0].type, 'mcp');
 assert.equal(extensions[0].server.command, process.execPath);
-assert.deepEqual(extensions[0].server.env, [{ name: 'API_TOKEN', value: 'secret-value' }]);
+assert.deepEqual(extensions[0].server.env, []);
+assert.deepEqual(extensions[0].envKeys, ['API_TOKEN']);
+assert.deepEqual(
+  service.extensionSecretsForRequest({ connectorIds: ['weather-data-local'], projectId: 'project-1' }),
+  { API_TOKEN: 'secret-value' },
+);
 assert.equal(Object.prototype.hasOwnProperty.call(extensions[0], 'available_tools'), false);
 const filteredExtensions = service.extensionsForRequest({
   connectorIds: ['weather-data-local'],
@@ -587,8 +666,19 @@ assert.deepEqual(httpExtension.server, {
   type: 'http',
   name: 'weather-http',
   url: 'http://127.0.0.1:3000/messages',
-  headers: [{ name: 'Authorization', value: 'Bearer test' }],
+  headers: [{
+    name: 'Authorization',
+    value: '$METEOMATE_MCP_WEATHER_HTTP_HEADER_AUTHORIZATION',
+  }],
 });
+assert.deepEqual(httpExtension.envKeys, ['METEOMATE_MCP_WEATHER_HTTP_HEADER_AUTHORIZATION']);
+assert.deepEqual(
+  ConnectorClient.extensionSecretValues({
+    id: 'weather-http',
+    transport: 'streamable-http',
+  }, { headers: { Authorization: 'Bearer test' } }),
+  { METEOMATE_MCP_WEATHER_HTTP_HEADER_AUTHORIZATION: 'Bearer test' },
+);
 const protectedRuntimeEnvironment = ConnectorClient.extensionConfig({
   id: 'protected-runtime-env',
   name: 'Protected runtime env',
@@ -701,7 +791,11 @@ const browserExtensions = service.extensionsForRequest({
 });
 assert.deepEqual(browserExtensions[0].available_tools, BrowserConnector.SAFE_TOOLS);
 assert.equal(browserExtensions[0].server.command, process.execPath);
-assert.ok(browserExtensions[0].server.env.some((item) => item.name === 'PATH'));
+assert.ok(browserExtensions[0].envKeys.includes('PATH'));
+assert.ok(service.extensionSecretsForRequest({
+  connectorIds: [BrowserConnector.ID],
+  projectId: 'project-1',
+}).PATH);
 const narrowedBrowserExtensions = service.extensionsForRequest({
   connectorIds: [BrowserConnector.ID],
   projectId: 'project-1',
@@ -759,7 +853,11 @@ assert.deepEqual(
   ['get_window_state', 'click', 'browser_navigate', 'kill_app'],
 );
 assert.equal(computerExtensions[0].server.command, computerConnection.mcp.command);
-assert.ok(computerExtensions[0].server.env.some((entry) => entry.name === 'CUA_DRIVER_EMBEDDED'));
+assert.ok(computerExtensions[0].envKeys.includes('CUA_DRIVER_EMBEDDED'));
+assert.equal(service.extensionSecretsForRequest({
+  connectorIds: [ComputerConnector.ID],
+  projectId: 'project-1',
+}).CUA_DRIVER_EMBEDDED, '1');
 
 const managed = service.syncManagedSkills(['sample-skill'], 9);
 assert.equal(managed.skills.find((item) => item.id === installed.installation.id).managedByPolicy, true);

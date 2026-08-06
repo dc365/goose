@@ -154,7 +154,7 @@ Driver 只在连接测试或任务实际选择 `cua-desktop` 时启动，退出 
 - 点击、滚动、拖拽、普通按键、应用前置和浏览器导航属于交互操作；
 - 文本输入、快捷键、直接设置控件值、应用启动/结束、浏览器输入、下载和文件上传属于敏感操作。
 
-“请求批准”和“智能审批”仍按上述风险级别决定是否弹出确认；选择“完全访问”后，已进入产品 allowlist 的 Cua 操作由 MeteoMate 自动批准，不再逐次弹窗。未进入 allowlist 的 Driver 会话、配置、录制回放、Agent 光标、更新和组件安装工具仍然拒绝，不能通过“完全访问”绕过。Cua bounded mode 和 managed policy 是下层安全上限。Cua 遥测与独立更新检查由宿主环境强制关闭；网页任务也可继续使用隔离的 Playwright MCP。
+“请求批准”和“智能审批”仍按上述风险级别决定是否弹出确认；选择“完全访问”后，除明确标记为破坏性删除的操作外，已进入产品 allowlist 的 Cua 操作由 MeteoMate 自动批准，不再逐次弹窗。未进入 allowlist 的 Driver 会话、配置、录制回放、Agent 光标、更新和组件安装工具仍然拒绝，不能通过“完全访问”绕过。Cua bounded mode 和 managed policy 是下层安全上限。Cua 遥测与独立更新检查由宿主环境强制关闭；网页任务也可继续使用隔离的 Playwright MCP。
 
 ## 6. 与 Harness 的关系
 

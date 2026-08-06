@@ -53,6 +53,13 @@ const destructiveShell = PermissionPolicy.classifyPermissionRequest(
 );
 assert.equal(destructiveShell.requiresSmartApproval, true);
 
+const deleteFile = PermissionPolicy.classifyPermissionRequest(
+  { toolCall: { title: 'delete_file', kind: 'delete', rawInput: { path: 'obsolete.txt' } } },
+  strictContext
+);
+assert.equal(deleteFile.destructiveOperation, true);
+assert.equal(PermissionPolicy.permissionHandling('workspace-approval', deleteFile), 'prompt');
+
 const unknownTool = PermissionPolicy.classifyPermissionRequest(
   { toolCall: { title: 'custom action', kind: 'other', rawInput: {} } },
   strictContext
@@ -127,7 +134,11 @@ const browserContext = {
     explicitToolSelection: true,
     selectedTools: [...BrowserConnector.SAFE_TOOLS],
     tools: [...BrowserConnector.SAFE_TOOLS, ...BrowserConnector.BLOCKED_TOOLS]
-      .map((name) => ({ name, description: name })),
+      .map((name) => ({
+        name,
+        description: name,
+        annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
+      })),
   }],
 };
 const browserSnapshot = PermissionPolicy.classifyPermissionRequest(
@@ -145,6 +156,22 @@ const browserNavigate = PermissionPolicy.classifyPermissionRequest(
 );
 assert.equal(browserNavigate.safeRemoteRead, true);
 assert.equal(PermissionPolicy.permissionHandling('analysis-readonly', browserNavigate), 'allow_once');
+assert.equal(PermissionPolicy.permissionHandling('workspace-approval', browserNavigate), 'allow_always');
+
+const browserExplicitlyDestructive = PermissionPolicy.classifyPermissionRequest(
+  { toolCall: { title: 'playwright-browser: browser_navigate', kind: 'other', rawInput: { url: 'https://example.com' } } },
+  {
+    ...browserContext,
+    connectors: browserContext.connectors.map((connector) => ({
+      ...connector,
+      tools: connector.tools.map((tool) => tool.name === 'browser_navigate'
+        ? { ...tool, effects: { destructive: true } }
+        : tool),
+    })),
+  }
+);
+assert.equal(browserExplicitlyDestructive.effects.destructive, true);
+assert.equal(PermissionPolicy.permissionHandling('workspace-approval', browserExplicitlyDestructive), 'prompt');
 
 const browserClick = PermissionPolicy.classifyPermissionRequest(
   { toolCall: { title: 'playwright-browser__browser_click', kind: 'other', rawInput: { ref: 'e1' } } },
@@ -173,6 +200,29 @@ assert.equal(browserUnsafe.safeRemoteRead, false);
 assert.equal(PermissionPolicy.permissionHandling('workspace-approval', browserUnsafe), 'deny');
 assert.equal(PermissionPolicy.permissionHandling('artifact-approval', browserUnsafe), 'deny');
 
+for (const toolName of BrowserConnector.SAFE_TOOLS) {
+  const assessment = PermissionPolicy.classifyPermissionRequest(
+    { toolCall: { title: `${BrowserConnector.ID}: ${toolName}`, kind: 'other', rawInput: {} } },
+    browserContext
+  );
+  assert.equal(
+    PermissionPolicy.permissionHandling('workspace-approval', assessment),
+    'allow_always',
+    `完全访问应自动允许浏览器工具：${toolName}`,
+  );
+}
+for (const toolName of BrowserConnector.BLOCKED_TOOLS) {
+  const assessment = PermissionPolicy.classifyPermissionRequest(
+    { toolCall: { title: `${BrowserConnector.ID}: ${toolName}`, kind: 'other', rawInput: {} } },
+    browserContext
+  );
+  assert.equal(
+    PermissionPolicy.permissionHandling('workspace-approval', assessment),
+    'deny',
+    `完全访问不能绕过浏览器工具禁用：${toolName}`,
+  );
+}
+
 const computerContext = {
   workspace,
   securityMode: 'strict',
@@ -185,7 +235,13 @@ const computerContext = {
     explicitToolSelection: true,
     selectedTools: [...ComputerConnector.SAFE_TOOLS],
     tools: [...ComputerConnector.SAFE_TOOLS, ...ComputerConnector.BLOCKED_TOOLS]
-      .map((name) => ({ name, description: name })),
+      .map((name) => ({
+        name,
+        description: name,
+        annotations: {
+          destructiveHint: ['interaction', 'sensitive'].includes(ComputerConnector.toolRisk(name)),
+        },
+      })),
   }],
 };
 const computerApps = PermissionPolicy.classifyPermissionRequest(
@@ -197,7 +253,7 @@ assert.equal(computerApps.effectiveRisk, 'high');
 assert.equal(computerApps.safeRemoteRead, false);
 assert.equal(computerApps.nonBypassableApproval, true);
 assert.equal(PermissionPolicy.permissionHandling('analysis-readonly', computerApps), 'prompt');
-assert.equal(PermissionPolicy.permissionHandling('workspace-approval', computerApps), 'prompt');
+assert.equal(PermissionPolicy.permissionHandling('workspace-approval', computerApps), 'allow_always');
 assert.equal(PermissionPolicy.permissionGrantReusable(computerApps), false);
 
 const computerDesktop = PermissionPolicy.classifyPermissionRequest(
@@ -207,7 +263,7 @@ const computerDesktop = PermissionPolicy.classifyPermissionRequest(
 assert.equal(computerDesktop.computerRisk, 'inspect');
 assert.equal(computerDesktop.requiresSmartApproval, true);
 assert.equal(PermissionPolicy.permissionHandling('artifact-approval', computerDesktop), 'prompt');
-assert.equal(PermissionPolicy.permissionHandling('workspace-approval', computerDesktop), 'prompt');
+assert.equal(PermissionPolicy.permissionHandling('workspace-approval', computerDesktop), 'allow_always');
 assert.equal(PermissionPolicy.permissionGrantReusable(computerDesktop), false);
 
 const computerClick = PermissionPolicy.classifyPermissionRequest(
@@ -216,10 +272,12 @@ const computerClick = PermissionPolicy.classifyPermissionRequest(
 );
 assert.equal(computerClick.computerRisk, 'interaction');
 assert.equal(computerClick.kind, 'execute');
+assert.equal(computerClick.effects.destructive, false);
+assert.equal(computerClick.destructiveOperation, false);
 assert.equal(computerClick.requiresSmartApproval, true);
 assert.equal(PermissionPolicy.permissionHandling('analysis-readonly', computerClick), 'prompt');
 assert.equal(PermissionPolicy.permissionHandling('artifact-approval', computerClick), 'prompt');
-assert.equal(PermissionPolicy.permissionHandling('workspace-approval', computerClick), 'prompt');
+assert.equal(PermissionPolicy.permissionHandling('workspace-approval', computerClick), 'allow_always');
 
 const computerType = PermissionPolicy.classifyPermissionRequest(
   { toolCall: { title: 'cua-desktop__type_text', kind: 'other', rawInput: { pid: 100, text: 'forecast' } } },
@@ -228,7 +286,7 @@ const computerType = PermissionPolicy.classifyPermissionRequest(
 assert.equal(computerType.computerRisk, 'sensitive');
 assert.equal(computerType.requiresSmartApproval, true);
 assert.equal(PermissionPolicy.permissionHandling('artifact-approval', computerType), 'prompt');
-assert.equal(PermissionPolicy.permissionHandling('workspace-approval', computerType), 'prompt');
+assert.equal(PermissionPolicy.permissionHandling('workspace-approval', computerType), 'allow_always');
 
 const computerKill = PermissionPolicy.classifyPermissionRequest(
   { toolCall: { title: 'cua-desktop__kill_app', kind: 'other', rawInput: { pid: 100 } } },
@@ -236,7 +294,7 @@ const computerKill = PermissionPolicy.classifyPermissionRequest(
 );
 assert.equal(computerKill.computerRisk, 'sensitive');
 assert.equal(computerKill.requiresSmartApproval, true);
-assert.equal(PermissionPolicy.permissionHandling('workspace-approval', computerKill), 'prompt');
+assert.equal(PermissionPolicy.permissionHandling('workspace-approval', computerKill), 'allow_always');
 
 const computerBrowserNavigate = PermissionPolicy.classifyPermissionRequest(
   { toolCall: { title: 'cua-desktop__browser_navigate', kind: 'other', rawInput: { url: 'https://example.com' } } },
@@ -244,7 +302,45 @@ const computerBrowserNavigate = PermissionPolicy.classifyPermissionRequest(
 );
 assert.equal(computerBrowserNavigate.computerRisk, 'interaction');
 assert.equal(computerBrowserNavigate.requiresSmartApproval, true);
-assert.equal(PermissionPolicy.permissionHandling('workspace-approval', computerBrowserNavigate), 'prompt');
+assert.equal(PermissionPolicy.permissionHandling('workspace-approval', computerBrowserNavigate), 'allow_always');
+
+const computerDestructiveClick = PermissionPolicy.classifyPermissionRequest(
+  { toolCall: { title: 'cua-desktop__click', kind: 'other', rawInput: { pid: 100, x: 10, y: 10 } } },
+  {
+    ...computerContext,
+    connectors: computerContext.connectors.map((connector) => ({
+      ...connector,
+      tools: connector.tools.map((tool) => tool.name === 'click'
+        ? { ...tool, effects: { destructive: true } }
+        : tool),
+    })),
+  }
+);
+assert.equal(computerDestructiveClick.effects.destructive, true);
+assert.equal(PermissionPolicy.permissionHandling('workspace-approval', computerDestructiveClick), 'prompt');
+
+for (const toolName of ComputerConnector.SAFE_TOOLS) {
+  const assessment = PermissionPolicy.classifyPermissionRequest(
+    { toolCall: { title: `${ComputerConnector.ID}: ${toolName.replaceAll('_', ' ')}`, kind: 'other', rawInput: {} } },
+    computerContext
+  );
+  assert.equal(
+    PermissionPolicy.permissionHandling('workspace-approval', assessment),
+    'allow_always',
+    `完全访问应自动允许 CUA 工具：${toolName}`,
+  );
+}
+for (const toolName of ComputerConnector.BLOCKED_TOOLS) {
+  const assessment = PermissionPolicy.classifyPermissionRequest(
+    { toolCall: { title: `${ComputerConnector.ID}: ${toolName.replaceAll('_', ' ')}`, kind: 'other', rawInput: {} } },
+    computerContext
+  );
+  assert.equal(
+    PermissionPolicy.permissionHandling('workspace-approval', assessment),
+    'deny',
+    `完全访问不能绕过 Driver 工具禁用：${toolName}`,
+  );
+}
 
 const computerBlocked = PermissionPolicy.classifyPermissionRequest(
   { toolCall: { title: 'cua-desktop__start_session', kind: 'other', rawInput: {} } },
@@ -389,6 +485,6 @@ assert.ok(mainSource.includes('PermissionPolicy.permissionGrantReusable(assessme
 assert.ok(mainSource.includes("handling === 'deny'"));
 assert.ok(mainSource.indexOf('PermissionPolicy.permissionHandling(') < mainSource.indexOf('this.sessionPermissionGrants.get(grantKey.sessionId)'));
 assert.ok(!mainSource.includes('automaticPermissionResponse(request, true)'));
-assert.ok(mainSource.includes('完全访问下，已允许的桌面操作无需再次请求审批'));
+assert.ok(mainSource.includes('除破坏性删除操作外，已允许的桌面操作无需再次请求审批'));
 
 console.log('permission policy tests passed');

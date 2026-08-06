@@ -1,26 +1,4 @@
-.memory-nav-item {
-  width: 100%;
-  min-height: 38px;
-  display: flex;
-  align-items: center;
-  gap: 11px;
-  padding: 8px 12px;
-  border: 0;
-  border-radius: 10px;
-  color: var(--text-secondary, #586273);
-  background: transparent;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-.memory-nav-item:hover,
-.memory-nav-item.active {
-  color: var(--text, #1f2937);
-  background: var(--surface-hover, rgba(75, 117, 242, 0.08));
-}
-.memory-nav-item svg,
-.memory-message-action svg,
-.composer-memory-chip svg {
+.memory-message-action svg {
   width: 18px;
   height: 18px;
   fill: none;
@@ -29,43 +7,10 @@
   stroke-linecap: round;
   stroke-linejoin: round;
 }
-.memory-nav-item > span { flex: 1; }
-.memory-nav-item em {
-  min-width: 19px;
-  height: 19px;
-  display: inline-grid;
-  place-items: center;
-  padding: 0 5px;
-  border-radius: 10px;
-  background: rgba(75, 117, 242, 0.12);
-  color: #3f67dd;
-  font-size: 11px;
-  font-style: normal;
-}
 .memory-message-action.saved {
   color: #3f67dd;
   background: rgba(75, 117, 242, 0.1);
 }
-.composer-memory-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 28px;
-  padding: 4px 9px;
-  border: 1px solid var(--line, #dce2ea);
-  border-radius: 999px;
-  background: var(--panel, #fff);
-  color: var(--text-secondary, #5d6878);
-  font-size: 12px;
-  cursor: pointer;
-}
-.composer-memory-chip.active {
-  color: #315fd8;
-  border-color: rgba(75, 117, 242, 0.3);
-  background: rgba(75, 117, 242, 0.07);
-}
-.composer-memory-chip small { font-size: 11px; opacity: .78; }
-
 .memory-center-backdrop {
   position: fixed;
   inset: 0;

@@ -75,6 +75,7 @@ function createCompanionController({
   let started = false;
   let shuttingDown = false;
   let profileUnsubscribe = null;
+  let preferencesUnsubscribe = null;
   let dragSession = null;
   let interactive = true;
   let lastProfileKey = null;
@@ -768,6 +769,7 @@ function createCompanionController({
     if (!featureAvailable()) return;
     createTray();
     profileUnsubscribe = profileContext?.onChange?.(() => refreshPreferences()) || null;
+    preferencesUnsubscribe = profileContext?.onDesktopPreferencesChange?.(() => refreshPreferences()) || null;
     bindScreenEvent('display-added', handleDisplaysChanged);
     bindScreenEvent('display-removed', handleDisplaysChanged);
     bindScreenEvent('display-metrics-changed', handleDisplaysChanged);
@@ -793,6 +795,8 @@ function createCompanionController({
     clearBubbleTimer();
     profileUnsubscribe?.();
     profileUnsubscribe = null;
+    preferencesUnsubscribe?.();
+    preferencesUnsubscribe = null;
     while (screenBindings.length) screenBindings.pop()();
     if (started) unregisterIpc();
     started = false;

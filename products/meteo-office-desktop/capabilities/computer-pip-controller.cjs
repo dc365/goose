@@ -1071,7 +1071,12 @@ function createComputerPipController({
     if (eventOwnerKey && endedOwners.has(eventOwnerKey)) return;
     clearOwnerCloseTimer(event);
     const toolName = normalizedToolName(event.toolName || event.title || remembered.toolName);
-    const records = collectWindowRecords([event.rawOutput, event.content]);
+    const records = collectWindowRecords([
+      event.structuredContent,
+      event.rawOutput,
+      event.content,
+      event.result,
+    ]);
     records.forEach(rememberWindow);
     const target = enrichTarget(
       extractTarget(event.rawInput)
@@ -1271,7 +1276,10 @@ function createComputerPipController({
     const nextStatus = report.status === 'live'
       ? 'live'
       : entry.fallbackImage ? 'snapshot' : 'unavailable';
-    const nextError = nextStatus === 'unavailable' ? '目标窗口暂不可见' : '';
+    const reportedError = String(report.error || '').trim().slice(0, 240);
+    const nextError = nextStatus === 'unavailable'
+      ? reportedError || '目标窗口暂不可见'
+      : '';
     if (nextStatus === 'live') clearStreamRetry(entry);
     else scheduleStreamRetry(entry);
     if (entry.status === nextStatus && entry.error === nextError) return true;

@@ -107,6 +107,18 @@ assert.deepEqual(project.spec.capabilities.skills, ['synoptic-analysis@1.2.0']);
 assert.deepEqual(project.spec.capabilities.toolSelections, { 'artifact-docx': ['create_document'] });
 assert.equal(project.spec.workspaces[0].root, '/data/heavy-rain');
 
+const officeProject = Project.normalizeProject({
+  id: 'office-project',
+  name: 'Office 项目',
+  workspace: '/data/office-project',
+  connectorIds: ['local-workspace', 'office-artifacts'],
+  toolSelections: { 'office-artifacts': ['docx_create'] },
+});
+assert.deepEqual(officeProject.spec.capabilities.connectors, ['local-workspace', 'office-artifacts']);
+assert.deepEqual(officeProject.spec.capabilities.toolSelections, {
+  'office-artifacts': ['docx_create'],
+});
+
 const expert = {
   id: 'synoptic-expert',
   name: '天气形势分析专家',
@@ -299,6 +311,111 @@ const recommendedCapabilities = CapabilityResolver.resolveCapabilities({
 });
 assert.deepEqual(recommendedCapabilities.skills.map((item) => item.id), ['synoptic-analysis']);
 assert.deepEqual(recommendedCapabilities.connectors.map((item) => item.id), ['weather-data']);
+
+const customCapabilitiesIgnoreExpertRecommendations = CapabilityResolver.resolveCapabilities({
+  project: null,
+  expert: {
+    id: 'custom-tool-expert',
+    recommendedSkills: ['browser-analysis'],
+    recommendedConnectors: ['playwright-browser'],
+    recommendedWorkflows: ['browser-workflow'],
+  },
+  task: {
+    capabilityMode: 'custom',
+    skillIds: [],
+    connectorIds: ['artifact-docx'],
+    toolSelections: { 'artifact-docx': ['create_document'] },
+  },
+  catalog: {
+    ...catalog,
+    skills: [
+      ...catalog.skills,
+      { id: 'browser-analysis', name: '浏览器分析', requires: { connectors: ['playwright-browser'] } },
+    ],
+    workflows: [{
+      metadata: { id: 'browser-workflow', version: '1.0.0', status: 'published' },
+      spec: {
+        nodes: [{
+          id: 'browse',
+          type: 'tool',
+          capability: { kind: 'Tool', connectorId: 'playwright-browser', toolName: 'browser_snapshot' },
+        }],
+      },
+    }],
+  },
+});
+assert.equal(customCapabilitiesIgnoreExpertRecommendations.ready, true);
+assert.deepEqual(customCapabilitiesIgnoreExpertRecommendations.skills, []);
+assert.deepEqual(customCapabilitiesIgnoreExpertRecommendations.workflows, []);
+assert.deepEqual(
+  customCapabilitiesIgnoreExpertRecommendations.connectors.map((item) => item.id),
+  ['artifact-docx']
+);
+assert.deepEqual(customCapabilitiesIgnoreExpertRecommendations.missing, []);
+const customCapabilitiesHonorExplicitSkillDependencies = CapabilityResolver.resolveCapabilities({
+  project: null,
+  expert: { id: 'custom-tool-expert', recommendedSkills: ['browser-analysis'] },
+  task: {
+    capabilityMode: 'custom',
+    skillIds: ['browser-analysis'],
+    connectorIds: ['artifact-docx'],
+    toolSelections: { 'artifact-docx': ['create_document'] },
+  },
+  catalog: {
+    ...catalog,
+    skills: [
+      ...catalog.skills,
+      { id: 'browser-analysis', name: '浏览器分析', requires: { connectors: ['playwright-browser'] } },
+    ],
+  },
+});
+assert.equal(customCapabilitiesHonorExplicitSkillDependencies.ready, false);
+assert.deepEqual(customCapabilitiesHonorExplicitSkillDependencies.skills.map((item) => item.id), ['browser-analysis']);
+assert.deepEqual(customCapabilitiesHonorExplicitSkillDependencies.missing, [{
+  type: 'connector',
+  id: 'playwright-browser',
+  required: true,
+  reason: 'not-selected',
+}]);
+
+const editableArtifactSelectionCapabilities = CapabilityResolver.resolveCapabilities({
+  project: null,
+  expert: { id: 'selection-editor' },
+  task: {
+    capabilityMode: 'custom',
+    connectorIds: [],
+    toolSelections: {},
+    messages: [{
+      role: 'user',
+      text: '修改选中段落',
+      artifactSelections: [{ format: 'DOCX', editability: 'editable' }],
+    }],
+  },
+  catalog: {
+    ...catalog,
+    connectors: [
+      ...catalog.connectors,
+      {
+        id: 'office-artifacts',
+        name: 'Office 成果物',
+        status: 'connected',
+        tools: [{ name: 'docx_edit_selection' }],
+      },
+    ],
+  },
+});
+assert.equal(editableArtifactSelectionCapabilities.ready, true);
+assert.deepEqual(
+  editableArtifactSelectionCapabilities.connectors.map((item) => item.id),
+  ['office-artifacts']
+);
+assert.deepEqual(editableArtifactSelectionCapabilities.toolSelections, {
+  'office-artifacts': ['docx_edit_selection'],
+});
+assert.equal(
+  editableArtifactSelectionCapabilities.connectorSources['office-artifacts'],
+  'artifact-selection'
+);
 
 const explicitlyNamedConnector = CapabilityResolver.resolveCapabilities({
   project: null,

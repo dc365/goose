@@ -765,6 +765,7 @@ function createCapabilityService({
   }
 
   function registrySnapshot() {
+    reconcileUserSkillInstallations();
     ensureDemoWeatherConnectors();
     if (secretStore) {
       for (const connector of getRegistry().load().connectors) migrateConnectorSecrets(connector);
@@ -844,6 +845,90 @@ function createCapabilityService({
     return `${scope}:${projectId || 'user'}:${report.skill.id}`;
   }
 
+  function skillInstallationRecord({
+    prepared,
+    scope,
+    projectId = null,
+    workspace = null,
+    installPath,
+    enabled = true,
+    sourceType = null,
+    managedByPolicy = false,
+    managedPolicyRevision = 0,
+    installedAt = Date.now(),
+  }) {
+    const sourcePath = prepared.sourcePath;
+    const now = Date.now();
+    return {
+      apiVersion: 'meteomate.ai/v1',
+      kind: 'SkillInstallation',
+      id: installationId(prepared.report, scope, projectId),
+      skillId: prepared.report.skill.id,
+      name: prepared.report.skill.displayName,
+      description: prepared.report.skill.description,
+      version: prepared.report.skill.version,
+      scope,
+      projectId: scope === 'project' ? projectId : null,
+      workspace: scope === 'project' ? workspace : null,
+      installPath,
+      enabled: Boolean(enabled),
+      source: {
+        type: sourceType
+          || (sourcePath.startsWith(paths().bundled)
+            ? 'bundled'
+            : path.extname(sourcePath).toLowerCase() === '.zip' ? 'zip' : 'directory'),
+        path: sourcePath,
+      },
+      integrity: prepared.report.integrity,
+      reportHash: prepared.report.reportHash,
+      risk: prepared.report.risk,
+      warnings: prepared.report.warnings,
+      files: prepared.report.files,
+      sidecar: prepared.report.sidecar?.data || null,
+      projectIds: scope === 'project' && projectId ? [projectId] : [],
+      managedByPolicy: Boolean(managedByPolicy),
+      managedPolicyRevision: managedByPolicy ? Number(managedPolicyRevision || 0) : null,
+      installedAt,
+      updatedAt: now,
+    };
+  }
+
+  function reconcileUserSkillInstallations() {
+    const registered = new Set(
+      getRegistry().load().skills
+        .filter((item) => item.scope === 'user')
+        .map((item) => item.skillId),
+    );
+    const roots = [
+      { base: installBase({ scope: 'user' }), enabled: true },
+      { base: disabledBase({ scope: 'user' }), enabled: false },
+    ];
+    for (const { base, enabled } of roots) {
+      if (!fs.existsSync(base)) continue;
+      for (const entry of fs.readdirSync(base, { withFileTypes: true })) {
+        if (!entry.isDirectory() || registered.has(entry.name)) continue;
+        const installPath = path.join(base, entry.name);
+        try {
+          const prepared = SkillPackage.prepareSource(installPath, paths().temp);
+          if (path.resolve(prepared.root) !== path.resolve(installPath)) continue;
+          if (prepared.report.skill.id !== entry.name || registered.has(prepared.report.skill.id)) continue;
+          const stat = fs.statSync(installPath);
+          getRegistry().upsertSkill(skillInstallationRecord({
+            prepared,
+            scope: 'user',
+            installPath,
+            enabled,
+            sourceType: 'recovered',
+            installedAt: stat.birthtimeMs || stat.mtimeMs || Date.now(),
+          }));
+          registered.add(prepared.report.skill.id);
+        } catch {
+          // Invalid or incomplete directories remain untouched and are not exposed as skills.
+        }
+      }
+    }
+  }
+
   function installSkill(request) {
     cleanupPending();
     const prepared = pendingInspections.get(request.token);
@@ -857,36 +942,15 @@ function createCapabilityService({
     const target = SkillPackage.installPreparedSkill(prepared.root, targetBase, prepared.report.skill.id, {
       replace: Boolean(request.replace),
     });
-    const now = Date.now();
-    const record = {
-      apiVersion: 'meteomate.ai/v1',
-      kind: 'SkillInstallation',
-      id: installationId(prepared.report, scope, request.projectId),
-      skillId: prepared.report.skill.id,
-      name: prepared.report.skill.displayName,
-      description: prepared.report.skill.description,
-      version: prepared.report.skill.version,
+    const record = skillInstallationRecord({
+      prepared,
       scope,
-      projectId: scope === 'project' ? request.projectId || null : null,
-      workspace: scope === 'project' ? workspace : null,
+      projectId: request.projectId || null,
+      workspace,
       installPath: target,
-      enabled: true,
-      source: {
-        type: prepared.sourcePath.startsWith(paths().bundled) ? 'bundled' : path.extname(prepared.sourcePath).toLowerCase() === '.zip' ? 'zip' : 'directory',
-        path: prepared.sourcePath,
-      },
-      integrity: prepared.report.integrity,
-      reportHash: prepared.report.reportHash,
-      risk: prepared.report.risk,
-      warnings: prepared.report.warnings,
-      files: prepared.report.files,
-      sidecar: prepared.report.sidecar?.data || null,
-      projectIds: scope === 'project' && request.projectId ? [request.projectId] : [],
-      managedByPolicy: Boolean(request.managedByPolicy),
-      managedPolicyRevision: request.managedByPolicy ? Number(request.managedPolicyRevision || 0) : null,
-      installedAt: now,
-      updatedAt: now,
-    };
+      managedByPolicy: request.managedByPolicy,
+      managedPolicyRevision: request.managedPolicyRevision,
+    });
     const persisted = getRegistry().upsertSkill(record);
     if (prepared.tempDir) fs.rmSync(prepared.tempDir, { recursive: true, force: true });
     pendingInspections.delete(request.token);
@@ -1111,6 +1175,20 @@ function createCapabilityService({
     return selectedConnectorConfigs(request, ConnectorClient.gooseExtensionConfig);
   }
 
+  function extensionSecretsForRequest(request = {}) {
+    const entries = selectedConnectorConfigs(request, ConnectorClient.extensionSecretValues);
+    const merged = {};
+    for (const entry of entries) {
+      for (const [key, value] of Object.entries(entry)) {
+        if (Object.prototype.hasOwnProperty.call(merged, key) && merged[key] !== value) {
+          throw new Error(`工具服务密钥变量冲突：${key}`);
+        }
+        merged[key] = value;
+      }
+    }
+    return merged;
+  }
+
   function sessionExtensionsForRequest(request = {}) {
     return selectedConnectorConfigs(request, ConnectorClient.extensionConfig);
   }
@@ -1271,6 +1349,7 @@ function createCapabilityService({
     registrySnapshot,
     prepareForRequest,
     extensionsForRequest,
+    extensionSecretsForRequest,
     sessionExtensionsForRequest,
     permissionContextForRequest,
     inspectSkill,

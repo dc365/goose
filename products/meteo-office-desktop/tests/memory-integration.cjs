@@ -53,12 +53,17 @@ assert.match(taskStateMachine, /memoryUsedIds: Shared\.uniqueStrings/);
 
 const memoryCenter = read('memory-center.js');
 assert.match(memoryCenter, /message\?\.status === 'streaming'/);
-assert.match(memoryCenter, /element\.textContent !== label/);
 assert.match(memoryCenter, /status: 'active'/);
 assert.match(memoryCenter, /onAccountStateChange/);
 assert.match(memoryCenter, /resetForAccount/);
 assert.match(memoryCenter, /MemoryContext\?\.normalizePolicy/);
 assert.match(memoryCenter, /globallyEnabled/);
+assert.doesNotMatch(memoryCenter, /decorateSidebar|memory-nav-item|data-memory-nav-count|data-memory-center-open/);
+assert.doesNotMatch(memoryCenter, /decorateComposer|composer-memory-chip|data-memory-composer-chip/);
+
+const memoryStyles = read('styles-memory.css');
+assert.doesNotMatch(memoryStyles, /memory-nav-item/);
+assert.doesNotMatch(memoryStyles, /composer-memory-chip/);
 
 const rendererCore = read('renderer-core.js');
 assert.match(rendererCore, /personalization: \{ title: '个性化'/);

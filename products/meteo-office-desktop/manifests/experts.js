@@ -366,7 +366,7 @@ window.METEOMATE_PERMISSION_PROFILES = Object.freeze({
     approvalMode: 'never',
     tone: 'full',
     icon: 'warning',
-    description: '不受限制地访问互联网和本机文件，执行操作时不再询问。',
-    status: '完全访问已开启，请确认任务范围',
+    description: '不受限制地访问互联网和本机文件；除破坏性删除操作外，执行操作时不再询问。',
+    status: '完全访问已开启，删除操作仍需批准',
   },
 });

@@ -3,6 +3,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const yaml = require('js-yaml');
 
 const LEGACY_PROVIDER_MIGRATION_VERSION = 1;
 const PROVIDER_DEFINITION_KEYS = Object.freeze([
@@ -72,6 +73,23 @@ function atomicWriteJson(target, value) {
   const temporary = `${target}.tmp-${process.pid}-${Date.now()}`;
   fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
   fs.renameSync(temporary, target);
+}
+
+function readStoredSecret({ runtimeRoot, key } = {}) {
+  const secretKey = String(key || '').trim();
+  if (!runtimeRoot || !secretKey) return null;
+  const target = path.join(path.resolve(runtimeRoot), 'config', 'secrets.yaml');
+  try {
+    const metadata = fs.lstatSync(target);
+    if (!metadata.isFile() || metadata.isSymbolicLink()) return null;
+    const values = yaml.load(fs.readFileSync(target, 'utf8'));
+    const value = values && typeof values === 'object' && !Array.isArray(values)
+      ? values[secretKey]
+      : null;
+    return typeof value === 'string' && value ? value : null;
+  } catch {
+    return null;
+  }
 }
 
 function migrateLegacyProviderDefinitions({
@@ -170,6 +188,7 @@ module.exports = {
   createEnvironment,
   legacyConfigRoot,
   migrateLegacyProviderDefinitions,
+  readStoredSecret,
   resolveRuntimeRoot,
   sanitizeProviderDefinition,
 };

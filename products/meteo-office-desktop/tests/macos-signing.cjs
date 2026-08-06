@@ -41,9 +41,44 @@ assert.deepEqual(
   ['123', '456'],
 );
 assert.match(MacOSSigning.localSigningRequestSource(), /extendedKeyUsage=critical,codeSigning/);
+assert.equal(
+  MacOSSigning.keychainUnlockPasswordRejected({
+    status: 51,
+    stderr: 'security: SecKeychainUnlock test.keychain-db: The user name or passphrase you entered is not correct.',
+  }),
+  true,
+);
+assert.equal(
+  MacOSSigning.keychainUnlockPasswordRejected({
+    status: 1,
+    stderr: 'security: SecKeychainUnlock test.keychain-db: User canceled the operation.',
+  }),
+  false,
+);
 
 const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'meteomate-signing-test-'));
 try {
+  const staleKeychainPath = path.join(temporaryDirectory, 'stale.keychain-db');
+  fs.writeFileSync(staleKeychainPath, 'stale-keychain');
+  const securityCalls = [];
+  const recoveredKeychain = MacOSSigning.recreateManagedLocalKeychain({
+    keychain: staleKeychainPath,
+    password: 'new-managed-password',
+    timestamp: '20260805T230000Z',
+    executeCommand(command, args) {
+      securityCalls.push([command, args]);
+      if (args[0] === 'create-keychain') fs.writeFileSync(args.at(-1), 'new-keychain');
+      return { status: 0, stdout: '', stderr: '' };
+    },
+  });
+  assert.equal(fs.readFileSync(staleKeychainPath, 'utf8'), 'new-keychain');
+  assert.equal(fs.readFileSync(recoveredKeychain, 'utf8'), 'stale-keychain');
+  assert.match(recoveredKeychain, /\.unusable-20260805T230000Z$/);
+  assert.deepEqual(
+    securityCalls.map(([, args]) => args[0]),
+    ['create-keychain', 'set-keychain-settings', 'unlock-keychain'],
+  );
+
   const machOPath = path.join(temporaryDirectory, 'helper');
   const resourcePath = path.join(temporaryDirectory, 'Assets.car');
   fs.writeFileSync(machOPath, Buffer.from('feedfacf00000000', 'hex'));

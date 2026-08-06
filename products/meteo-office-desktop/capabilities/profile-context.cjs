@@ -293,6 +293,7 @@ function createProfileContext({
   let authGeneration = 0;
   let notice = '';
   const listeners = new Set();
+  const desktopPreferenceListeners = new Set();
 
   function normalizeAuthBaseURL(value) {
     const normalized = normalizeBaseURL(value);
@@ -842,7 +843,9 @@ function createProfileContext({
     preferences.desktop = normalizeDesktopPreferences({ ...previous, ...input });
     preferences.updatedAt = new Date().toISOString();
     atomicWrite(currentPaths().preferences, preferences);
-    return preferences.desktop;
+    const snapshot = normalizeDesktopPreferences(preferences.desktop);
+    for (const listener of desktopPreferenceListeners) listener(snapshot);
+    return snapshot;
   }
 
   function saveModelPreference(input = {}) {
@@ -1200,6 +1203,10 @@ function createProfileContext({
     onChange(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);
+    },
+    onDesktopPreferencesChange(listener) {
+      desktopPreferenceListeners.add(listener);
+      return () => desktopPreferenceListeners.delete(listener);
     },
   };
 }

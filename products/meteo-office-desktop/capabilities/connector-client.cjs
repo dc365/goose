@@ -398,11 +398,36 @@ function extensionConfig(config, secrets = {}, availableTools) {
   };
 }
 
+function headerSecretKey(connectorId, headerName) {
+  const connector = String(connectorId || 'connector')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  const header = String(headerName || 'header')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return `METEOMATE_MCP_${connector}_HEADER_${header}`;
+}
+
+function extensionSecretValues(config, secrets = {}) {
+  const values = config.transport === 'streamable-http'
+    ? { ...(secrets.env || {}) }
+    : { ...(secrets.env || {}), ...(config.runtimeEnv || {}) };
+  if (config.transport === 'streamable-http') {
+    for (const [name, value] of Object.entries(secrets.headers || {})) {
+      values[headerSecretKey(config.id, name)] = String(value);
+    }
+  }
+  return values;
+}
+
 function gooseExtensionConfig(config, secrets = {}, availableTools) {
   const extension = extensionConfig(config, secrets, availableTools);
+  const secretValues = extensionSecretValues(config, secrets);
   const shared = {
     type: 'mcp',
-    envKeys: extension.env_keys || [],
+    envKeys: Object.keys(secretValues).sort(),
     description: extension.description,
     timeout: extension.timeout,
     bundled: extension.bundled,
@@ -415,7 +440,10 @@ function gooseExtensionConfig(config, secrets = {}, availableTools) {
         type: 'http',
         name: extension.name,
         url: extension.uri,
-        headers: Object.entries(extension.headers || {}).map(([name, value]) => ({ name, value })),
+        headers: Object.keys(extension.headers || {}).map((name) => ({
+          name,
+          value: `$${headerSecretKey(config.id, name)}`,
+        })),
       },
     };
   }
@@ -425,7 +453,7 @@ function gooseExtensionConfig(config, secrets = {}, availableTools) {
       name: extension.name,
       command: extension.cmd,
       args: extension.args || [],
-      env: Object.entries(extension.envs || {}).map(([name, value]) => ({ name, value })),
+      env: [],
     },
   };
 }
@@ -437,6 +465,7 @@ module.exports = {
   normalizeLastTest,
   testConnector,
   extensionConfig,
+  extensionSecretValues,
   gooseExtensionConfig,
   executableExists,
 };

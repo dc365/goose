@@ -286,6 +286,10 @@ async function assertActiveStreamWinsOverSnapshot() {
   const reports = [];
   let stateHandler = null;
   let mediaCalls = 0;
+  let resolveMedia;
+  const pendingMedia = new Promise((resolve) => {
+    resolveMedia = resolve;
+  });
   const track = { addEventListener() {}, stop() {} };
   const activeStream = {
     active: true,
@@ -304,7 +308,7 @@ async function assertActiveStreamWinsOverSnapshot() {
       mediaDevices: {
         async getDisplayMedia() {
           mediaCalls += 1;
-          return activeStream;
+          return pendingMedia;
         },
       },
     },
@@ -331,6 +335,16 @@ async function assertActiveStreamWinsOverSnapshot() {
     context,
     { filename: 'computer-pip.js' },
   );
+  await flush();
+  const directStart = context.window.meteoComputerPipStartPreview(initialState.sourceId);
+  stateHandler({
+    ...initialState,
+    status: 'connecting',
+  });
+  await flush();
+  assert.equal(mediaCalls, 1);
+  resolveMedia(activeStream);
+  await directStart;
   await flush();
   assert.equal(elements['state-label'].textContent, '实时');
   assert.equal(elements['preview-video'].classList.contains('visible'), true);
@@ -523,7 +537,7 @@ async function run() {
     toolName: 'list_windows',
     toolCallId: 'call-list',
     status: 'completed',
-    rawOutput: { windows: records.map(runtimeWindowRecord) },
+    structuredContent: { windows: records.map(runtimeWindowRecord) },
   });
   assert.equal(FakeWindow.instances.length, 0);
 
@@ -846,6 +860,9 @@ async function run() {
   assert.equal(controller.publicState().previewCount, 0);
   fs.rmSync(temp, { recursive: true, force: true });
 }
+
+const mainSource = fs.readFileSync(path.resolve(__dirname, '..', 'main.cjs'), 'utf8');
+assert.ok(mainSource.includes('structuredContent: safeJson(sanitizeAcpPayload(update.structuredContent))'));
 
 run().then(
   () => console.log('MeteoMate Computer Use picture-in-picture tests passed.'),

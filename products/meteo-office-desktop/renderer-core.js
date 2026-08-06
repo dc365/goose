@@ -335,6 +335,7 @@ const desktopSettings = {
     memoryEnabled: false,
     autoCompactThreshold: 0.75,
     defaultPermissionProfileId: '',
+    companion: { enabled: true },
   },
   assistantWorkspace: '',
   projectWorkspace: '',
@@ -372,7 +373,9 @@ const messageUI = {
 };
 const sidebarTaskUI = {
   editingTaskId: null,
+  editingSurface: null,
   menuTaskId: null,
+  menuSurface: null,
 };
 const previewUI = {
   open: false,
@@ -804,6 +807,16 @@ function parseModelSelectionValue(value) {
   }
 }
 
+function composerModelSelection(task) {
+  const stickyProviderId = state.draftProviderId;
+  const providerId = stickyProviderId || task?.providerId || modelSettings.providerId || '';
+  const provider = modelSettings.providers?.find((entry) => entry.id === providerId) || null;
+  const modelId = stickyProviderId
+    ? state.draftModelId ?? modelSettings.modelId ?? provider?.defaultModel ?? ''
+    : task?.modelId ?? modelSettings.modelId ?? provider?.defaultModel ?? '';
+  return { providerId, modelId };
+}
+
 function configuredModelContextLimit(providerId, modelId) {
   const provider = modelSettings.providers.find((entry) => entry.id === providerId);
   const model = provider?.models?.find((entry) => entry.id === modelId);
@@ -1132,6 +1145,63 @@ function scrollTeamProcessFeeds() {
   });
 }
 
+function syncRenderedAttributes(current, next) {
+  for (const attribute of [...current.attributes]) {
+    if (!next.hasAttribute(attribute.name)) current.removeAttribute(attribute.name);
+  }
+  for (const attribute of [...next.attributes]) {
+    if (current.getAttribute(attribute.name) !== attribute.value) {
+      current.setAttribute(attribute.name, attribute.value);
+    }
+  }
+}
+
+function preserveRuntimeElement(currentParent, nextParent, selector, updateContents = true) {
+  const current = currentParent.querySelector(`:scope > ${selector}`);
+  const next = nextParent.querySelector(`:scope > ${selector}`);
+  if (!current || !next) return;
+  syncRenderedAttributes(current, next);
+  if (updateContents) current.replaceChildren(...next.childNodes);
+  next.replaceWith(current);
+}
+
+function patchActiveRuntimeMessage(task) {
+  if (!task || state.activeTaskId !== task.id || state.view === 'automation') return false;
+  const message = [...(task.messages || [])].reverse().find((item) =>
+    item.role === 'assistant' && (item.status === 'streaming' || task.status === 'running')
+  );
+  if (!message) return false;
+  const row = [...document.querySelectorAll('.conversation-scroll .message-row.assistant')]
+    .find((element) => element.dataset.messageId === message.id);
+  if (!row) return false;
+  const selection = window.getSelection?.();
+  if (selection && !selection.isCollapsed && (row.contains(selection.anchorNode) || row.contains(selection.focusNode))) {
+    return true;
+  }
+  const template = document.createElement('template');
+  template.innerHTML = renderMessage(message, task).trim();
+  const nextRow = template.content.firstElementChild;
+  const currentContent = row.querySelector(':scope > .message-content');
+  const nextContent = nextRow?.querySelector(':scope > .message-content');
+  if (!nextRow || !currentContent || !nextContent) return false;
+  const scroll = row.closest('.conversation-scroll');
+  const shouldFollow = Boolean(
+    scroll && scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight <= 72
+  );
+  syncRenderedAttributes(row, nextRow);
+  preserveRuntimeElement(currentContent, nextContent, '.message-bubble');
+  preserveRuntimeElement(currentContent, nextContent, '.message-actions', false);
+  preserveRuntimeElement(currentContent, nextContent, '.response-process');
+  preserveRuntimeElement(currentContent, nextContent, '[data-team-run-process]');
+  currentContent.replaceChildren(...nextContent.childNodes);
+  window.requestAnimationFrame(() => {
+    if (shouldFollow && scroll) scroll.scrollTop = scroll.scrollHeight;
+    scrollTeamProcessFeeds();
+    updateLiveResponseDurations();
+  });
+  return true;
+}
+
 function render() {
   window.clearInterval(responseElapsedTimer);
   responseElapsedTimer = null;
@@ -1444,12 +1514,18 @@ function accountRoleLabel(role) {
   return { viewer: '使用者', publisher: '技能发布者', admin: '管理员' }[role] || '用户';
 }
 
+function companionVisible() {
+  return desktopSettings.preferences.companion?.enabled !== false;
+}
+
 function renderSidebarAccount() {
   const user = accountSession.user || {};
   const name = user.displayName || user.username || 'MeteoMate 用户';
+  const petVisible = companionVisible();
   return `
     <footer class="sidebar-account">
       <div class="sidebar-account-menu" id="sidebar-account-menu" role="menu" hidden>
+        <button id="account-toggle-companion" role="menuitem" aria-pressed="${petVisible}">${icon('assistant')}<span>${petVisible ? '隐藏宠物' : '显示宠物'}</span></button>
         <button id="account-open-settings" role="menuitem">${icon('settings')}<span>设置</span></button>
         <button id="account-logout" role="menuitem">${icon('external')}<span>退出登录</span></button>
       </div>
@@ -1471,11 +1547,11 @@ function renderSidebarTask(task, index, tasks) {
   const title = escapeHtml(task.title);
   const time = formatTime(task.updatedAt || task.createdAt);
   const description = `${task.title} · ${task.expertName} · ${time}`;
-  const menuOpen = sidebarTaskUI.menuTaskId === task.id;
+  const menuOpen = sidebarTaskUI.menuTaskId === task.id && sidebarTaskUI.menuSurface === 'sidebar';
   const menuAbove = Array.isArray(tasks) && tasks.length >= 5 && index >= tasks.length - 2;
-  if (sidebarTaskUI.editingTaskId === task.id) {
+  if (sidebarTaskUI.editingTaskId === task.id && sidebarTaskUI.editingSurface === 'sidebar') {
     return `
-      <form class="sidebar-task sidebar-task-rename" data-sidebar-task-rename-form="${taskId}">
+      <form class="sidebar-task sidebar-task-rename" data-sidebar-task-rename-form="${taskId}" data-task-menu-surface="sidebar">
         <span class="task-status ${task.status || 'draft'}"></span>
         <input type="text" value="${title}" maxlength="120" aria-label="重命名任务" autocomplete="off" />
         <button type="submit" aria-label="保存任务名称" title="保存">${icon('check')}</button>
@@ -1490,10 +1566,10 @@ function renderSidebarTask(task, index, tasks) {
         <strong>${title}</strong>
         <time>${escapeHtml(time)}</time>
       </button>
-      <button class="sidebar-task-more ${menuOpen ? 'active' : ''}" type="button" data-sidebar-task-menu="${taskId}" aria-haspopup="menu" aria-expanded="${menuOpen}" aria-label="打开 ${title} 的任务菜单" title="更多操作">${icon('more')}</button>
+      <button class="sidebar-task-more ${menuOpen ? 'active' : ''}" type="button" data-sidebar-task-menu="${taskId}" data-task-menu-surface="sidebar" aria-haspopup="menu" aria-expanded="${menuOpen}" aria-label="打开 ${title} 的任务菜单" title="更多操作">${icon('more')}</button>
       ${menuOpen ? `
         <div class="sidebar-task-menu ${menuAbove ? 'above' : ''}" role="menu" aria-label="${title} 的任务操作">
-          <button type="button" role="menuitem" data-sidebar-task-rename="${taskId}">${icon('edit')}<span>重命名</span></button>
+          <button type="button" role="menuitem" data-sidebar-task-rename="${taskId}" data-task-menu-surface="sidebar">${icon('edit')}<span>重命名</span></button>
           <button class="danger" type="button" role="menuitem" data-sidebar-task-delete="${taskId}">${icon('trash')}<span>删除</span></button>
         </div>
       ` : ''}
@@ -2289,10 +2365,10 @@ function renderTaskView({ assistantMode = false } = {}) {
       }
     )
     .join('');
-  const selectedProviderId = task?.providerId || state.draftProviderId || modelSettings.providerId;
-  const selectedProvider = modelSettings.providers.find((entry) => entry.id === selectedProviderId) || null;
-  const selectedModelId =
-    task?.modelId ?? state.draftModelId ?? modelSettings.modelId ?? selectedProvider?.defaultModel ?? '';
+  const {
+    providerId: selectedProviderId,
+    modelId: selectedModelId,
+  } = composerModelSelection(task);
   const selectedModelValue = modelSelectionValue(selectedProviderId, selectedModelId);
   const availableModels = modelSettings.providers.flatMap((provider) =>
     (provider.models || []).map((model) => ({ provider, model }))
@@ -2768,6 +2844,7 @@ function renderOfficeArtifactCard(artifact) {
   const extension = String(artifact.name || '').split('.').pop()?.toUpperCase() || 'FILE';
   const render = artifact.metadata?.render || {};
   const detail = [
+    artifact.metadata?.delivery === 'remote-download' ? '已保存到本机' : '',
     artifact.metadata?.selectionEdit ? '原文修改' : '',
     render.pageCount ? `${render.pageCount} 页` : '',
     artifactSizeLabel(artifact.sizeBytes),
@@ -3283,8 +3360,49 @@ function renderProjectDetailTab(project, tasks, artifacts) {
     </section>
     <section class="project-activity-section">
       <div class="project-content-heading"><div><h2>最近动态</h2><p>项目任务和成果的最新变化</p></div></div>
-      ${tasks.length ? `<div class="project-activity-list">${tasks.slice(0, 8).map((task) => `<button data-task-id="${escapeHtml(task.id)}"><span class="task-status ${task.status || 'draft'}"></span><div><strong>${escapeHtml(task.title)}</strong><small>${escapeHtml(task.expertName)} · ${taskStatusText(task.status)} · ${formatDateTime(task.updatedAt)}</small></div><span class="row-chevron">›</span></button>`).join('')}</div>` : `<div class="project-tab-empty"><span>${icon('automation')}</span><h3>项目还没有动态</h3><p>从一个明确任务开始，执行记录和成果会自动汇总到这里。</p><button class="primary-button" data-project-new-task="${escapeHtml(project.id)}">新建任务</button></div>`}
+      ${tasks.length ? `<div class="project-activity-list">${tasks.slice(0, 8).map((task, index, recentTasks) => renderProjectTaskRow(task, index, recentTasks, { compact: true })).join('')}</div>` : `<div class="project-tab-empty"><span>${icon('automation')}</span><h3>项目还没有动态</h3><p>从一个明确任务开始，执行记录和成果会自动汇总到这里。</p><button class="primary-button" data-project-new-task="${escapeHtml(project.id)}">新建任务</button></div>`}
     </section>
+  `;
+}
+
+function renderProjectTaskRow(task, index, tasks, { compact = false } = {}) {
+  const taskId = escapeHtml(task.id);
+  const title = escapeHtml(task.title);
+  const menuOpen = sidebarTaskUI.menuTaskId === task.id && sidebarTaskUI.menuSurface === 'project';
+  const menuAbove = Array.isArray(tasks) && tasks.length >= 4 && index >= tasks.length - 2;
+  const rowClass = `project-task-row${compact ? ' compact' : ''}`;
+  if (sidebarTaskUI.editingTaskId === task.id && sidebarTaskUI.editingSurface === 'project') {
+    return `
+      <form class="${rowClass} project-task-rename-row" data-sidebar-task-rename-form="${taskId}" data-task-menu-surface="project">
+        ${compact
+          ? `<span class="task-status ${task.status || 'draft'}"></span>`
+          : `<span class="project-task-state ${task.status || 'draft'}">${taskStatusText(task.status)}</span>`}
+        <input type="text" value="${title}" maxlength="120" aria-label="重命名任务" autocomplete="off" />
+        <span class="project-task-rename-actions">
+          <button type="submit" aria-label="保存任务名称" title="保存">${icon('check')}</button>
+          <button type="button" data-sidebar-task-rename-cancel aria-label="取消重命名" title="取消">${icon('close')}</button>
+        </span>
+      </form>
+    `;
+  }
+  return `
+    <div class="${rowClass}">
+      <button class="project-task-main" type="button" data-task-id="${taskId}" title="${title}">
+        ${compact
+          ? `<span class="task-status ${task.status || 'draft'}"></span>`
+          : `<span class="project-task-state ${task.status || 'draft'}">${taskStatusText(task.status)}</span>`}
+        <div><strong>${title}</strong><small>${escapeHtml(task.expertName)} · ${compact ? `${taskStatusText(task.status)} · ` : ''}${formatDateTime(task.updatedAt)}</small></div>
+        ${compact ? '' : `<span class="project-task-artifact-count">${task.artifacts?.length || 0} 个成果</span>`}
+        <span class="row-chevron">›</span>
+      </button>
+      <button class="project-task-more ${menuOpen ? 'active' : ''}" type="button" data-sidebar-task-menu="${taskId}" data-task-menu-surface="project" aria-haspopup="menu" aria-expanded="${menuOpen}" aria-label="打开 ${title} 的任务菜单" title="更多操作">${icon('more')}</button>
+      ${menuOpen ? `
+        <div class="sidebar-task-menu ${menuAbove ? 'above' : ''}" role="menu" aria-label="${title} 的任务操作">
+          <button type="button" role="menuitem" data-sidebar-task-rename="${taskId}" data-task-menu-surface="project">${icon('edit')}<span>重命名</span></button>
+          <button class="danger" type="button" role="menuitem" data-sidebar-task-delete="${taskId}">${icon('trash')}<span>删除</span></button>
+        </div>
+      ` : ''}
+    </div>
   `;
 }
 
@@ -3292,7 +3410,7 @@ function renderProjectTasks(project, tasks) {
   return `
     <section>
       <div class="project-content-heading"><div><h2>项目任务</h2><p>这里仅显示属于当前项目的执行记录。</p></div><button class="primary-button small-button" data-project-new-task="${escapeHtml(project.id)}">${icon('plus')} 新建任务</button></div>
-      ${tasks.length ? `<div class="project-task-list">${tasks.map((task) => `<button data-task-id="${escapeHtml(task.id)}"><span class="project-task-state ${task.status || 'draft'}">${taskStatusText(task.status)}</span><div><strong>${escapeHtml(task.title)}</strong><small>${escapeHtml(task.expertName)} · ${formatDateTime(task.updatedAt)}</small></div><span>${task.artifacts?.length || 0} 个成果</span><span class="row-chevron">›</span></button>`).join('')}</div>` : `<div class="project-tab-empty"><span>${icon('assistant')}</span><h3>还没有任务</h3><p>新任务会自动继承项目指令、能力和本地工作目录。</p><button class="primary-button" data-project-new-task="${escapeHtml(project.id)}">新建任务</button></div>`}
+      ${tasks.length ? `<div class="project-task-list">${tasks.map((task, index) => renderProjectTaskRow(task, index, tasks)).join('')}</div>` : `<div class="project-tab-empty"><span>${icon('assistant')}</span><h3>还没有任务</h3><p>新任务会自动继承项目指令、能力和本地工作目录。</p><button class="primary-button" data-project-new-task="${escapeHtml(project.id)}">新建任务</button></div>`}
     </section>
   `;
 }
@@ -4016,7 +4134,7 @@ function renderProviderForm() {
           { group: 'provider-streaming-mode', value: 'auto', label: '自动' },
           { group: 'provider-streaming-mode', value: 'on', label: '开启' },
           { group: 'provider-streaming-mode', value: 'off', label: '关闭' },
-        ], '自动模式会按提供商兼容性选择；手动设置始终优先。', managed)}
+        ], '自动模式会按提供商兼容性选择；火山方舟 Responses 固定使用非流式，其余手动设置优先。', managed)}
         <div class="provider-route-preview" aria-live="polite">
           <span>${icon('model')}</span>
           <div><small id="provider-resolved-transport">${escapeHtml(providerPresetLabel(draft.providerPreset))} · ${escapeHtml(providerProtocolLabel(draft.protocol))}</small><strong id="provider-effective-endpoint">${escapeHtml(draft.endpointUrl || '输入 Base URL 后显示实际请求地址')}</strong></div>

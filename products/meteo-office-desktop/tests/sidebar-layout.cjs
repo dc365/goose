@@ -10,6 +10,7 @@ const baseStyles = fs.readFileSync(path.join(root, 'styles-base.css'), 'utf8');
 const appStyles = fs.readFileSync(path.join(root, 'styles-app.css'), 'utf8');
 const accountStyles = fs.readFileSync(path.join(root, 'styles-account.css'), 'utf8');
 const polishStyles = fs.readFileSync(path.join(root, 'styles-polish.css'), 'utf8');
+const projectStyles = fs.readFileSync(path.join(root, 'styles-projects.css'), 'utf8');
 
 function extractNamedFunction(name, input) {
   const start = input.indexOf(`function ${name}(`);
@@ -39,6 +40,11 @@ assert.ok(rendererSource.includes('tasks.length >= 5'));
 assert.ok(actionsSource.includes('event.stopPropagation();\n      toggleSidebarTaskMenu'));
 assert.ok(rendererSource.includes('data-sidebar-task-rename='));
 assert.ok(rendererSource.includes('data-sidebar-task-delete='));
+assert.ok(rendererSource.includes('function renderProjectTaskRow('));
+assert.ok(rendererSource.includes('class="project-task-more'));
+assert.ok(rendererSource.includes('renderProjectTaskRow(task, index, tasks)'));
+assert.ok(rendererSource.includes('data-task-menu-surface="project"'));
+assert.ok(rendererSource.includes("sidebarTaskUI.menuSurface === 'project'"));
 assert.ok(baseStyles.includes('--sidebar-width: 280px'));
 assert.ok(baseStyles.includes('--sidebar-collapsed-width: 60px'));
 assert.match(appStyles, /\.sidebar-sections\s*\{[^}]*min-height:\s*0;[^}]*flex:\s*1;[^}]*overflow-y:\s*auto;/s);
@@ -51,6 +57,8 @@ assert.match(appStyles, /\.sidebar-task-section \.sidebar-list\s*\{[^}]*gap:\s*0
 assert.match(appStyles, /\.sidebar-task-main\s*\{[^}]*min-height:\s*28px;[^}]*grid-template-columns:\s*7px minmax\(0, 1fr\) auto;/s);
 assert.match(appStyles, /\.sidebar-task-main strong\s*\{[^}]*font-size:\s*11px;[^}]*font-weight:\s*400;/s);
 assert.match(appStyles, /\.sidebar-task-menu\s*\{[^}]*width:\s*112px;/s);
+assert.match(projectStyles, /\.project-task-more\s*\{[^}]*width:\s*40px;[^}]*height:\s*40px;/s);
+assert.match(projectStyles, /\.project-task-row:hover \.project-task-more\s*\{[^}]*opacity:\s*1;/s);
 assert.match(polishStyles, /\.nav-item\s*\{[^}]*font-weight:\s*400;/s);
 assert.ok(rendererSource.includes('class="titlebar-button titlebar-preview-toggle'));
 assert.ok(rendererSource.includes('data-preview-panel-toggle'));
@@ -89,12 +97,20 @@ const taskContext = vm.createContext({
   state: {
     view: 'task',
     activeTaskId: 'task-1',
+    activeProjectId: null,
+    projects: [{ id: 'project-1', updatedAt: 1 }],
     tasks: [
       { id: 'task-1', title: '旧名称', status: 'completed' },
       { id: 'task-running', title: '运行任务', status: 'running' },
+      { id: 'project-task', projectId: 'project-1', title: '项目任务', status: 'completed' },
     ],
   },
-  sidebarTaskUI: { editingTaskId: 'task-1', menuTaskId: 'task-1' },
+  sidebarTaskUI: {
+    editingTaskId: 'task-1',
+    editingSurface: 'sidebar',
+    menuTaskId: 'task-1',
+    menuSurface: 'sidebar',
+  },
   previewUI: {
     open: true,
     taskId: 'task-1',
@@ -126,16 +142,25 @@ assert.equal(vm.runInContext("commitSidebarTaskRename('task-1', '   ')", taskCon
 assert.equal(vm.runInContext("commitSidebarTaskRename('task-1', ' 新名称 ')", taskContext), true);
 assert.equal(taskContext.state.tasks[0].title, '新名称');
 assert.equal(taskContext.sidebarTaskUI.editingTaskId, null);
+assert.equal(taskContext.sidebarTaskUI.editingSurface, null);
 assert.equal(taskContext.sidebarTaskUI.menuTaskId, null);
+assert.equal(taskContext.sidebarTaskUI.menuSurface, null);
 assert.equal(vm.runInContext("deleteSidebarTask('task-running')", taskContext), false);
 assert.equal(taskContext.alerts.length, 1);
 assert.equal(vm.runInContext("deleteSidebarTask('task-1')", taskContext), true);
-assert.deepEqual(taskContext.state.tasks.map((task) => task.id), ['task-running']);
+assert.deepEqual(taskContext.state.tasks.map((task) => task.id), ['task-running', 'project-task']);
 assert.equal(taskContext.state.activeTaskId, null);
 assert.equal(taskContext.state.view, 'catalog');
 assert.equal(taskContext.previewUI.open, false);
 assert.equal(taskContext.previewUI.tabs.length, 0);
 assert.equal(taskContext.runtimeStreamCommitTimers.size, 0);
 assert.equal(taskContext.runtimeProgressCommitTimers.size, 0);
+taskContext.state.view = 'project-detail';
+taskContext.state.activeProjectId = 'project-1';
+taskContext.state.activeTaskId = 'project-task';
+assert.equal(vm.runInContext("deleteSidebarTask('project-task')", taskContext), true);
+assert.equal(taskContext.state.activeTaskId, null);
+assert.equal(taskContext.state.view, 'project-detail');
+assert.ok(taskContext.state.projects[0].updatedAt > 1);
 
 console.log('sidebar layout tests passed');

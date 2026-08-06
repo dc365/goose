@@ -160,6 +160,22 @@ try {
     configuredRoot,
   );
 
+  const storedSecretsPath = path.join(configuredRoot, 'config', 'secrets.yaml');
+  fs.mkdirSync(path.dirname(storedSecretsPath), { recursive: true });
+  fs.writeFileSync(
+    storedSecretsPath,
+    'CUSTOM_DEEPSEEK_API_KEY: saved-deepseek-key\nNESTED_VALUE:\n  token: ignored\n',
+    { mode: 0o600 },
+  );
+  assert.equal(
+    GooseRuntimeEnvironment.readStoredSecret({ runtimeRoot: configuredRoot, key: 'CUSTOM_DEEPSEEK_API_KEY' }),
+    'saved-deepseek-key',
+  );
+  assert.equal(
+    GooseRuntimeEnvironment.readStoredSecret({ runtimeRoot: configuredRoot, key: 'NESTED_VALUE' }),
+    null,
+  );
+
   const mainSource = fs.readFileSync(path.resolve(__dirname, '..', 'main.cjs'), 'utf8');
   assert.equal(
     (mainSource.match(/env: gooseRuntimeEnvironment\(\{/g) || []).length,

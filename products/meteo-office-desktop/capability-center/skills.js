@@ -101,13 +101,19 @@
     if (!installation && item.bundled) return void inspectBundled(item.id);
     if (!installation) return error('尚未提供', '该技能仍处于规划阶段，后续可通过 SkillHub 或上传包安装。');
     const managedNotice = installation.managedByPolicy ? '<div class="capability-error-block">这是组织默认 Skill。策略生效期间保持启用，不能关闭或卸载。</div>' : '';
-    const updateNotice = item.updateAvailable ? `<div class="capability-update-block">SkillHub 已发布 ${escapeHtml(item.latestVersion)}，当前为 ${escapeHtml(item.version)}。</div>` : '';
+    const updateNotice = item.updateAvailable
+      ? `<div class="capability-update-block">${item.updateSource === 'bundled' ? 'MeteoMate 已内置' : 'SkillHub 已发布'} ${escapeHtml(item.latestVersion)}，当前为 ${escapeHtml(item.version)}。</div>`
+      : '';
     modal(`<header class="capability-modal-header"><div><h2>${escapeHtml(item.name)}</h2><p>${escapeHtml(item.id)} · ${escapeHtml(item.version)}</p></div><button data-modal-close>×</button></header><div class="capability-modal-body">${managedNotice}${updateNotice}<div class="capability-title-row"><p>${escapeHtml(item.description)}</p>${item.risk ? riskBadge({ risk: item.risk }) : ''}</div><dl class="capability-summary-list"><div><dt>状态</dt><dd>${installation.enabled ? '已启用' : '已关闭'}${installation.managedByPolicy ? ' · 组织默认' : ''}</dd></div><div><dt>范围</dt><dd>${installation.scope === 'project' ? '项目' : '当前用户'}</dd></div><div><dt>来源</dt><dd>${escapeHtml(installation.remote?.skillHubInstallationId ? 'SkillHub' : installation.source?.type || 'local')}</dd></div><div><dt>安装路径</dt><dd><code>${escapeHtml(installation.installPath)}</code></dd></div></dl><h4>用于项目</h4><div class="capability-project-list">${projectOptions(installation.projectIds || [])}</div>${(installation.warnings || []).length ? `<h4>安装建议</h4><ul>${installation.warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join('')}</ul>` : ''}</div>
       <footer class="capability-modal-footer"><button class="ghost-button" id="open-skill-directory">打开目录</button>${item.updateAvailable ? '<button class="ghost-button" id="update-skill">更新技能</button>' : ''}${installation.managedByPolicy ? '' : `<button class="ghost-button" id="toggle-skill">${installation.enabled ? '关闭技能' : '启用技能'}</button><button class="danger-text-button" id="uninstall-skill">卸载</button>`}<span class="capability-modal-spacer"></span><button class="primary-button" id="save-skill-projects">保存项目绑定</button></footer>`, {
       wide: true,
       onReady(element) {
         element.querySelector('#open-skill-directory').addEventListener('click', () => root.meteoDesktop.openCapabilityPath(installation.installPath));
-        element.querySelector('#update-skill')?.addEventListener('click', () => { element.remove(); void api.skillHub.openSkill(item.id); });
+        element.querySelector('#update-skill')?.addEventListener('click', () => {
+          element.remove();
+          if (item.updateSource === 'bundled') void inspectBundled(item.id);
+          else void api.skillHub.openSkill(item.id);
+        });
         element.querySelector('#toggle-skill')?.addEventListener('click', async () => { const result = await root.meteoDesktop.setSkillEnabled({ id: installation.id, enabled: !installation.enabled }); api.center.registry = result.registry; element.remove(); render(); });
         element.querySelector('#uninstall-skill')?.addEventListener('click', async () => { if (!confirm(`确定卸载“${item.name}”吗？`)) return; const result = await root.meteoDesktop.uninstallSkill(installation.id); api.center.registry = result.registry; api.syncProjectCapability('skills', item.id, []); void root.meteoDesktop.reportSkillHubUninstallation({ remoteInstallationId: installation.remote?.skillHubInstallationId }).catch(() => {}); element.remove(); render(); });
         element.querySelector('#save-skill-projects').addEventListener('click', async () => { const projectIds = selectedProjects(element); const result = await root.meteoDesktop.updateSkillProjects({ id: installation.id, projectIds }); api.center.registry = result.registry; api.syncProjectCapability('skills', item.id, projectIds); element.remove(); render(); });

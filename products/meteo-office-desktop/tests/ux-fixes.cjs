@@ -32,6 +32,7 @@ const task = {
 const sent = [];
 let saveCount = 0;
 let renderCount = 0;
+let streamPatchCount = 0;
 const plain = (value) => JSON.parse(JSON.stringify(value));
 const context = vm.createContext({
   Date,
@@ -62,6 +63,10 @@ const context = vm.createContext({
   },
   render() {
     renderCount += 1;
+  },
+  patchActiveRuntimeMessage() {
+    streamPatchCount += 1;
+    return true;
   },
   sendTaskMessage(options) {
     sent.push({
@@ -119,7 +124,8 @@ assert.equal(sent.length, 0);
 
 context.composerImeComposing = false;
 vm.runInContext(`flushPendingStreamCommits(); flushPendingQueuedTaskPrompts()`, context);
-assert.equal(renderCount, 1);
+assert.equal(renderCount, 0);
+assert.equal(streamPatchCount, 1);
 assert.equal(saveCount, 4);
 assert.deepEqual(plain(sent.shift()), {
   options: { prompt: 'after-ime', dequeue: true },
@@ -130,6 +136,7 @@ assert.equal(vm.runInContext(`runtimeEventCommitMode('evidence_created')`, conte
 assert.equal(vm.runInContext(`runtimeEventCommitMode('artifact_created')`, context), 'progress');
 assert.equal(vm.runInContext(`runtimeEventCommitMode('assistant_message_delta')`, context), 'stream');
 assert.equal(vm.runInContext(`runtimeEventCommitMode('team_member_progress')`, context), 'stream');
+assert.ok(rendererSource.includes('function patchActiveRuntimeMessage(task)'));
 for (let index = 0; index < 100; index += 1) {
   vm.runInContext('scheduleRuntimeProgressCommit(activeTask)', context);
 }

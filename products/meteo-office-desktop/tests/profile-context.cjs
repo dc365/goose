@@ -145,6 +145,10 @@ server.listen(0, '127.0.0.1', async () => {
       defaultPermissionProfileId: '',
       companion: DEFAULT_COMPANION_PREFERENCES,
     });
+    let notifiedDesktopPreferences = null;
+    const unsubscribeDesktopPreferences = context.onDesktopPreferencesChange((preferences) => {
+      notifiedDesktopPreferences = preferences;
+    });
     const savedDesktopPreferences = await ipcHandlers.get('auth:preferences-save')(null, {
       sendOnEnter: false,
       showExecutionProcess: false,
@@ -158,6 +162,8 @@ server.listen(0, '127.0.0.1', async () => {
     assert.equal(savedDesktopPreferences.memoryEnabled, false, 'general preferences IPC cannot enable memory');
     assert.equal(savedDesktopPreferences.autoCompactThreshold, 0.72);
     assert.deepEqual(savedDesktopPreferences.companion, DEFAULT_COMPANION_PREFERENCES);
+    assert.deepEqual(notifiedDesktopPreferences, savedDesktopPreferences);
+    unsubscribeDesktopPreferences();
     assert.equal(context.desktopPreferences().defaultPermissionProfileId, 'artifact-approval');
 
     const rawModels = {

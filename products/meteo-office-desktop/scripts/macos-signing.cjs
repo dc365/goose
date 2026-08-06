@@ -61,10 +61,14 @@ function execute(command, args, { allowFailure = false } = {}) {
   });
   if (result.error) throw result.error;
   if (!allowFailure && result.status !== 0) {
-    const detail = String(result.stderr || result.stdout || '').trim();
-    throw new Error(`${path.basename(command)} 失败${detail ? `：${detail}` : ''}`);
+    throw commandFailure(command, result);
   }
   return result;
+}
+
+function commandFailure(command, result) {
+  const detail = String(result?.stderr || result?.stdout || '').trim();
+  return new Error(`${path.basename(command)} 失败${detail ? `：${detail}` : ''}`);
 }
 
 function localSigningRequestSource(commonName = LOCAL_SIGNING_COMMON_NAME) {
@@ -123,16 +127,51 @@ function addKeychainToUserSearchList(keychain) {
   ]);
 }
 
+function keychainUnlockPasswordRejected(result) {
+  if (!result || result.status === 0) return false;
+  const detail = String(result.stderr || result.stdout || '');
+  return /passphrase[^\n]*not correct/i.test(detail);
+}
+
+function keychainRecoveryTimestamp(now = new Date()) {
+  return now.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+}
+
+function recreateManagedLocalKeychain({
+  keychain,
+  password,
+  executeCommand = execute,
+  timestamp = keychainRecoveryTimestamp(),
+}) {
+  let recoveredKeychain = `${keychain}.unusable-${timestamp}`;
+  let suffix = 1;
+  while (fs.existsSync(recoveredKeychain)) {
+    recoveredKeychain = `${keychain}.unusable-${timestamp}-${suffix}`;
+    suffix += 1;
+  }
+  fs.renameSync(keychain, recoveredKeychain);
+  try {
+    executeCommand('/usr/bin/security', ['create-keychain', '-p', password, keychain]);
+    executeCommand('/usr/bin/security', ['set-keychain-settings', '-lut', '21600', keychain]);
+    executeCommand('/usr/bin/security', ['unlock-keychain', '-p', password, keychain]);
+  } catch (error) {
+    fs.rmSync(keychain, { force: true });
+    fs.renameSync(recoveredKeychain, keychain);
+    throw new Error(`${error.message}；旧钥匙串已恢复`);
+  }
+  return recoveredKeychain;
+}
+
 function prepareLocalKeychain(env = process.env) {
   const configuredKeychain = String(env.METEOMATE_LOCAL_SIGNING_KEYCHAIN || '').trim();
   const keychain = path.resolve(configuredKeychain || DEFAULT_LOCAL_KEYCHAIN);
   const managed = !configuredKeychain;
-  const password = String(
-    env.METEOMATE_LOCAL_SIGNING_KEYCHAIN_PASSWORD
-    || (managed ? managedKeychainPassword() : ''),
-  );
+  const configuredPassword = String(env.METEOMATE_LOCAL_SIGNING_KEYCHAIN_PASSWORD || '');
+  const password = configuredPassword || (managed ? managedKeychainPassword() : '');
+  const keychainExisted = fs.existsSync(keychain);
+  let recoveredKeychain = '';
 
-  if (!fs.existsSync(keychain)) {
+  if (!keychainExisted) {
     if (!password) {
       throw new Error('自定义签名钥匙串不存在，且未提供 METEOMATE_LOCAL_SIGNING_KEYCHAIN_PASSWORD');
     }
@@ -140,10 +179,24 @@ function prepareLocalKeychain(env = process.env) {
     execute('/usr/bin/security', ['set-keychain-settings', '-lut', '21600', keychain]);
   }
   if (password) {
-    execute('/usr/bin/security', ['unlock-keychain', '-p', password, keychain]);
+    const unlock = execute(
+      '/usr/bin/security',
+      ['unlock-keychain', '-p', password, keychain],
+      { allowFailure: true },
+    );
+    if (unlock.status !== 0) {
+      const canRecover = managed
+        && !configuredPassword
+        && keychainExisted
+        && keychainUnlockPasswordRejected(unlock);
+      if (!canRecover) throw commandFailure('/usr/bin/security', unlock);
+      recoveredKeychain = recreateManagedLocalKeychain({ keychain, password });
+      console.warn(`MeteoMate 本地签名钥匙串密码已失配，旧钥匙串已归档到：${recoveredKeychain}`);
+      console.warn('已创建新的本地签名身份；macOS 桌面权限可能需要重新授权一次。');
+    }
   }
   addKeychainToUserSearchList(keychain);
-  return { keychain, password, managed };
+  return { keychain, password, managed, recoveredKeychain };
 }
 
 function findLocalIdentity(keychain, commonName = LOCAL_SIGNING_COMMON_NAME) {
@@ -565,8 +618,10 @@ module.exports = {
   localSigningRequestSource,
   isMachOFile,
   findValidLocalIdentity,
+  keychainUnlockPasswordRejected,
   parseCodesigningIdentity,
   prepareLocalKeychain,
+  recreateManagedLocalKeychain,
   refreshPackagedOfficeManifests,
   repairPackagedBrowserSymlinks,
   repairPackagedOfficeSymlinks,

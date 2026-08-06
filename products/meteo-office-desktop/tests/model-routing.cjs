@@ -22,6 +22,39 @@ assert.deepEqual(
   { providerId: 'doubao/provider', modelId: 'doubao::seed-1.6' }
 );
 
+const composerSelectionStart = rendererSource.indexOf('function composerModelSelection');
+const composerSelectionEnd = rendererSource.indexOf('\nfunction ', composerSelectionStart + 1);
+assert.ok(
+  composerSelectionStart >= 0 && composerSelectionEnd > composerSelectionStart,
+  'composer model selection helper should be present'
+);
+const composerSelectionContext = {
+  state: { draftProviderId: 'deepseek', draftModelId: 'deepseek-chat' },
+  modelSettings: { providerId: 'doubao', modelId: 'doubao-lite' },
+};
+vm.runInNewContext(
+  `${rendererSource.slice(composerSelectionStart, composerSelectionEnd)}\nthis.composerModelSelection = composerModelSelection;`,
+  composerSelectionContext
+);
+assert.deepEqual(
+  JSON.parse(JSON.stringify(composerSelectionContext.composerModelSelection({
+    providerId: 'doubao',
+    modelId: 'doubao-lite',
+  }))),
+  { providerId: 'deepseek', modelId: 'deepseek-chat' },
+  'the last manual composer choice should survive switching tasks'
+);
+composerSelectionContext.state.draftProviderId = null;
+composerSelectionContext.state.draftModelId = null;
+assert.deepEqual(
+  JSON.parse(JSON.stringify(composerSelectionContext.composerModelSelection({
+    providerId: 'openai',
+    modelId: 'gpt-5.6',
+  }))),
+  { providerId: 'openai', modelId: 'gpt-5.6' },
+  'before a manual choice, an existing task should keep its own model'
+);
+
 assert.ok(rendererSource.includes('modelSettings.providers.map((provider) => `<optgroup'));
 assert.ok(rendererSource.includes('data-provider-panel='));
 assert.ok(rendererSource.includes('general: renderGeneralSettings()'));
@@ -40,6 +73,60 @@ const providerSwitchBlock = actionsSource.slice(providerSwitchStart, providerSwi
 assert.ok(providerSwitchBlock.includes("document.querySelectorAll('[data-provider-panel]')"));
 assert.ok(!providerSwitchBlock.includes('render();'), 'provider switching must not recreate the settings dialog');
 assert.ok(actionsSource.includes('task.sessionId && task.providerId !== selection.providerId'));
+assert.ok(actionsSource.includes('state.draftProviderId = selection.providerId'));
+assert.ok(actionsSource.includes('state.draftModelId = selection.modelId'));
+
+const applyTaskModelStart = actionsSource.indexOf('function applyTaskModelSelection');
+const applyTaskModelEnd = actionsSource.indexOf('\nfunction ', applyTaskModelStart + 1);
+assert.ok(
+  applyTaskModelStart >= 0 && applyTaskModelEnd > applyTaskModelStart,
+  'task model selection helper should be present'
+);
+const applyTaskModelContext = {};
+vm.runInNewContext(
+  `${actionsSource.slice(applyTaskModelStart, applyTaskModelEnd)}\nthis.applyTaskModelSelection = applyTaskModelSelection;`,
+  applyTaskModelContext
+);
+const providerChangedTask = {
+  providerId: 'doubao',
+  modelId: 'doubao-lite',
+  sessionId: 'session-1',
+  runtimeMode: 'acp',
+  usage: { contextLimit: 4096, size: 1024 },
+  contextState: { phase: 'ready', message: 'ready' },
+};
+assert.equal(
+  applyTaskModelContext.applyTaskModelSelection(providerChangedTask, {
+    providerId: 'deepseek',
+    modelId: 'deepseek-chat',
+  }),
+  true
+);
+assert.equal(providerChangedTask.providerId, 'deepseek');
+assert.equal(providerChangedTask.modelId, 'deepseek-chat');
+assert.equal(providerChangedTask.sessionId, null, 'changing providers must start a fresh runtime session');
+assert.equal(providerChangedTask.runtimeMode, null);
+assert.equal(providerChangedTask.usage, null);
+
+const sameProviderTask = {
+  providerId: 'deepseek',
+  modelId: 'deepseek-chat',
+  sessionId: 'session-2',
+  runtimeMode: 'acp',
+  usage: { contextLimit: 8192, size: 2048, inputTokens: 128 },
+  contextState: { phase: 'ready', message: 'ready' },
+};
+assert.equal(
+  applyTaskModelContext.applyTaskModelSelection(sameProviderTask, {
+    providerId: 'deepseek',
+    modelId: 'deepseek-reasoner',
+  }),
+  true
+);
+assert.equal(sameProviderTask.sessionId, 'session-2', 'switching models within one provider should retain the session');
+assert.equal(sameProviderTask.usage.contextLimit, null);
+assert.equal(sameProviderTask.usage.size, null);
+assert.equal(sameProviderTask.usage.inputTokens, 128);
 
 const permissionActionHelperStart = actionsSource.indexOf('function permissionActionSucceeded');
 const permissionActionHelperEnd = actionsSource.indexOf('\nfunction ', permissionActionHelperStart + 1);
@@ -59,8 +146,25 @@ assert.equal(permissionActionContext.permissionActionSucceeded('deny_once'), fal
 const runtimeHelperStart = mainSource.indexOf('function sessionProviderId');
 const runtimeHelperEnd = mainSource.indexOf('class GooseAcpRuntime', runtimeHelperStart);
 assert.ok(runtimeHelperStart >= 0 && runtimeHelperEnd > runtimeHelperStart, 'runtime provider helpers should be present');
-const runtimeContext = { URL };
-vm.runInNewContext(`${mainSource.slice(runtimeHelperStart, runtimeHelperEnd)}\nthis.requiresNewRuntimeSession = requiresNewRuntimeSession; this.newSessionMeta = newSessionMeta; this.runtimeToolIdentity = runtimeToolIdentity; this.sessionPermissionGrantKey = sessionPermissionGrantKey; this.openAiChatCompletionsPath = openAiChatCompletionsPath; this.openAiResponsesPath = openAiResponsesPath; this.openAiProviderRoute = openAiProviderRoute; this.shouldUpdateProviderTransport = shouldUpdateProviderTransport;`, runtimeContext);
+const runtimeContext = { Buffer, URL };
+vm.runInNewContext(`${mainSource.slice(runtimeHelperStart, runtimeHelperEnd)}\nthis.completionRecipeForRequest = completionRecipeForRequest; this.sessionHasNativeRecipe = sessionHasNativeRecipe; this.requiresNewRuntimeSession = requiresNewRuntimeSession; this.newSessionMeta = newSessionMeta; this.runtimeToolIdentity = runtimeToolIdentity; this.sessionPermissionGrantKey = sessionPermissionGrantKey; this.openAiChatCompletionsPath = openAiChatCompletionsPath; this.openAiResponsesPath = openAiResponsesPath; this.openAiProviderRoute = openAiProviderRoute; this.shouldUpdateProviderTransport = shouldUpdateProviderTransport;`, runtimeContext);
+const completionRecipe = { version: '1.0.0', response: { json_schema: { type: 'object' } } };
+const completionRequest = {
+  completionContract: { required: true },
+  completionRecipe,
+};
+assert.equal(
+  runtimeContext.completionRecipeForRequest({ ...completionRequest, providerId: 'deepseek-provider' }),
+  null,
+  'custom OpenAI-compatible providers must use the MeteoMate prompt completion protocol'
+);
+assert.deepEqual(
+  JSON.parse(JSON.stringify(runtimeContext.completionRecipeForRequest(completionRequest))),
+  completionRecipe,
+  'the native Goose path should retain its structured completion recipe'
+);
+assert.equal(runtimeContext.sessionHasNativeRecipe({ session: { _meta: { hasRecipe: true } } }), true);
+assert.equal(runtimeContext.sessionHasNativeRecipe({ session: { _meta: {} } }), false);
 assert.equal(
   runtimeContext.requiresNewRuntimeSession(
     { providerId: 'doubao-provider' },
@@ -89,8 +193,34 @@ assert.equal(
   ),
   false
 );
+assert.equal(
+  runtimeContext.requiresNewRuntimeSession(
+    { ...completionRequest, providerId: 'doubao-provider' },
+    { session: { _meta: { providerId: 'doubao-provider', hasRecipe: true } } }
+  ),
+  true,
+  'an existing custom-provider session with a native recipe must be recreated'
+);
+assert.equal(
+  runtimeContext.requiresNewRuntimeSession(
+    { ...completionRequest, providerId: 'doubao-provider' },
+    { session: { _meta: { providerId: 'doubao-provider', hasRecipe: false } } }
+  ),
+  false
+);
+assert.equal(
+  runtimeContext.requiresNewRuntimeSession(
+    completionRequest,
+    { session: { _meta: { hasRecipe: false } } }
+  ),
+  true,
+  'the native Goose path must recreate a session that is missing its recipe'
+);
 assert.deepEqual(
-  JSON.parse(JSON.stringify(runtimeContext.newSessionMeta({ providerId: 'doubao-provider' }, ['tool']))),
+  JSON.parse(JSON.stringify(runtimeContext.newSessionMeta({
+    ...completionRequest,
+    providerId: 'doubao-provider',
+  }, ['tool']))),
   { client: 'meteomate-desktop', provider: 'doubao-provider', enabledExtensions: ['tool'] }
 );
 assert.deepEqual(
@@ -127,6 +257,10 @@ assert.notEqual(
   'session grants must not leak to another session'
 );
 assert.ok(mainSource.includes('_meta: newSessionMeta(request, enabledExtensions)'));
+assert.ok(mainSource.includes("extMethod('_goose/unstable/config/upsert'"));
+assert.ok(mainSource.includes("setSessionConfigOption({"));
+assert.ok(mainSource.includes("configId: 'model'"));
+assert.ok(!mainSource.includes('unstable_setSessionModel({'));
 assert.ok(mainSource.includes('sessionExtensionsList_unstable({ sessionId })'));
 assert.ok(mainSource.includes("type: 'session_capabilities'"));
 assert.ok(mainSource.includes('request.sessionCapabilityHash !== request.capabilityHash'));
@@ -164,6 +298,12 @@ const arkExplicitChatRoute = runtimeContext.openAiProviderRoute(
 assert.equal(arkExplicitChatRoute.protocol, 'chat_completions');
 assert.equal(arkExplicitChatRoute.basePath, 'api/v3/chat/completions');
 assert.equal(arkExplicitChatRoute.supportsStreaming, true);
+const arkExplicitResponsesStreamingRoute = runtimeContext.openAiProviderRoute(
+  'https://ark.cn-beijing.volces.com/api/v3',
+  { protocolMode: 'responses', streamingMode: 'on' }
+);
+assert.equal(arkExplicitResponsesStreamingRoute.supportsStreaming, false);
+assert.equal(arkExplicitResponsesStreamingRoute.streamingCompatibilityLocked, true);
 const intranetRoute = runtimeContext.openAiProviderRoute('http://192.168.28.105:11434/v1');
 assert.equal(intranetRoute.protocol, 'chat_completions');
 assert.equal(intranetRoute.basePath, 'v1/chat/completions');
@@ -174,6 +314,9 @@ const explicitResponsesRoute = runtimeContext.openAiProviderRoute(
 );
 assert.equal(explicitResponsesRoute.basePath, 'openai/v1/responses');
 assert.equal(explicitResponsesRoute.supportsStreaming, false);
+const deepSeekRoute = runtimeContext.openAiProviderRoute('https://api.deepseek.com');
+assert.equal(deepSeekRoute.protocol, 'chat_completions');
+assert.equal(deepSeekRoute.preservesThinking, true);
 const overrideRoute = runtimeContext.openAiProviderRoute(
   'https://gateway.example/openai/v1',
   { endpointPathOverride: '/proxy/responses' }
@@ -187,6 +330,15 @@ assert.equal(
     supportsStreaming: true,
   }, { protocolMode: 'chat_completions', streamingMode: 'on' }),
   false
+);
+assert.equal(
+  runtimeContext.shouldUpdateProviderTransport({
+    apiUrl: 'https://api.deepseek.com',
+    basePath: 'v1/chat/completions',
+    supportsStreaming: true,
+    preservesThinking: false,
+  }),
+  true
 );
 assert.equal(
   runtimeContext.shouldUpdateProviderTransport({

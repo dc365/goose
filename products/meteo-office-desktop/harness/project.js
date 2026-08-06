@@ -1,10 +1,13 @@
 (function (root, factory) {
   const Shared = typeof module === 'object' && module.exports ? require('./shared') : root.MeteoMateHarness.Shared;
-  const api = factory(Shared);
+  const OfficeConnector = typeof module === 'object' && module.exports
+    ? require('../capabilities/office-connector.js')
+    : root.MeteoMateOfficeConnector;
+  const api = factory(Shared, OfficeConnector);
   if (typeof module === 'object' && module.exports) module.exports = api;
   root.MeteoMateHarness = root.MeteoMateHarness || {};
   root.MeteoMateHarness.Project = api;
-})(typeof globalThis !== 'undefined' ? globalThis : this, function (Shared) {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (Shared, OfficeConnector) {
   'use strict';
 
   const DEFAULT_PROJECT_POLICY = Object.freeze({
@@ -21,8 +24,8 @@
         .filter(([connectorId, toolNames]) => allowed.has(connectorId) && Array.isArray(toolNames))
         .map(([connectorId, toolNames]) => [
           connectorId,
-          connectorId === 'office-artifacts' && root.MeteoMateOfficeConnector?.upgradeToolSelection
-            ? root.MeteoMateOfficeConnector.upgradeToolSelection(toolNames)
+          connectorId === 'office-artifacts' && OfficeConnector?.upgradeToolSelection
+            ? OfficeConnector.upgradeToolSelection(toolNames)
             : Shared.uniqueStrings(toolNames),
         ])
     );

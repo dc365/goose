@@ -46,6 +46,23 @@
     return hasLegacySelection ? 'custom' : 'inherit';
   }
 
+  function activeArtifactSelections(task = {}) {
+    const direct = Shared.asArray(task.artifactSelections);
+    if (direct.length) return direct;
+    return Shared.asArray(task.messages)
+      .slice()
+      .reverse()
+      .find((message) => message?.role === 'user' && Shared.asArray(message.artifactSelections).length)
+      ?.artifactSelections || [];
+  }
+
+  function requiresDocxSelectionEditing(task = {}) {
+    return activeArtifactSelections(task).some((selection) =>
+      selection?.editability === 'editable'
+      && String(selection.format || '').toUpperCase() === 'DOCX'
+    );
+  }
+
   function explicitConnectorIds(prompt, connectors) {
     const normalizedPrompt = String(prompt || '')
       .toLocaleLowerCase()
@@ -112,13 +129,14 @@
     const projectCaps = project?.spec?.capabilities || {};
     const grantMode = capabilityMode(task);
     const taskHasConnectorSelection = grantMode === 'custom';
+    const selectionEditingRequired = requiresDocxSelectionEditing(task);
     const promptConnectorIds = taskHasConnectorSelection
       ? []
       : explicitConnectorIds(prompt, catalog.connectors);
     const requestedSkills = Shared.uniqueStrings([
       ...(projectCaps.skills || []),
       ...(expert?.requiredSkills || []),
-      ...(expert?.recommendedSkills || expert?.skills || []),
+      ...(taskHasConnectorSelection ? [] : expert?.recommendedSkills || expert?.skills || []),
       ...(task?.skillIds || []),
     ]);
     const taskWorkflowReference = task?.workflowId
@@ -127,7 +145,7 @@
     const requestedWorkflows = Shared.uniqueStrings([
       ...(projectCaps.workflows || []),
       ...(expert?.requiredWorkflows || []),
-      ...(expert?.recommendedWorkflows || []),
+      ...(taskHasConnectorSelection ? [] : expert?.recommendedWorkflows || []),
       ...(task?.workflowIds || []),
       taskWorkflowReference,
     ]);
@@ -140,6 +158,7 @@
             ...(expert?.recommendedConnectors || []),
             ...promptConnectorIds,
           ]),
+      ...(selectionEditingRequired ? ['office-artifacts'] : []),
     ]);
     const selectedTools = taskHasConnectorSelection
       ? Shared.deepClone(task?.toolSelections && typeof task.toolSelections === 'object' ? task.toolSelections : {})
@@ -149,6 +168,12 @@
             ? projectCaps.toolSelections
             : {}),
         };
+    if (selectionEditingRequired) {
+      selectedTools['office-artifacts'] = Shared.uniqueStrings([
+        ...Shared.asArray(selectedTools['office-artifacts']),
+        'docx_edit_selection',
+      ]);
+    }
     const skillIndex = indexById(catalog.skills);
     const connectorIndex = indexById(catalog.connectors);
     const expertIndex = indexById([
@@ -174,6 +199,10 @@
     ].filter(Boolean));
     const workflowRequiredConnectors = new Set();
     const workflowToolRequirements = new Map();
+    if (selectionEditingRequired) {
+      workflowRequiredConnectors.add('office-artifacts');
+      workflowToolRequirements.set('office-artifacts', new Set(['docx_edit_selection']));
+    }
     const workflowPermissionProfiles = new Set();
     const resolvedWorkflowKeys = new Set();
     const resolvingWorkflowKeys = new Set();
@@ -231,8 +260,10 @@
         requiredSkills.add(versionlessId(reference));
         addRequested(requestedSkills, reference);
       }
-      for (const reference of Shared.asArray(dependencyExpert.recommendedSkills || dependencyExpert.skills)) {
-        addRequested(requestedSkills, reference);
+      if (!taskHasConnectorSelection) {
+        for (const reference of Shared.asArray(dependencyExpert.recommendedSkills || dependencyExpert.skills)) {
+          addRequested(requestedSkills, reference);
+        }
       }
       for (const reference of Shared.asArray(dependencyExpert.requiredConnectors)) {
         workflowRequiredConnectors.add(versionlessId(reference));
@@ -248,8 +279,10 @@
         requiredWorkflows.add(reference);
         includeWorkflow(reference, true, true);
       }
-      for (const reference of Shared.asArray(dependencyExpert.recommendedWorkflows)) {
-        includeWorkflow(reference, false, true);
+      if (!taskHasConnectorSelection) {
+        for (const reference of Shared.asArray(dependencyExpert.recommendedWorkflows)) {
+          includeWorkflow(reference, false, true);
+        }
       }
       for (const snapshot of Shared.asArray(dependencyExpert.memberSnapshots)) {
         if (snapshot?.id && !expertIndex.has(snapshot.id)) expertIndex.set(snapshot.id, snapshot);
@@ -457,7 +490,9 @@
       connectorSources: Object.fromEntries(
         connectors.map((connector) => [
           connector.id,
-          taskHasConnectorSelection
+          selectionEditingRequired && connector.id === 'office-artifacts'
+            ? 'artifact-selection'
+            : taskHasConnectorSelection
             ? 'task'
             : promptConnectorIds.includes(connector.id) ? 'prompt'
             : (projectCaps.connectors || []).includes(connector.id) ? 'project' : 'expert',

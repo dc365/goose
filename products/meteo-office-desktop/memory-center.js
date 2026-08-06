@@ -34,9 +34,6 @@
   };
   let observer = null;
   let searchTimer = null;
-  let statsRequestKey = '';
-  let statsRequestedAt = 0;
-  let statsPending = false;
   let unsubscribeAccount = null;
   let accountKey = '';
   let lastTrigger = null;
@@ -100,10 +97,7 @@
     ui.selectedId = null;
     ui.draft = null;
     ui.error = '';
-    statsRequestKey = '';
-    statsRequestedAt = 0;
     ensureModal().hidden = true;
-    updateCounts();
   }
 
   function globallyEnabled() {
@@ -389,7 +383,9 @@
     ui.draft = null;
     ui.error = '';
     renderModal();
-    const target = lastTrigger?.isConnected ? lastTrigger : document.querySelector('[data-memory-center-open]');
+    const target = lastTrigger?.isConnected
+      ? lastTrigger
+      : document.querySelector('[data-settings-manage-memory]');
     target?.focus?.();
     lastTrigger = null;
   }
@@ -619,17 +615,6 @@
     }, 80);
   }
 
-  function decorateSidebar() {
-    const nav = document.querySelector('.primary-nav');
-    if (!nav || nav.querySelector('[data-memory-center-open]')) return;
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'memory-nav-item';
-    button.dataset.memoryCenterOpen = '';
-    button.innerHTML = `${memoryIcon()}<span>记忆</span><em data-memory-nav-count>0</em>`;
-    nav.append(button);
-  }
-
   function decorateMessages() {
     const task = currentTask();
     if (!globallyEnabled()) {
@@ -651,77 +636,11 @@
     });
   }
 
-  function decorateComposer() {
-    const container = document.querySelector('.composer-draft-context');
-    if (!container) return;
-    const task = currentTask();
-    if (!task) return;
-    const project = currentProject();
-    const policy = memoryPolicy();
-    const active = (project && policy.useProjectMemory) || policy.useUserMemory;
-    const existing = container.querySelector('[data-memory-composer-chip]');
-    if (existing) {
-      existing.classList.toggle('active', Boolean(active));
-      const status = active ? '已启用' : '已关闭';
-      const statusElement = existing.querySelector('small');
-      if (statusElement?.textContent !== status) statusElement.textContent = status;
-      existing.title = globallyEnabled() ? '管理本任务使用的长期记忆' : '记忆已在个性化设置中关闭';
-      return;
-    }
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = `composer-memory-chip ${active ? 'active' : ''}`;
-    button.dataset.memoryComposerChip = '';
-    button.innerHTML = `${memoryIcon()}<span>记忆</span><small>${active ? '已启用' : '已关闭'}</small>`;
-    button.title = globallyEnabled() ? '管理本任务使用的长期记忆' : '记忆已在个性化设置中关闭';
-    container.append(button);
-  }
-
-  function updateCounts() {
-    const count = ui.stats?.total || 0;
-    document.querySelectorAll('[data-memory-nav-count]').forEach((element) => {
-      const label = String(count);
-      if (element.textContent !== label) element.textContent = label;
-      element.hidden = count === 0;
-    });
-  }
-
-  function refreshNavStats() {
-    const project = currentProject();
-    const account = currentAccount();
-    const userId = account?.user?.id || '';
-    if (!userId) return;
-    const key = `${userId}:${project?.id || ''}`;
-    const now = Date.now();
-    if (statsPending || (key === statsRequestKey && now - statsRequestedAt < 5000)) return;
-    statsRequestKey = key;
-    statsRequestedAt = now;
-    statsPending = true;
-    api.getMemoryStats({ projectId: project?.id || '', includeUser: true, status: 'active' })
-      .then((result) => {
-        ui.stats = result || ui.stats;
-        updateCounts();
-      })
-      .catch(() => {})
-      .finally(() => { statsPending = false; });
-  }
-
   function decorateApplication() {
-    decorateSidebar();
     decorateMessages();
-    decorateComposer();
-    updateCounts();
-    refreshNavStats();
   }
 
   document.addEventListener('click', (event) => {
-    const open = event.target.closest('[data-memory-center-open], [data-memory-composer-chip]');
-    if (open) {
-      event.preventDefault();
-      event.stopPropagation();
-      openCenter();
-      return;
-    }
     const fromMessage = event.target.closest('[data-memory-from-message]');
     if (fromMessage) {
       event.preventDefault();

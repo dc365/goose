@@ -107,6 +107,7 @@ let desktop = {
   companion: { ...CompanionState.DEFAULT_COMPANION_PREFERENCES },
 };
 const profileListeners = new Set();
+const preferenceListeners = new Set();
 const profileContext = {
   publicState: () => ({ profileKey: active ? profileId : null }),
   hasActiveProfile: () => active,
@@ -120,11 +121,16 @@ const profileContext = {
         ...(input.companion || {}),
       },
     };
+    preferenceListeners.forEach((listener) => listener(structuredClone(desktop)));
     return structuredClone(desktop);
   },
   onChange(listener) {
     profileListeners.add(listener);
     return () => profileListeners.delete(listener);
+  },
+  onDesktopPreferencesChange(listener) {
+    preferenceListeners.add(listener);
+    return () => preferenceListeners.delete(listener);
   },
 };
 const app = { getPath: () => temp, quit() {} };
@@ -189,6 +195,10 @@ try {
   desktop.companion.keepRunningInBackground = false;
   profileListeners.forEach((listener) => listener());
   assert.equal(controller.keepsAppAlive(), false);
+  profileContext.saveDesktopPreferences({ companion: { enabled: false } });
+  assert.equal(window.isVisible(), false, 'disabling the companion preference must hide the pet');
+  profileContext.saveDesktopPreferences({ companion: { enabled: true } });
+  assert.equal(window.isVisible(), true, 'enabling the companion preference must show the pet');
   desktop.companion.keepRunningInBackground = true;
   active = false;
   profileListeners.forEach((listener) => listener());
@@ -214,6 +224,7 @@ try {
 } finally {
   controller.shutdown();
   assert.equal(handlers.size, 0);
+  assert.equal(preferenceListeners.size, 0);
   fs.rmSync(temp, { recursive: true, force: true });
 }
 

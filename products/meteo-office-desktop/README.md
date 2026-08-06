@@ -96,8 +96,8 @@ goose configure
 应用按以下顺序查找 Goose：
 
 1. `GOOSE_BINARY`；
-2. `@aaif/goose-sdk` 自带的平台二进制；
-3. 仓库内 `target/release/goose` 或 `target/debug/goose`；
+2. 打包内置或仓库内 `target/release/goose`、`target/debug/goose`；
+3. `@aaif/goose-sdk` 自带的平台二进制；
 4. 系统 `PATH` 中的 `goose`。
 
 显式指定仓库构建的二进制：
@@ -111,6 +111,8 @@ GOOSE_BINARY=../../target/release/goose npm start
 ```bash
 npm run runtime:prepare
 ```
+
+`npm run package:mac` 会先从当前仓库源码构建 release 版 Goose，并作为应用资源打包；SDK 自带二进制仅用于找不到工作区版本时的兼容回退。
 
 发布构建需要向 Office Runtime 准备器提供完整、可搬迁的 Python Home 和 LibreOffice 应用目录；准备器会复制运行时、安装锁定依赖并写入校验清单：
 

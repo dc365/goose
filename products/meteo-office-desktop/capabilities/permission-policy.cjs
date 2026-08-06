@@ -14,6 +14,7 @@ const EDIT_TOOLS = new Set(['write', 'edit', 'write_file', 'edit_file']);
 const EXECUTE_TOOLS = new Set(['shell', 'execute', 'run_command']);
 const REMOTE_READ_PREFIX = /^(?:get|list|search|read|query|fetch|lookup|describe|inspect|check|validate)_/;
 const REMOTE_MUTATION_PREFIX = /^(?:make|create|update|delete|remove|write|edit|publish|send|upload|install|uninstall|execute|run|trigger|set|manage|apply|import|export|generate|render)_/;
+const DESTRUCTIVE_TOOL_NAME = /(?:^|_)(?:delete|remove|trash|erase|uninstall|destroy)(?:_|$)/;
 const RISK_RANK = Object.freeze({ low: 0, medium: 1, high: 2, critical: 3 });
 
 function maximumRisk(...values) {
@@ -150,6 +151,9 @@ function remoteToolAssessment(toolCall, toolName, context) {
   const computerRisk = connector.connectorType === 'computer' ? ComputerConnector.toolRisk(catalogToolName) : null;
   const officeRisk = connector.connectorType === 'office' ? OfficeConnector.toolRisk(catalogToolName) : null;
   const effects = normalizedEffects(tool || {});
+  const explicitDestructiveEffect = tool?.effects?.destructive === true
+    || tool?.annotations?.effects?.destructive === true;
+  if ((browserRisk || computerRisk) && !explicitDestructiveEffect) effects.destructive = false;
   const effectiveRisk = maximumRisk(risk, effects.risk);
   const inferredReadOnly = Boolean(tool) && (
     browserRisk === 'observe'
@@ -246,11 +250,14 @@ function classifyPermissionRequest(request = {}, context = {}) {
     || remoteTool?.browserRisk === 'blocked'
     || remoteTool?.computerRisk === 'blocked'
     || remoteTool?.officeRisk === 'blocked';
+  const destructiveOperation = effects.destructive
+    || kind === 'delete'
+    || DESTRUCTIVE_TOOL_NAME.test(toolName);
   const protectedDesktopAction = ['inspect', 'interaction', 'sensitive'].includes(remoteTool?.computerRisk);
   const effectiveRisk = maximumRisk(remoteTool?.effectiveRisk, effects.risk);
   const nonBypassableApproval = Boolean(
     effects.requiresApproval
-    || effects.destructive
+    || destructiveOperation
     || effects.publish
     || dangerousCommand
     || protectedDesktopAction
@@ -302,6 +309,7 @@ function classifyPermissionRequest(request = {}, context = {}) {
     networkHostBlocked,
     sensitiveTarget,
     hardDeny,
+    destructiveOperation,
     dangerousCommand,
     mutatingNetworkRequest,
     protectedDesktopAction,
@@ -313,6 +321,9 @@ function classifyPermissionRequest(request = {}, context = {}) {
 
 function permissionHandling(permissionProfileId, assessment) {
   if (assessment.hardDeny) return 'deny';
+  if (permissionProfileId === 'workspace-approval' && assessment.computerRisk) {
+    return assessment.destructiveOperation ? 'prompt' : 'allow_always';
+  }
   if (assessment.nonBypassableApproval) return 'prompt';
   const strict = SecurityMode.normalizeSecurityMode(assessment.securityMode) === SecurityMode.MODES.STRICT;
 

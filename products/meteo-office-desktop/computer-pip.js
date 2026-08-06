@@ -12,6 +12,9 @@ const stopButton = document.getElementById('stop-button');
 let currentSourceId = '';
 let reportedDimensions = '';
 let stream = null;
+let streamGeneration = 0;
+let streamStartPromise = null;
+let streamStartSourceId = '';
 
 const STATUS_LABELS = Object.freeze({
   connecting: '连接中',
@@ -24,7 +27,12 @@ const STATUS_LABELS = Object.freeze({
   waiting: '等待授权',
 });
 
-function stopStream() {
+function stopStream({ invalidatePending = true } = {}) {
+  if (invalidatePending) {
+    streamGeneration += 1;
+    streamStartPromise = null;
+    streamStartSourceId = '';
+  }
   if (stream) stream.getTracks().forEach((track) => track.stop());
   stream = null;
   video.srcObject = null;
@@ -80,42 +88,69 @@ async function startStream(sourceId) {
     placeholder.classList.add('hidden');
     return true;
   }
-  stopStream();
+  if (sourceId === streamStartSourceId && streamStartPromise) return streamStartPromise;
+
+  const generation = ++streamGeneration;
+  stopStream({ invalidatePending: false });
   currentSourceId = sourceId;
   reportedDimensions = '';
-  try {
-    stream = await navigator.mediaDevices.getDisplayMedia({
-      audio: false,
-      video: {
-        frameRate: { max: 15 },
-      },
-    });
-    video.srcObject = stream;
-    await video.play();
-    await reportVideoDimensions();
-    video.classList.add('visible');
-    fallbackImage.classList.remove('visible');
-    placeholder.classList.add('hidden');
-    const track = stream.getVideoTracks()[0];
-    track?.addEventListener('ended', () => {
-      if (sourceId !== currentSourceId) return;
-      stopStream();
-      void window.meteoComputerPip.reportStreamStatus({ sourceId, status: 'unavailable' });
-      if (fallbackImage.src) {
-        fallbackImage.classList.add('visible');
-        placeholder.classList.add('hidden');
-      } else {
-        showPlaceholder('目标窗口暂不可见');
+  const pending = (async () => {
+    let nextStream = null;
+    try {
+      nextStream = await navigator.mediaDevices.getDisplayMedia({
+        audio: false,
+        video: {
+          frameRate: { max: 15 },
+        },
+      });
+      if (generation !== streamGeneration || sourceId !== currentSourceId) {
+        nextStream.getTracks().forEach((track) => track.stop());
+        return false;
       }
-    }, { once: true });
-    await window.meteoComputerPip.reportStreamStatus({ sourceId, status: 'live' });
-    return true;
-  } catch {
-    stopStream();
-    await window.meteoComputerPip.reportStreamStatus({ sourceId, status: 'unavailable' });
-    showPlaceholder('无法显示目标窗口');
-    return false;
-  }
+      stream = nextStream;
+      video.srcObject = stream;
+      await video.play();
+      await reportVideoDimensions();
+      video.classList.add('visible');
+      fallbackImage.classList.remove('visible');
+      placeholder.classList.add('hidden');
+      const track = stream.getVideoTracks()[0];
+      track?.addEventListener('ended', () => {
+        if (sourceId !== currentSourceId) return;
+        stopStream();
+        void window.meteoComputerPip.reportStreamStatus({ sourceId, status: 'unavailable' });
+        if (fallbackImage.src) {
+          fallbackImage.classList.add('visible');
+          placeholder.classList.add('hidden');
+        } else {
+          showPlaceholder('目标窗口暂不可见');
+        }
+      }, { once: true });
+      await window.meteoComputerPip.reportStreamStatus({ sourceId, status: 'live' });
+      return true;
+    } catch (error) {
+      if (generation !== streamGeneration || sourceId !== currentSourceId) {
+        nextStream?.getTracks().forEach((track) => track.stop());
+        return false;
+      }
+      stopStream({ invalidatePending: false });
+      await window.meteoComputerPip.reportStreamStatus({
+        sourceId,
+        status: 'unavailable',
+        error: error?.message || String(error),
+      });
+      showPlaceholder('无法显示目标窗口');
+      return false;
+    } finally {
+      if (streamStartPromise === pending) {
+        streamStartPromise = null;
+        streamStartSourceId = '';
+      }
+    }
+  })();
+  streamStartSourceId = sourceId;
+  streamStartPromise = pending;
+  return pending;
 }
 
 async function renderState(state) {

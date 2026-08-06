@@ -40,9 +40,15 @@ document.addEventListener(
 
 function flushPendingStreamCommits() {
   if (!pendingStreamCommitTaskIds.size) return;
+  const taskIds = new Set(pendingStreamCommitTaskIds);
   pendingStreamCommitTaskIds.clear();
+  const activeTask = getActiveTask();
+  if (activeTask && taskIds.has(activeTask.id)) {
+    commitRuntimeStreamNow(activeTask);
+    return;
+  }
   saveState();
-  render();
+  if (state.view === 'automation') render();
 }
 
 function commitRuntimeStreamNow(task) {
@@ -51,6 +57,7 @@ function commitRuntimeStreamNow(task) {
     return;
   }
   saveState();
+  if (state.activeTaskId === task.id && patchActiveRuntimeMessage(task)) return;
   if (state.activeTaskId === task.id || state.view === 'automation') render();
 }
 
@@ -497,6 +504,15 @@ async function logoutAccount() {
   render();
 }
 
+async function toggleCompanionVisibility() {
+  if (desktopSettings.status === 'saving') return;
+  const companion = desktopSettings.preferences.companion || {};
+  await persistDesktopSetting('companion', {
+    ...companion,
+    enabled: companion.enabled === false,
+  });
+}
+
 function bindEvents() {
   composerTriggerCleanup?.();
   composerTriggerCleanup = null;
@@ -520,6 +536,9 @@ function bindEvents() {
   document.getElementById('account-password-form')?.addEventListener('submit', changeAccountPassword);
   document.getElementById('account-open-offline')?.addEventListener('click', openOfflineAccount);
   document.getElementById('account-logout')?.addEventListener('click', logoutAccount);
+  document.getElementById('account-toggle-companion')?.addEventListener('click', () => {
+    void toggleCompanionVisibility();
+  });
   document.getElementById('account-open-settings')?.addEventListener('click', () => openSettingsDialog());
   document.querySelectorAll('[data-sidebar-toggle]').forEach((element) => {
     element.addEventListener('click', toggleSidebar);
@@ -654,12 +673,18 @@ function bindEvents() {
   });
 
   document.querySelectorAll('[data-sidebar-task-rename]').forEach((button) => {
-    button.addEventListener('click', () => startSidebarTaskRename(button.dataset.sidebarTaskRename));
+    button.addEventListener('click', () => startSidebarTaskRename(
+      button.dataset.sidebarTaskRename,
+      button.dataset.taskMenuSurface || 'sidebar'
+    ));
   });
   document.querySelectorAll('[data-sidebar-task-menu]').forEach((button) => {
     button.addEventListener('click', (event) => {
       event.stopPropagation();
-      toggleSidebarTaskMenu(button.dataset.sidebarTaskMenu);
+      toggleSidebarTaskMenu(
+        button.dataset.sidebarTaskMenu,
+        button.dataset.taskMenuSurface || 'sidebar'
+      );
     });
   });
   document.querySelectorAll('[data-sidebar-task-delete]').forEach((button) => {
@@ -682,19 +707,22 @@ function bindEvents() {
   document.querySelector('[data-sidebar-task-rename-cancel]')?.addEventListener('click', cancelSidebarTaskRename);
   const openSidebarTaskMenu = document.querySelector('.sidebar-task-menu');
   if (openSidebarTaskMenu) {
-    const menuTask = openSidebarTaskMenu.closest('.sidebar-task');
+    const menuTask = openSidebarTaskMenu.closest('.sidebar-task, .project-task-row');
     const taskId = sidebarTaskUI.menuTaskId;
+    const menuSurface = sidebarTaskUI.menuSurface;
     const closeOnOutsideClick = (event) => {
       if (menuTask?.contains(event.target)) return;
       sidebarTaskUI.menuTaskId = null;
+      sidebarTaskUI.menuSurface = null;
       render();
     };
     const closeOnEscape = (event) => {
       if (event.key !== 'Escape') return;
       sidebarTaskUI.menuTaskId = null;
+      sidebarTaskUI.menuSurface = null;
       render();
       requestAnimationFrame(() => {
-        document.querySelector(`[data-sidebar-task-menu="${taskId}"]`)?.focus();
+        document.querySelector(`[data-sidebar-task-menu="${taskId}"][data-task-menu-surface="${menuSurface}"]`)?.focus();
       });
     };
     document.addEventListener('click', closeOnOutsideClick);
@@ -1244,24 +1272,9 @@ function bindEvents() {
         providerId: modelSettings.providerId,
         modelId: modelSettings.modelId || '',
       };
-      if (task) {
-        const modelChanged = task.providerId !== selection.providerId || task.modelId !== selection.modelId;
-        if (task.sessionId && task.providerId !== selection.providerId) {
-          task.sessionId = null;
-          task.runtimeMode = null;
-          task.usage = null;
-          task.contextState = { phase: 'idle', message: '' };
-        } else if (modelChanged && task.usage) {
-          task.usage = { ...task.usage, contextLimit: null, size: null };
-          task.contextState = { ...(task.contextState || {}), phase: 'idle', message: '' };
-        }
-        task.providerId = selection.providerId;
-        task.modelId = selection.modelId;
-        task.updatedAt = Date.now();
-      } else {
-        state.draftProviderId = selection.providerId;
-        state.draftModelId = selection.modelId;
-      }
+      state.draftProviderId = selection.providerId;
+      state.draftModelId = selection.modelId;
+      applyTaskModelSelection(task, selection);
       saveState();
     });
   }
@@ -1280,6 +1293,25 @@ function toggleSidebar() {
   });
 }
 
+function applyTaskModelSelection(task, selection) {
+  if (!task || !selection?.providerId) return false;
+  const modelChanged = task.providerId !== selection.providerId || task.modelId !== selection.modelId;
+  if (!modelChanged) return false;
+  if (task.sessionId && task.providerId !== selection.providerId) {
+    task.sessionId = null;
+    task.runtimeMode = null;
+    task.usage = null;
+    task.contextState = { phase: 'idle', message: '' };
+  } else if (task.usage) {
+    task.usage = { ...task.usage, contextLimit: null, size: null };
+    task.contextState = { ...(task.contextState || {}), phase: 'idle', message: '' };
+  }
+  task.providerId = selection.providerId;
+  task.modelId = selection.modelId || '';
+  task.updatedAt = Date.now();
+  return true;
+}
+
 function toggleSidebarSection(section) {
   if (!['tasks', 'workspaces'].includes(section)) return;
   const collapsedSections = new Set(
@@ -1295,27 +1327,31 @@ function toggleSidebarSection(section) {
   });
 }
 
-function startSidebarTaskRename(taskId) {
+function startSidebarTaskRename(taskId, surface = 'sidebar') {
   if (!state.tasks.some((task) => task.id === taskId)) return;
   sidebarTaskUI.menuTaskId = null;
+  sidebarTaskUI.menuSurface = null;
   sidebarTaskUI.editingTaskId = taskId;
+  sidebarTaskUI.editingSurface = surface;
   render();
   requestAnimationFrame(() => {
-    const input = document.querySelector(`[data-sidebar-task-rename-form="${taskId}"] input`);
+    const input = document.querySelector(`[data-sidebar-task-rename-form="${taskId}"][data-task-menu-surface="${surface}"] input`);
     input?.focus();
     input?.select();
   });
 }
 
-function toggleSidebarTaskMenu(taskId) {
+function toggleSidebarTaskMenu(taskId, surface = 'sidebar') {
   if (!state.tasks.some((task) => task.id === taskId && task.kind !== 'assistant')) return;
-  sidebarTaskUI.menuTaskId = sidebarTaskUI.menuTaskId === taskId ? null : taskId;
+  const menuOpen = sidebarTaskUI.menuTaskId === taskId && sidebarTaskUI.menuSurface === surface;
+  sidebarTaskUI.menuTaskId = menuOpen ? null : taskId;
+  sidebarTaskUI.menuSurface = menuOpen ? null : surface;
   render();
   requestAnimationFrame(() => {
-    if (sidebarTaskUI.menuTaskId === taskId) {
+    if (sidebarTaskUI.menuTaskId === taskId && sidebarTaskUI.menuSurface === surface) {
       document.querySelector('.sidebar-task-menu [role="menuitem"]')?.focus();
     } else {
-      document.querySelector(`[data-sidebar-task-menu="${taskId}"]`)?.focus();
+      document.querySelector(`[data-sidebar-task-menu="${taskId}"][data-task-menu-surface="${surface}"]`)?.focus();
     }
   });
 }
@@ -1323,6 +1359,7 @@ function toggleSidebarTaskMenu(taskId) {
 function cancelSidebarTaskRename() {
   if (!sidebarTaskUI.editingTaskId) return;
   sidebarTaskUI.editingTaskId = null;
+  sidebarTaskUI.editingSurface = null;
   render();
 }
 
@@ -1333,7 +1370,9 @@ function commitSidebarTaskRename(taskId, value) {
   task.title = title;
   task.titleMode = 'manual';
   sidebarTaskUI.editingTaskId = null;
+  sidebarTaskUI.editingSurface = null;
   sidebarTaskUI.menuTaskId = null;
+  sidebarTaskUI.menuSurface = null;
   saveState();
   render();
   return true;
@@ -1358,8 +1397,12 @@ function deleteSidebarTask(taskId) {
   pendingStreamCommitTaskIds.delete(taskId);
   pendingQueuedPromptTaskIds.delete(taskId);
   sidebarTaskUI.editingTaskId = null;
+  sidebarTaskUI.editingSurface = null;
   sidebarTaskUI.menuTaskId = null;
+  sidebarTaskUI.menuSurface = null;
   state.tasks = state.tasks.filter((candidate) => candidate.id !== taskId);
+  const project = state.projects?.find((candidate) => candidate.id === task.projectId);
+  if (project) project.updatedAt = Date.now();
 
   const removedTabs = previewUI.tabs.filter((tab) => tab.taskId === taskId);
   removedTabs.forEach((tab) => delete previewUI.surfaceStates[tab.id]);
@@ -1371,7 +1414,8 @@ function deleteSidebarTask(taskId) {
   }
   if (state.activeTaskId === taskId) {
     state.activeTaskId = null;
-    state.view = 'catalog';
+    const remainsInProject = state.view === 'project-detail' && state.activeProjectId === task.projectId;
+    if (!remainsInProject) state.view = 'catalog';
   }
   saveState();
   render();
@@ -2130,7 +2174,11 @@ async function refreshProviderRoutePreview() {
     const transport = document.getElementById('provider-resolved-transport');
     const streaming = document.getElementById('provider-resolved-streaming');
     if (transport) transport.textContent = `${providerPresetLabel(route.providerPreset)} · ${providerProtocolLabel(route.protocol)}`;
-    if (streaming) streaming.textContent = route.supportsStreaming ? '流式' : '非流式';
+    if (streaming) {
+      streaming.textContent = route.streamingCompatibilityLocked
+        ? '非流式（兼容）'
+        : route.supportsStreaming ? '流式' : '非流式';
+    }
   } catch {
     endpoint.textContent = 'Base URL 无效';
   }
@@ -2142,6 +2190,8 @@ async function testCustomProviderConnection(context) {
   const request = providerForm
     ? {
         ...readProviderConnectionForm(),
+        providerId: settingsDialog.providerDraft.id || '',
+        apiKeySet: Boolean(settingsDialog.providerDraft.apiKeySet),
         modelId: settingsDialog.providerDraft.modelId,
         toolCall: settingsDialog.providerDraft.toolCall,
         imageInput: settingsDialog.providerDraft.imageInput,
@@ -2361,8 +2411,6 @@ function navigate(view) {
     state.draftFileReferences = [];
     state.draftArtifactSelections = [];
     state.draftPermissionProfileId = null;
-    state.draftProviderId = null;
-    state.draftModelId = null;
     state.view = 'task';
   } else if (view === 'assistants') {
     const assistantTask = getAssistantTask();
@@ -2480,8 +2528,6 @@ function openExpert(expertId, prompt = '') {
   state.draftTaskMode = catalog.scenes.find((scene) => scene.id === state.draftSceneId)?.group || 'forecast';
   state.activeTaskId = null;
   state.draftPermissionProfileId = null;
-  state.draftProviderId = null;
-  state.draftModelId = null;
   state.draftPrompt = prompt;
   state.view = 'task';
   saveState();
@@ -2929,8 +2975,6 @@ function openProjectTask(projectId) {
   );
   state.activeTaskId = null;
   state.draftPermissionProfileId = null;
-  state.draftProviderId = null;
-  state.draftModelId = null;
   state.view = 'task';
   saveState();
   render();
@@ -4136,6 +4180,7 @@ async function sendTaskMessage(options = {}) {
   const modelId = modelSelection?.modelId ?? existing?.modelId ?? modelSettings.modelId ?? '';
   const task =
     existing || createTask(expert, prompt, permissionProfileId, providerId, modelId);
+  if (existing) applyTaskModelSelection(task, { providerId, modelId });
   const teamDefinition = teamDefinitionForTask(task, getTaskExpert(task));
   const previousTranscript = transcriptForRuntime(task);
   if (Array.isArray(task.queuedDraftFileReferences)) {

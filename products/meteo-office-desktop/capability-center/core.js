@@ -58,7 +58,13 @@
       const installation = skillInstallation(id, projectId);
       const remoteSkill = remote.get(id) || null;
       const sidecar = installation?.sidecar || shipped?.sidecar || {};
-      const latestVersion = remoteSkill?.latestVersion || '';
+      const updates = [
+        { source: 'bundled', version: shipped?.version || '' },
+        { source: 'skillhub', version: remoteSkill?.latestVersion || '' },
+      ].filter((item) => item.version);
+      updates.sort((left, right) => compareSkillVersions(right.version, left.version));
+      const latestUpdate = updates[0] || null;
+      const latestVersion = latestUpdate?.version || '';
       const updateAvailable = Boolean(
         installation?.version && latestVersion && compareSkillVersions(installation.version, latestVersion) < 0
       );
@@ -77,6 +83,7 @@
         remoteSkill,
         latestVersion,
         updateAvailable,
+        updateSource: updateAvailable ? latestUpdate.source : null,
         risk: installation?.risk || shipped?.risk || null,
         warnings: installation?.warnings || shipped?.warnings || [],
         capabilityType: 'skill',
@@ -136,7 +143,11 @@
         ? new Set(binding.toolAllowlist.map(String))
         : null;
       const tools = allowedTools
-        ? discoveredTools.filter((tool) => allowedTools.has(String(tool.name || '')))
+        ? binding?.managedPreset && binding?.lastTest?.ok
+          ? [...allowedTools].map((name) =>
+              discoveredTools.find((tool) => String(tool.name || '') === name) || { name }
+            )
+          : discoveredTools.filter((tool) => allowedTools.has(String(tool.name || '')))
         : discoveredTools;
       return {
         id,
